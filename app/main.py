@@ -1,26 +1,49 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
+from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from app.models.database import get_db
+import logging
 
-# Импортируем роутеры v1
+from app.models.database import get_db
 from app.api.v1.miners import router as miners_router
 from app.api.v1.pool import router as pool_router
 from app.api.v1.test import router as test_router
+from app.stratum.server import stratum_server
 
+# Настройка логов
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="BCH Solo Pool API",
-    version="1.0.0",
-    description="Bitcoin Cash Solo Mining Pool",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/api/v1/openapi.json"
+   title="BCH Solo Pool API",
+   version="1.0.0",
+   description="Bitcoin Cash Solo Mining Pool",
+   docs_url="/docs",
+   redoc_url="/redoc",
+   openapi_url="/api/v1/openapi.json"
 )
 
-# CORS middleware (для веб-интерфейса)
+
+# ========== Middleware для разрешения WebSocket ==========
+class WebSocketMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        # Для WebSocket запросов сразу пропускаем
+        if request.scope["type"] == "websocket":
+            # Проверяем, это наш Stratum endpoint
+            if request.scope["path"].startswith("/stratum/ws/"):
+                # Принимаем все соединения
+                return await call_next(request)
+
+        # Для обычных HTTP запросов
+        response = await call_next(request)
+        return response
+
+
+# Подключаем middleware
+
+app.add_middleware(WebSocketMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # В production укажите конкретные домены
@@ -33,6 +56,7 @@ app.add_middleware(
 app.include_router(miners_router, prefix="/api/v1", tags=["miners"])
 app.include_router(pool_router, prefix="/api/v1", tags=["pool"])
 app.include_router(test_router, prefix="/api/v1", tags=["test"])
+
 
 @app.get("/")
 async def root():
@@ -139,3 +163,56 @@ async def database_stats(db: AsyncSession = Depends(get_db)):
         "database": "pool_db",
         "statistics": stats
     }
+
+
+# ========== ПРОСТЕЙШИЙ WebSocket endpoint ==========
+# @app.websocket("/ws-test")
+# async def websocket_test(websocket: WebSocket):
+#     """Самый простой WebSocket для проверки"""
+#     logger.info("Попытка подключения к /ws-test")
+#
+#     # ВСЕГДА принимаем соединение
+#     await websocket.accept()
+#     logger.info("WebSocket /ws-test принят")
+#
+#     # Сразу отправляем сообщение
+#     await websocket.send_text("WebSocket работает на порту 8000!")
+#
+#     try:
+#         while True:
+#             # Ждём что-то от клиента
+#             data = await websocket.receive_text()
+#             logger.info(f"Получено: {data}")
+#
+#             # Отвечаем
+#             await websocket.send_text(f"Echo: {data}")
+#
+#     except WebSocketDisconnect:
+#         logger.info("Клиент отключился")
+#     except Exception as e:
+#         logger.error(f"Ошибка: {e}")
+
+# ========== Stratum WebSocket ==========
+@app.websocket("/stratum/ws/{miner_address}")
+async def websocket_endpoint(websocket: WebSocket, miner_address: str):
+    """Stratum WebSocket для подключения майнеров"""
+    logger.info(f"Stratum подключение: {miner_address}")
+
+    # Подключаем через stratum_server (он сам вызовет accept)
+    connection_id = await stratum_server.connect(websocket, miner_address)
+
+    try:
+        while True:
+            # Получаем сообщения
+            data = await websocket.receive_json()
+            logger.info(f"Stratum сообщение от {miner_address}: {data}")
+
+            # Обрабатываем через stratum_server
+            await stratum_server.handle_message(websocket, connection_id, data)
+
+    except WebSocketDisconnect:
+        logger.info(f"Stratum отключился: {miner_address}")
+    except Exception as e:
+        logger.error(f"Ошибка в WebSocket: {type(e).__name__}: {e}")
+    finally:
+        await stratum_server.disconnect(connection_id)
