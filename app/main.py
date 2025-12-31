@@ -4,12 +4,15 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 import logging
+import asyncio
 
 from app.models.database import get_db
 from app.api.v1.miners import router as miners_router
 from app.api.v1.pool import router as pool_router
 from app.api.v1.test import router as test_router
-from app.stratum.server import stratum_server
+from app.api.v1.jobs import router as jobs_router
+from app.lifespan import lifespan
+from app.dependencies import stratum_server, job_manager
 
 # Настройка логов
 logging.basicConfig(level=logging.INFO)
@@ -21,7 +24,8 @@ app = FastAPI(
    description="Bitcoin Cash Solo Mining Pool",
    docs_url="/docs",
    redoc_url="/redoc",
-   openapi_url="/api/v1/openapi.json"
+   openapi_url="/api/v1/openapi.json",
+   lifespan=lifespan
 )
 
 
@@ -56,6 +60,7 @@ app.add_middleware(
 app.include_router(miners_router, prefix="/api/v1", tags=["miners"])
 app.include_router(pool_router, prefix="/api/v1", tags=["pool"])
 app.include_router(test_router, prefix="/api/v1", tags=["test"])
+app.include_router(jobs_router, prefix="/api/v1", tags=["jobs"])
 
 
 @app.get("/")
@@ -216,3 +221,5 @@ async def websocket_endpoint(websocket: WebSocket, miner_address: str):
         logger.error(f"Ошибка в WebSocket: {type(e).__name__}: {e}")
     finally:
         await stratum_server.disconnect(connection_id)
+
+

@@ -5,11 +5,15 @@ from typing import Dict, Set
 from fastapi import WebSocket, WebSocketDisconnect, APIRouter
 from datetime import datetime, UTC
 
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from app.models.database import AsyncSessionLocal
 from app.stratum.validator import share_validator  # Импортируем валидатор
 from app.models.database import get_db  # Для работы с БД
 from app.models.miner import Miner
 from app.models.share import Share
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.dependencies import job_manager
 
 logger = logging.getLogger(__name__)
 
@@ -115,14 +119,38 @@ class StratumServer:
             await self.send_error(websocket, msg_id, "Invalid parameters")
             return
 
+        # TODO: В реальном пуле здесь проверка пароля
         username = params[0]
-        password = params[1]  # В реальном пуле здесь проверка пароля
+        password = params[1]
 
+        # Реальная проверка майнера в БД
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(Miner).where(Miner.bch_address == miner_address)
+                )
+                miner = result.scalar_one_or_none()
 
-        # TODO: Реальная проверка майнера в БД
-        # Пока просто проверяем формат адреса
-        if not miner_address or len(miner_address) < 10:
-            await self.send_error(websocket, msg_id, "Invalid miner address")
+                if not miner:
+                    # Майнер не зарегистрирован - можно автоматически создать
+                    # или требовать предварительной регистрации через API
+                    await self.send_error(websocket, msg_id,
+                                          f"Miner {miner_address} not registered. "
+                                          f"Please register first via API: POST /api/v1/miners/register")
+                    return
+
+                if not miner.is_active:
+                    await self.send_error(websocket, msg_id,
+                                          f"Miner {miner_address} is deactivated")
+                    return
+
+                # TODO: Проверка пароля если будет реализована аутентификация
+
+                logger.info(f"Майнер авторизован: {miner_address} (ID: {miner.id})")
+
+        except Exception as e:
+            logger.error(f"Ошибка при проверке майнера: {e}")
+            await self.send_error(websocket, msg_id, f"Database error: {str(e)}")
             return
 
         response = {
@@ -130,6 +158,7 @@ class StratumServer:
             "result": True,
             "error": None
         }
+
         await websocket.send_json(response)
 
         # После успешной авторизации отправляем первое задание
@@ -163,13 +192,30 @@ class StratumServer:
             await self.send_error(websocket, msg_id, f"Invalid share: {error_msg}")
             return
 
-        # Шар валиден - сохраняем в БД и удаляем задание из кэша если clean_jobs=True
+        # Шар валиден - сохраняем в БД
         try:
-            await self.save_share_to_db(miner_address, job_id, is_valid=True)
+            await self.save_share_to_db(
+                miner_address=miner_address,
+                job_id=job_id,
+                extra_nonce2=extra_nonce2,
+                ntime=ntime,
+                nonce=nonce,
+                difficulty=1.0,
+                is_valid=True
+            )
 
-            # Если задание было с флагом clean_jobs=True, удаляем его
-            # TODO: проверять флаг clean_jobs из задания
-            share_validator.remove_job(job_id)
+            # Также передаем в JobManager для обработки
+            share_data = {
+                "job_id": job_id,
+                "worker_name": worker_name,
+                "extra_nonce2": extra_nonce2,
+                "ntime": ntime,
+                "nonce": nonce,
+                "miner_address": miner_address
+            }
+
+            # TODO: В будущем здесь будет реальная обработка через JobManager
+            # result = await job_manager.validate_and_save_share(miner_address, share_data)
 
             response = {
                 "id": msg_id,
@@ -184,22 +230,64 @@ class StratumServer:
             logger.error(f"Ошибка при сохранении шара: {e}")
             await self.send_error(websocket, msg_id, f"Database error: {str(e)}")
 
-    async def save_share_to_db(self, miner_address: str, job_id: str, is_valid: bool = True):
+    async def save_share_to_db(self, miner_address: str, job_id: str,
+                               extra_nonce2: str = "", ntime: str = "",
+                               nonce: str = "", difficulty: float = 1.0,
+                               is_valid: bool = True):
         """Сохранение шара в базу данных"""
-        # TODO: Реализовать реальное сохранение с учетом сложности
-        # Пока заглушка
-        logger.debug(f"Сохранение шара в БД: miner={miner_address}, job={job_id}, valid={is_valid}")
+        try:
+            async with AsyncSessionLocal() as session:
+                # 1. Проверяем/создаем майнера
+                result = await session.execute(
+                    select(Miner).where(Miner.bch_address == miner_address)
+                )
+                miner = result.scalar_one_or_none()
 
-        # Пример сохранения (нужно будет реализовать с сессией БД)
-        # async with AsyncSessionLocal() as session:
-        #     share = Share(
-        #         miner_address=miner_address,
-        #         job_id=job_id,
-        #         difficulty=1.0,
-        #         is_valid=is_valid
-        #     )
-        #     session.add(share)
-        #     await session.commit()
+                if not miner:
+                    # Майнер не найден - создаем нового
+                    miner = Miner(
+                        bch_address=miner_address,
+                        worker_name="unknown",
+                        is_active=True
+                    )
+                    session.add(miner)
+                    await session.flush()  # Получаем ID
+
+                # 2. Создаем запись о шаре
+                share = Share(
+                    miner_address=miner_address,
+                    job_id=job_id,
+                    difficulty=difficulty,
+                    is_valid=is_valid,
+                    # Сохраняем дополнительные данные для отладки
+                    extra_nonce2=extra_nonce2,
+                    ntime=ntime,
+                    nonce=nonce
+                )
+                session.add(share)
+
+                # 3. Обновляем статистику майнера
+                if is_valid:
+                    miner.total_shares += 1
+                    miner.hashrate = self._calculate_hashrate(miner)
+
+                await session.commit()
+
+                logger.info(f"Шар сохранен в БД: miner={miner_address}, "
+                            f"shares={miner.total_shares}, valid={is_valid}")
+
+                return True
+
+        except Exception as e:
+            logger.error(f"Ошибка сохранения шара в БД: {e}")
+            return False
+
+    def _calculate_hashrate(self, miner: Miner) -> float:
+        """Рассчитать хэшрейт майнера (упрощенная версия)"""
+        # В реальной реализации здесь сложный расчет на основе
+        # количества шаров, времени и сложности
+        # Пока возвращаем простое значение
+        return miner.total_shares * 100.0  # Пример: 100 H/s за каждый шар
 
     async def handle_get_transactions(self, websocket: WebSocket, msg_id: int):
         """Получение транзакций для блока"""
@@ -212,22 +300,39 @@ class StratumServer:
 
     async def send_new_job(self, websocket: WebSocket, miner_address: str):
         """Отправка нового задания майнеру"""
+        logger.info(f"Запрос задания для майнера {miner_address}")
+
+        try:
+            # Получаем задание от JobManager
+
+            success = await job_manager.send_job_to_miner(miner_address)
+
+            if not success:
+                logger.warning(f"Не удалось получить задание от JobManager для {miner_address}")
+
+                # Отправляем тестовое задание как fallback
+                await self._send_fallback_job(websocket, miner_address)
+
+        except Exception as e:
+            logger.error(f"Ошибка при отправке задания майнеру {miner_address}: {e}")
+            await self._send_fallback_job(websocket, miner_address)
+
+    async def _send_fallback_job(self, websocket: WebSocket, miner_address: str):
+        """Отправка тестового задания (fallback)"""
         job_id = f"job_{datetime.now(UTC).timestamp()}_{miner_address[:8]}"
 
-        # TODO: Получать реальное задание от JobManager
-        # Пока отправляем тестовое задание
         job_data = {
             "method": "mining.notify",
             "params": [
-                job_id,  # Job ID
-                "0000000000000000000000000000000000000000000000000000000000000000",  # prevhash
-                "0000000000000000000000000000000000000000000000000000000000000000",  # coinb1
-                "0000000000000000000000000000000000000000000000000000000000000000",  # coinb2
-                [],  # merkle_branch
-                "0000000000000000000000000000000000000000000000000000000000000000",  # version
-                "00000000",  # nbits
-                "00000000",  # ntime
-                True  # clean_jobs
+                job_id,
+                "000000000000000007cbc708a5e00de8fd5e4b5b3e2a4f61c5aec6d6b7a9b8c9",
+                "fdfd0800",
+                "",
+                [],
+                "20000000",
+                "1d00ffff",
+                format(int(datetime.now(UTC).timestamp()), '08x'),
+                True
             ]
         }
 
@@ -245,7 +350,7 @@ class StratumServer:
             self.subscriptions[miner_address] = {job_id}
 
         await websocket.send_json(job_data)
-        logger.info(f"Отправлено задание {job_id} майнеру {miner_address}")
+        logger.info(f"Отправлено тестовое задание {job_id} майнеру {miner_address}")
 
     async def send_error(self, websocket: WebSocket, msg_id: int, error_msg: str):
         """Отправка ошибки"""
@@ -313,7 +418,6 @@ class StratumServer:
 
         if jobs_to_remove:
             logger.info(f"Очищено {len(jobs_to_remove)} старых заданий")
-
 
     async def update_difficulty(self, difficulty: float):
         """Обновление сложности для всех майнеров"""
