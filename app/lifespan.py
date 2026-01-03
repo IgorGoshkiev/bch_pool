@@ -49,12 +49,14 @@ async def lifespan(app: FastAPI):
     logger.info("Остановка BCH Solo Pool...")
 
     # Отменяем задачу рассылки если она была создана
-    if broadcast_task:
+    if broadcast_task and not broadcast_task.done():
         broadcast_task.cancel()
         try:
             await broadcast_task
         except asyncio.CancelledError:
             logger.info("Задача рассылки заданий остановлена")
+        except Exception as e:
+            logger.warning(f"Ошибка при остановке задачи рассылки: {e}")
 
     # Очищаем данные Stratum сервера
     stratum_server.cleanup_all()

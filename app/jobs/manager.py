@@ -5,84 +5,61 @@ from typing import Optional, Dict, Any
 from datetime import datetime, UTC
 import hashlib
 
+from app.utils.config import settings
+from app.jobs.real_node_client import RealBCHNodeClient
+
 logger = logging.getLogger(__name__)
 
 
-class MockBCHNodeClient:
-    """Мок-клиент BCH ноды для тестирования"""
-
-    def __init__(self):
-        self.block_height = 840000
-        self.difficulty = 12345.6789
-
-    async def get_block_template(self) -> Optional[Dict]:
-        """Возвращает тестовый шаблон блока"""
-        await asyncio.sleep(0.05)  # Небольшая задержка для реализма
-
-        # Генерируем "случайный" предыдущий хэш
-        timestamp = int(time.time())
-        prev_hash_input = f"block_{self.block_height}_{timestamp}"
-        prev_hash = hashlib.sha256(prev_hash_input.encode()).hexdigest()
-
-        return {
-            "previousblockhash": prev_hash,
-            "coinbaseaux": {"flags": ""},
-            "coinbasevalue": 625000000,  # 6.25 BCH в сатоши
-            "longpollid": prev_hash + "999",
-            "target": "00000000ffff0000000000000000000000000000000000000000000000000000",
-            "mintime": timestamp - 7200,  # 2 часа назад
-            "mutable": ["time", "transactions", "prevblock"],
-            "noncerange": "00000000ffffffff",
-            "sigoplimit": 80000,
-            "sizelimit": 4000000,
-            "curtime": timestamp,
-            "bits": "1d00ffff",
-            "height": self.block_height,
-            "version": 0x20000000,
-            "transactions": []
-        }
-
-    async def get_blockchain_info(self) -> Optional[Dict]:
-        """Информация о блокчейне"""
-        await asyncio.sleep(0.05)
-        return {
-            "chain": "test",
-            "blocks": self.block_height,
-            "headers": self.block_height,
-            "difficulty": self.difficulty,
-            "networkhashps": self.difficulty * 2 ** 32 / 600  # Примерный хэшрейт сети
-        }
-
-    async def submit_block(self, block_data: str) -> Optional[Dict]:
-        """Имитация отправки блока"""
-        await asyncio.sleep(0.1)
-        logger.info(f"📤 [MOCK] Блок отправлен в сеть: {block_data[:64]}...")
-        return {"status": "accepted"}
-
-
 class JobManager:
-    """Менеджер заданий для майнинг пула"""
+    """Менеджер заданий для майнинг пула - только реальная нода"""
 
     def __init__(self):
-        self.node_client = MockBCHNodeClient()
+        # Используем настройки из config.py
+        self.node_client = RealBCHNodeClient(
+            rpc_host=settings.bch_rpc_host,
+            rpc_port=settings.bch_rpc_port,
+            rpc_user=settings.bch_rpc_user,
+            rpc_password=settings.bch_rpc_password,
+            use_cookie=settings.bch_rpc_use_cookie
+        )
         self.current_job = None
         self.job_history = []  # История заданий
         self.job_counter = 0
         self.stratum_server = None  # Будет установлено через set_stratum_server
+        self.block_height = 0
+        self.difficulty = 0.0
 
     def set_stratum_server(self, stratum_server):
         """Установить ссылку на Stratum сервер"""
         self.stratum_server = stratum_server
 
     async def initialize(self) -> bool:
-        """Инициализация менеджера"""
+        """Инициализация менеджера с реальной нодой"""
         try:
-            # Проверяем "подключение" к ноде
-            info = await self.node_client.get_blockchain_info()
-            if info:
-                logger.info(f"JobManager инициализирован. Высота блокчейна: {info.get('blocks')}")
+            logger.info(f"Подключение к BCH ноде: {settings.bch_rpc_host}:{settings.bch_rpc_port}")
+
+            if await self.node_client.connect():
+                # Обновляем локальные переменные из клиента
+                self.block_height = self.node_client.block_height
+                self.difficulty = self.node_client.difficulty
+
+                # Логируем успешное подключение
+                logger.info(f"✅ JobManager инициализирован. Высота блокчейна: {self.block_height}")
+                logger.info(
+                    f"   Цепочка: {self.node_client.blockchain_info.get('chain', 'unknown') if hasattr(self.node_client, 'blockchain_info') else 'unknown'}")
+                logger.info(f"   Сложность: {self.difficulty}")
                 return True
-            return False
+            else:
+                logger.error("Не удалось подключиться к BCH ноде")
+                logger.error("Проверьте:")
+                logger.error("1. Запущена ли нода на сервере")
+                logger.error("2. Настройки RPC в bitcoin.conf")
+                logger.error("3. Доступность порта 28332")
+                if settings.bch_rpc_use_cookie:
+                    logger.error("4. Существование .cookie файла")
+                return False
+
         except Exception as e:
             logger.error(f"Ошибка инициализации JobManager: {e}")
             return False
@@ -90,11 +67,16 @@ class JobManager:
     async def create_new_job(self, miner_address: str = None) -> Optional[Dict]:
         """Создать новое задание для майнера"""
         try:
-            # Получаем шаблон блока
+            # Получаем шаблон блока от реальной ноды
             template = await self.node_client.get_block_template()
             if not template:
-                logger.warning("Не удалось получить шаблон блока")
+                logger.warning("Не удалось получить шаблон блока от ноды")
                 return None
+
+            # Обновляем высоту блока
+            if 'height' in template:
+                self.block_height = template['height']
+                self.node_client.block_height = template['height']
 
             # Создаем уникальный ID задания
             self.job_counter += 1
@@ -123,8 +105,10 @@ class JobManager:
                 self.job_history = self.job_history[-100:]
 
             logger.info(f"Создано задание {job_id} для майнера {miner_address or 'broadcast'}")
+            logger.debug(f"Высота: {template.get('height', 'unknown')}")
             logger.debug(f"Предыдущий хэш: {template.get('previousblockhash', '')[:16]}...")
             logger.debug(f"Время: {template.get('curtime', 'unknown')}")
+            logger.debug(f"Coinbase: {template.get('coinbasevalue', 0)} сатоши")
 
             return stratum_job
 
@@ -164,6 +148,7 @@ class JobManager:
         # Создаем общее задание для всех майнеров
         job_data = await self.create_new_job()
         if not job_data:
+            logger.warning("Не удалось создать задание для рассылки")
             return
 
         # Рассылаем через Stratum сервер
@@ -191,6 +176,7 @@ class JobManager:
         # Создаем задание для этого майнера
         job_data = await self.create_new_job(miner_address)
         if not job_data:
+            logger.warning(f"Не удалось создать задание для майнера {miner_address}")
             return False
 
         # Отправляем задание
@@ -202,14 +188,14 @@ class JobManager:
 
     async def validate_and_save_share(self, miner_address: str, share_data: Dict) -> Dict:
         """Валидация и сохранение шара"""
-        # Здесь будет реальная валидация хэшей
-        # Пока просто логируем и "принимаем"
+        logger.info(f"🎯 Шар от майнера {miner_address}: job={share_data.get('job_id')}")
 
-        logger.info(f"Шар от майнера {miner_address}: {share_data}")
+        # TODO: Реальная валидация хэшей будет здесь
+        # Пока логируем и "принимаем"
 
         return {
             "status": "accepted",
-            "message": "Share accepted (mock validation)",
+            "message": "Share accepted (реальная валидация скоро)",
             "difficulty": 1.0,
             "job_id": share_data.get("job_id", "unknown"),
             "timestamp": datetime.now(UTC).isoformat()
@@ -218,42 +204,56 @@ class JobManager:
     async def submit_block_solution(self, miner_address: str, block_data: Dict) -> Dict:
         """Обработка найденного блока"""
         logger.info(f"БЛОК НАЙДЕН! Майнер: {miner_address}")
-        logger.info(f"Данные блока: {block_data}")
 
-        # Имитация отправки в сеть
-        result = await self.node_client.submit_block(str(block_data))
+        # TODO: Собрать реальный блок из данных
+        # Пока отправляем тестовые данные
+        hex_data = block_data.get('hex_data', '')
+
+        if not hex_data:
+            logger.error("Нет данных блока для отправки")
+            return {
+                "status": "rejected",
+                "message": "No block data provided",
+                "miner": miner_address
+            }
+
+        # Отправляем блок в реальную сеть
+        result = await self.node_client.submit_block(hex_data)
 
         if result and result.get("status") == "accepted":
-            # "Увеличиваем" высоту блокчейна для следующего задания
-            self.node_client.block_height += 1
+            logger.info(f"Блок принят сетью! Награда: 3.125 BCH")
+
+            # Обновляем высоту блока
+            self.block_height += 1
+            self.node_client.block_height = self.block_height
 
             return {
                 "status": "accepted",
-                "message": "Block accepted by network (mock)",
+                "message": "Block accepted by network",
                 "miner": miner_address,
-                "reward": 3.125,  # BCH 3.125 BCH
-                "height": self.node_client.block_height
+                "reward": 3.125,  # BCH награда за блок в тестнете
+                "height": self.block_height
             }
         else:
+            error_msg = result.get("message", "Unknown error") if result else "RPC error"
+            logger.error(f"Блок отклонен: {error_msg}")
             return {
                 "status": "rejected",
-                "message": "Block rejected (mock)",
+                "message": f"Block rejected: {error_msg}",
                 "miner": miner_address
             }
 
     def get_stats(self) -> Dict:
         """Получить статистику JobManager"""
         return {
+            "status": "connected" if self.block_height > 0 else "disconnected",
             "current_job": self.current_job["id"] if self.current_job else None,
             "total_jobs_created": self.job_counter,
             "job_history_size": len(self.job_history),
             "node_info": {
-                "block_height": self.node_client.block_height,
-                "difficulty": self.node_client.difficulty
+                "block_height": self.block_height,
+                "difficulty": self.difficulty,
+                "connection": f"{settings.bch_rpc_host}:{settings.bch_rpc_port}",
+                "auth_method": "cookie" if settings.bch_rpc_use_cookie else "user/pass"
             }
         }
-
-
-# Глобальный экземпляр JobManager
-# job_manager = JobManager()
-# используем dependencies.py

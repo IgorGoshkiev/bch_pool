@@ -4,7 +4,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 import logging
-import asyncio
 
 from app.models.database import get_db
 from app.api.v1.miners import router as miners_router

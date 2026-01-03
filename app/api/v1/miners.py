@@ -568,11 +568,11 @@ def humanize_time_ago(dt: datetime) -> str:
     if not dt:
         return "никогда"
 
-        # Приводим к UTC если нужно
+    # Приводим к UTC если нужно
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)  # timezone.utc для Python < 3.11
+        dt = dt.replace(tzinfo=UTC)
 
-    now = datetime.now(UTC)  #
+    now = datetime.now(UTC)
     diff = now - dt
 
     if diff.days > 30:
