@@ -188,7 +188,7 @@ class JobManager:
 
     async def validate_and_save_share(self, miner_address: str, share_data: Dict) -> Dict:
         """Валидация и сохранение шара"""
-        logger.info(f"🎯 Шар от майнера {miner_address}: job={share_data.get('job_id')}")
+        logger.info(f"Шар от майнера {miner_address}: job={share_data.get('job_id')}")
 
         # TODO: Реальная валидация хэшей будет здесь
         # Пока логируем и "принимаем"

@@ -24,24 +24,34 @@ class RealBCHNodeClient:
         self.request_id = 0
         self.block_height = 0
         self.difficulty = 0.0
+        self.blockchain_info: Optional[Dict] = None
 
     async def _get_auth(self) -> Optional[aiohttp.BasicAuth]:
         """Получение объекта аутентификации"""
-        # Если указаны явно user/password
-        if self.rpc_user and self.rpc_password:
+        # Если указаны явно user/password и не используем cookie
+        if not self.use_cookie and self.rpc_user and self.rpc_password:
             logger.debug(f"Использую user/pass аутентификацию: {self.rpc_user}")
             return aiohttp.BasicAuth(self.rpc_user, self.rpc_password)
 
-        # Ищем cookie файл
+        # Ищем cookie файл если включено
         if self.use_cookie:
-            cookie_paths = [
+            # Для Windows
+            windows_paths = [
+                Path.home() / "AppData" / "Roaming" / "Bitcoin" / "testnet4" / ".cookie",
+                Path.home() / "AppData" / "Roaming" / "Bitcoin" / ".cookie",
+                Path("C:/Users/administrator/AppData/Roaming/Bitcoin/testnet4/.cookie"),
+                Path("C:/Users/administrator/AppData/Roaming/Bitcoin/.cookie"),
+            ]
+
+            # Для Linux (сервер)
+            linux_paths = [
                 Path.home() / ".bitcoin" / "testnet4" / ".cookie",
                 Path.home() / ".bitcoin" / ".cookie",
                 Path("/home/vncuser/.bitcoin/testnet4/.cookie"),
                 Path("/home/vncuser/.bitcoin/.cookie"),
-                Path("C:/Users/administrator/.bitcoin/testnet4/.cookie"),  # Для Windows
-                Path("C:/Users/administrator/.bitcoin/.cookie"),
             ]
+
+            cookie_paths = windows_paths + linux_paths
 
             for path in cookie_paths:
                 if path.exists():
@@ -54,6 +64,11 @@ class RealBCHNodeClient:
                             return aiohttp.BasicAuth(user_pass[0], user_pass[1])
                     except Exception as e:
                         logger.warning(f"Ошибка чтения cookie файла {path}: {e}")
+
+        # Если дошли сюда и есть user/password, используем их
+        if self.rpc_user and self.rpc_password:
+            logger.debug(f"Использую user/pass (fallback): {self.rpc_user}")
+            return aiohttp.BasicAuth(self.rpc_user, self.rpc_password)
 
         logger.warning("Не найдены данные для аутентификации RPC")
         return None
@@ -87,7 +102,7 @@ class RealBCHNodeClient:
                     headers=headers,
                     auth=auth,
                     timeout=timeout,
-                    ssl=False  # Для self-signed certs
+                    ssl=False
             ) as response:
                 if response.status == 200:
                     result_data = await response.json()
@@ -101,11 +116,11 @@ class RealBCHNodeClient:
                     logger.error(f"HTTP ошибка {response.status} при вызове {method}: {error_text}")
                     return None
 
-        except aiohttp.ClientError as e:
-            logger.error(f"Ошибка подключения к ноде при вызове {method}: {e}")
+        except aiohttp.ClientConnectionError as e:
+            logger.error(f"Ошибка подключения к {self.rpc_url}: {e}")
             return None
         except asyncio.TimeoutError:
-            logger.error(f"Таймаут при вызове {method}")
+            logger.error(f"Таймаут при подключении к {self.rpc_url}")
             return None
         except Exception as e:
             logger.error(f"Неожиданная ошибка при вызове {method}: {e}")
@@ -117,16 +132,17 @@ class RealBCHNodeClient:
             self.session = aiohttp.ClientSession()
 
             # Тестовый вызов для проверки подключения
-            info = await self.get_blockchain_info()
-            if info:
-                self.block_height = info.get('blocks', 0)
-                self.difficulty = info.get('difficulty', 0.0)
-                logger.info(f"✅ Подключено к BCH ноде. Высота: {self.block_height}")
-                logger.info(f"   Сеть: {info.get('chain', 'unknown')}")
-                logger.info(f"   Сложность: {self.difficulty}")
+            self.blockchain_info = await self.get_blockchain_info()
+            if self.blockchain_info:
+                self.block_height = self.blockchain_info.get('blocks', 0)
+                self.difficulty = self.blockchain_info.get('difficulty', 0.0)
+                logger.info(f"Подключено к BCH ноде {self.rpc_url}")
+                logger.info(f"Высота: {self.block_height}")
+                logger.info(f"Сеть: {self.blockchain_info.get('chain', 'unknown')}")
+                logger.info(f"Сложность: {self.difficulty}")
                 return True
 
-            logger.error("Не удалось получить информацию от ноды")
+            logger.error(f"Не удалось подключиться к {self.rpc_url}")
             return False
 
         except Exception as e:
@@ -159,21 +175,15 @@ class RealBCHNodeClient:
     async def submit_block(self, hex_data: str) -> Optional[Dict]:
         """Отправка найденного блока"""
         result = await self._make_rpc_call("submitblock", [hex_data])
-        # Возвращаем None если блок принят, иначе сообщение об ошибке
+        # Bitcoin RPC возвращает None при успехе, строку при ошибке
         if result is None:
             return {"status": "accepted", "message": "Block accepted"}
-        return {"status": "rejected", "message": str(result)}
+        else:
+            return {"status": "rejected", "message": str(result)}
 
     async def get_mining_info(self) -> Optional[Dict]:
         """Получение информации о майнинге"""
         result = await self._make_rpc_call("getmininginfo")
-        if isinstance(result, dict):
-            return result
-        return None
-
-    async def validate_address(self, address: str) -> Optional[Dict]:
-        """Валидация BCH адреса"""
-        result = await self._make_rpc_call("validateaddress", [address])
         if isinstance(result, dict):
             return result
         return None
@@ -197,6 +207,14 @@ class RealBCHNodeClient:
             return isinstance(result, int)
         except Exception:
             return False
+
+    async def validate_address(self, address: str) -> Optional[Dict]:
+        """Валидация BCH адреса"""
+        result = await self._make_rpc_call("validateaddress", [address])
+        if isinstance(result, dict):
+            return result
+        return None
+
 
     async def get_mempool_info(self) -> Optional[Dict]:
         """Информация о mempool"""
