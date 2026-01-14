@@ -8,10 +8,11 @@ import logging
 from app.models.database import get_db
 from app.api.v1.miners import router as miners_router
 from app.api.v1.pool import router as pool_router
-from app.api.v1.test import router as test_router
 from app.api.v1.jobs import router as jobs_router
+from app.api.v1.tcp_stratum import router as tcp_stratum_router
+
 from app.lifespan import lifespan
-from app.dependencies import stratum_server, job_manager
+from app.dependencies import stratum_server, tcp_stratum_server
 
 # Настройка логов
 logging.basicConfig(level=logging.INFO)
@@ -32,9 +33,10 @@ app = FastAPI(
 class WebSocketMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         # Для WebSocket запросов сразу пропускаем
-        if request.scope["type"] == "websocket":
+        if request.scope.get("type") == "websocket":
             # Проверяем, это наш Stratum endpoint
-            if request.scope["path"].startswith("/stratum/ws/"):
+            path = request.scope.get("path", "")
+            if path.startswith("/stratum/ws/"):
                 # Принимаем все соединения
                 return await call_next(request)
 
@@ -58,8 +60,8 @@ app.add_middleware(
 # Подключаем роутеры v1 с префиксом /api/v1
 app.include_router(miners_router, prefix="/api/v1", tags=["miners"])
 app.include_router(pool_router, prefix="/api/v1", tags=["pool"])
-app.include_router(test_router, prefix="/api/v1", tags=["test"])
 app.include_router(jobs_router, prefix="/api/v1", tags=["jobs"])
+app.include_router(tcp_stratum_router, prefix="/api/v1", tags=["tcp-stratum"])
 
 
 @app.get("/")
@@ -169,40 +171,13 @@ async def database_stats(db: AsyncSession = Depends(get_db)):
     }
 
 
-# ========== ПРОСТЕЙШИЙ WebSocket endpoint ==========
-# @app.websocket("/ws-test")
-# async def websocket_test(websocket: WebSocket):
-#     """Самый простой WebSocket для проверки"""
-#     logger.info("Попытка подключения к /ws-test")
-#
-#     # ВСЕГДА принимаем соединение
-#     await websocket.accept()
-#     logger.info("WebSocket /ws-test принят")
-#
-#     # Сразу отправляем сообщение
-#     await websocket.send_text("WebSocket работает на порту 8000!")
-#
-#     try:
-#         while True:
-#             # Ждём что-то от клиента
-#             data = await websocket.receive_text()
-#             logger.info(f"Получено: {data}")
-#
-#             # Отвечаем
-#             await websocket.send_text(f"Echo: {data}")
-#
-#     except WebSocketDisconnect:
-#         logger.info("Клиент отключился")
-#     except Exception as e:
-#         logger.error(f"Ошибка: {e}")
-
 # ========== Stratum WebSocket ==========
 @app.websocket("/stratum/ws/{miner_address}")
 async def websocket_endpoint(websocket: WebSocket, miner_address: str):
     """Stratum WebSocket для подключения майнеров"""
     logger.info(f"Stratum подключение: {miner_address}")
 
-    # Подключаем через stratum_server (он сам вызовет accept)
+    # Подключаем через WebSocket сервер (он сам вызовет accept)
     connection_id = await stratum_server.connect(websocket, miner_address)
 
     try:
@@ -222,3 +197,19 @@ async def websocket_endpoint(websocket: WebSocket, miner_address: str):
         await stratum_server.disconnect(connection_id)
 
 
+@app.get("/stratum/stats")
+async def get_stratum_stats():
+    """Статистика всех Stratum серверов"""
+    ws_stats = stratum_server.get_stats()
+    tcp_stats = {
+        "active_connections": len(tcp_stratum_server.connections),
+        "active_miners": len(tcp_stratum_server.miners),
+        "port": tcp_stratum_server.port
+    }
+
+    return {
+        "webSocket_server": ws_stats,
+        "tcp_server": tcp_stats,
+        "total_connections": ws_stats["active_connections"] + tcp_stats["active_connections"],
+        "total_miners": ws_stats["active_miners"] + len(tcp_stratum_server.miners)
+    }

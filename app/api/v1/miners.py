@@ -5,6 +5,8 @@ from sqlalchemy.exc import IntegrityError
 from typing import Optional
 from datetime import datetime, timedelta, UTC
 
+from app.utils.helpers import humanize_time_ago
+
 from app.models.database import get_db
 from app.models.miner import Miner
 from app.models.share import Share
@@ -17,7 +19,7 @@ router = APIRouter(prefix="/miners", tags=["miners"])
     "/",
     summary="Список всех майнеров",
     response_description="Список зарегистрированных майнеров"
-) # Будет /api/v1/miners/
+)  # Будет /api/v1/miners/
 async def list_miners(
         skip: int = 0,
         limit: int = 100,
@@ -128,9 +130,6 @@ async def register_miner(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ошибка при сохранении майнера"
         )
-
-
-
 
 
 @router.get(
@@ -560,28 +559,3 @@ async def get_miner_blocks(
             for b in blocks
         ]
     }
-
-
-# Вспомогательная функция для форматирования времени
-def humanize_time_ago(dt: datetime) -> str:
-    """Форматирует время в человекочитаемый вид"""
-    if not dt:
-        return "никогда"
-
-    # Приводим к UTC если нужно
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-
-    now = datetime.now(UTC)
-    diff = now - dt
-
-    if diff.days > 30:
-        return f"{diff.days // 30} месяцев назад"
-    elif diff.days > 0:
-        return f"{diff.days} дней назад"
-    elif diff.seconds > 3600:
-        return f"{diff.seconds // 3600} часов назад"
-    elif diff.seconds > 60:
-        return f"{diff.seconds // 60} минут назад"
-    else:
-        return f"{diff.seconds} секунд назад"

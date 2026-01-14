@@ -1,5 +1,4 @@
 import hashlib
-import struct
 from typing import Optional, Tuple
 from datetime import datetime, UTC
 import logging
@@ -56,6 +55,7 @@ class ShareValidator:
         try:
             # extra_nonce2: длина зависит от extra_nonce2_size (по умолчанию 4 байта = 8 hex символов)
             expected_extra_nonce2_len = self.extra_nonce2_size * 2  # байты -> hex символы
+
             # 1. Проверяем формат данных
             if not self._validate_hex_format(extra_nonce2, 8):  # 4 байта = 8 hex символов
                 return False, f"Неверный формат extra_nonce2: {extra_nonce2}"
@@ -70,19 +70,37 @@ class ShareValidator:
             if not self._validate_ntime(ntime):
                 return False, f"Некорректное время ntime: {ntime}"
 
-            # 3. Проверяем сложность (пока заглушка)
-            # В реальной реализации здесь будет проверка хэша
-
-            # 4. Проверяем уникальность nonce для задания
+            # 3. Проверяем уникальность nonce
             if not self._check_nonce_uniqueness(job_id, nonce):
                 return False, f"Nonce {nonce} уже использовался для задания {job_id}"
 
-            logger.info(f"Валидный шар от {miner_address}: job={job_id}, nonce={nonce}")
+            # 4. Рассчитываем хэш заголовка
+            hash_result = self.calculate_hash(job, extra_nonce2, ntime, nonce)
+
+            if hash_result == "0" * 64:
+                return False, "Ошибка расчета хэша"
+
+            # 5. Проверяем сложность
+            is_difficulty_ok = self.check_difficulty(hash_result, self.target_difficulty)
+
+            if not is_difficulty_ok:
+                # Хэш не соответствует целевой сложности
+                logger.debug(f"Хэш не соответствует сложности: {hash_result}")
+                return False, "Hash doesn't meet target difficulty"
+
+            # 6. Дополнительные проверки
+            # Проверяем что хэш меньше чем текущая цель сети
+            # TODO: Добавить проверку сетевой сложности
+
+            logger.info(f"Валидный шар от {miner_address}: job={job_id}, hash={hash_result[:16]}...")
             return True, None
+
 
         except Exception as e:
             logger.error(f"Ошибка при валидации шара: {e}")
+
             return False, f"Ошибка валидации: {str(e)}"
+
 
     def _validate_hex_format(self, hex_str: str, expected_length: int) -> bool:
         """Проверка формата hex строки"""
@@ -101,6 +119,7 @@ class ShareValidator:
         except ValueError:
             logger.debug(f"Неверный hex формат: {hex_str}")
             return False
+
 
     def _validate_ntime(self, ntime_hex: str) -> bool:
         """Проверка корректности времени"""
@@ -128,6 +147,7 @@ class ShareValidator:
 
             return False
 
+
     def _check_nonce_uniqueness(self, job_id: str, nonce: str) -> bool:
         """Проверка уникальности nonce для задания"""
         # Используем set для хранения использованных nonce
@@ -149,6 +169,7 @@ class ShareValidator:
 
         return True
 
+
     def _cleanup_old_nonces(self, max_per_job: int = 1000):
         """Очистка старых nonce, если их слишком много"""
         for job_id in list(self._used_nonces.keys()):
@@ -157,19 +178,102 @@ class ShareValidator:
                 all_nonces = list(self._used_nonces[job_id])
                 self._used_nonces[job_id] = set(all_nonces[-max_per_job:])
 
+
     def calculate_hash(self, job_data: dict, extra_nonce2: str, ntime: str, nonce: str) -> str:
-        """Расчет хэша блока (заглушка для реальной реализации)"""
-        # В реальной реализации здесь будет:
-        # 1. Сборка заголовка блока
-        # 2. Двойной SHA256
-        # 3. Проверка на соответствие target difficulty
-        return "0" * 64  # Заглушка
+        """Расчет хэша заголовка блока"""
+        try:
+            # Параметры из задания Stratum
+            params = job_data["params"]
+            prevhash = params[1]  # предыдущий хэш блока
+            coinb1 = params[2]  # первая часть coinbase
+            coinb2 = params[3]  # вторая часть coinbase
+            merkle_branch = params[4]  # ветки Merkle дерева
+            version = params[5]  # версия блока
+            nbits = params[6]  # сложность в compact формате
+            ntime_param = params[7]  # время из задания
+
+            # Используем extra_nonce1 из Stratum ответа на subscribe
+            extra_nonce1 = "ae6812eb4cd7735a302a8a9dd95cf71f"
+
+            # Собираем coinbase транзакцию
+            coinbase = coinb1 + extra_nonce1 + extra_nonce2 + coinb2
+
+            # Хэшируем coinbase транзакцию (двойной SHA256)
+            coinbase_hash = hashlib.sha256(hashlib.sha256(bytes.fromhex(coinbase)).digest()).digest()
+
+            # Для упрощения используем только coinbase хэш как Merkle root
+            # TODO В реальности нужно вычислить полное Merkle дерево
+            merkle_root = coinbase_hash.hex()
+
+            # Собираем заголовок блока
+            header = (
+                    bytes.fromhex(version)[::-1] +  # version (little-endian)
+                    bytes.fromhex(prevhash)[::-1] +  # previous block hash
+                    bytes.fromhex(merkle_root)[::-1] +  # merkle root
+                    bytes.fromhex(ntime)[::-1] +  # timestamp
+                    bytes.fromhex(nbits)[::-1] +  # bits
+                    bytes.fromhex(nonce)[::-1]  # nonce
+            )
+
+            # Двойной SHA256
+            first_hash = hashlib.sha256(header).digest()
+            block_hash = hashlib.sha256(first_hash).digest()
+
+            # Переворачиваем (little-endian -> big-endian для отображения)
+            return block_hash[::-1].hex()
+
+        except Exception as e:
+            logger.error(f"Ошибка расчета хэша: {e}")
+            return "0" * 64
+
 
     def check_difficulty(self, hash_result: str, target_difficulty: float) -> bool:
         """Проверка соответствия сложности"""
-        # В реальной реализации: hash <= target
-        # Пока возвращаем True
-        return True
+        try:
+            # Преобразуем хэш в число
+            hash_int = int(hash_result, 16)
+
+            # Целевое значение (для сложности 1.0)
+            target_for_difficulty_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
+
+            # Вычисляем target для текущей сложности
+            target = target_for_difficulty_1 // int(target_difficulty)
+
+            # Проверяем: хэш должен быть меньше или равен target
+            return hash_int <= target
+
+        except Exception as e:
+            logger.error(f"Ошибка проверки сложности: {e}")
+            return False
+
+
+    def cleanup_old_jobs(self, max_age_seconds: int = 300):
+        """Очистка старых заданий"""
+        current_time = datetime.now(UTC)
+        jobs_to_remove = []
+
+        for job_id, job_data in self.jobs_cache.items():
+            # Извлекаем timestamp из job_id
+            try:
+                if job_id.startswith("job_"):
+                    parts = job_id.split('_')
+                    if len(parts) >= 2:
+                        timestamp_str = parts[1]
+                        job_time = datetime.fromtimestamp(float(timestamp_str), UTC)
+
+                        age = (current_time - job_time).total_seconds()
+                        if age > max_age_seconds:
+                            jobs_to_remove.append(job_id)
+            except (IndexError, ValueError, AttributeError):
+                # Если не можем распарсить, удаляем
+                jobs_to_remove.append(job_id)
+
+        # Удаляем старые задания
+        for job_id in jobs_to_remove:
+            self.remove_job(job_id)
+
+        if jobs_to_remove:
+            logger.info(f"Валидатор: очищено {len(jobs_to_remove)} старых заданий")
 
 
 # Создаем глобальный экземпляр валидатора с extra_nonce2_size=4 (по умолчанию в Stratum)

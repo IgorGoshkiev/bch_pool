@@ -1,16 +1,13 @@
 import asyncio
-import json
 import logging
 from typing import Dict, Set
-from fastapi import WebSocket, WebSocketDisconnect, APIRouter
+from fastapi import WebSocket
 from datetime import datetime, UTC
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.models.database import AsyncSessionLocal
 from app.stratum.validator import share_validator  # Импортируем валидатор
-from app.models.database import get_db  # Для работы с БД
 from app.models.miner import Miner
 from app.models.share import Share
 from app.dependencies import job_manager
@@ -119,37 +116,63 @@ class StratumServer:
             await self.send_error(websocket, msg_id, "Invalid parameters")
             return
 
-        # TODO: В реальном пуле здесь проверка пароля
         username = params[0]
         password = params[1]
 
-        # Реальная проверка майнера в БД
+        # Парсим BCH адрес из username (формат: address.worker или просто address)
+        if '.' in username:
+            bch_address, worker_name = username.split('.', 1)
+        else:
+            bch_address = username
+            worker_name = "default"
+
+        # Обновляем адрес майнера в маппинге
+        connection_id = str(id(websocket))
+        self.miner_addresses[connection_id] = bch_address
+
+        # Проверка в БД
         try:
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
-                    select(Miner).where(Miner.bch_address == miner_address)
+                    select(Miner).where(Miner.bch_address == bch_address)
                 )
                 miner = result.scalar_one_or_none()
 
                 if not miner:
-                    # Майнер не зарегистрирован - можно автоматически создать
-                    # или требовать предварительной регистрации через API
-                    await self.send_error(websocket, msg_id,
-                                          f"Miner {miner_address} not registered. "
-                                          f"Please register first via API: POST /api/v1/miners/register")
-                    return
+                    # Используем настройку из config.py
+                    from app.utils.config import settings
+
+                    if settings.auto_register_miners:
+                        # Создаем нового майнера
+                        miner = Miner(
+                            bch_address=bch_address,
+                            worker_name=worker_name[:64],  # обрезаем если длиннее
+                            is_active=True
+                        )
+                        session.add(miner)
+                        await session.commit()
+                        await session.refresh(miner)
+                        logger.info(f"Майнер автоматически зарегистрирован: {bch_address}")
+                    else:
+                        await self.send_error(websocket, msg_id,
+                                              f"Miner {bch_address} not registered. "
+                                              f"Please register first via API: POST /api/v1/miners/register")
+                        return
 
                 if not miner.is_active:
                     await self.send_error(websocket, msg_id,
-                                          f"Miner {miner_address} is deactivated")
+                                          f"Miner {bch_address} is deactivated")
                     return
 
-                # TODO: Проверка пароля если будет реализована аутентификация
+                # Обновляем worker_name если изменился
+                if miner.worker_name != worker_name:
+                    miner.worker_name = worker_name
+                    await session.commit()
 
-                logger.info(f"Майнер авторизован: {miner_address} (ID: {miner.id})")
+                logger.info(f"Майнер авторизован: {bch_address} (worker: {worker_name})")
 
         except Exception as e:
-            logger.error(f"Ошибка при проверке майнера: {e}")
+            logger.error(f"Ошибка при авторизации майнера: {e}")
             await self.send_error(websocket, msg_id, f"Database error: {str(e)}")
             return
 
@@ -162,7 +185,7 @@ class StratumServer:
         await websocket.send_json(response)
 
         # После успешной авторизации отправляем первое задание
-        await self.send_new_job(websocket, miner_address)
+        await self.send_new_job(websocket, bch_address)
 
     async def handle_submit(self, websocket: WebSocket, msg_id: int, params: list, miner_address: str):
         """Обработка найденного решения (шара)"""
@@ -214,8 +237,13 @@ class StratumServer:
                 "miner_address": miner_address
             }
 
-            # TODO: В будущем здесь будет реальная обработка через JobManager
-            # result = await job_manager.validate_and_save_share(miner_address, share_data)
+            # Передаем шар в JobManager для дальнейшей обработки
+            result = await job_manager.validate_and_save_share(miner_address, share_data)
+
+            if result.get("status") != "accepted":
+                logger.warning(f"JobManager отклонил шар: {result.get('message')}")
+                await self.send_error(websocket, msg_id, result.get("message", "Share rejected"))
+                return
 
             response = {
                 "id": msg_id,
@@ -283,11 +311,36 @@ class StratumServer:
             return False
 
     def _calculate_hashrate(self, miner: Miner) -> float:
-        """Рассчитать хэшрейт майнера (упрощенная версия)"""
-        # В реальной реализации здесь сложный расчет на основе
-        # количества шаров, времени и сложности
-        # Пока возвращаем простое значение
-        return miner.total_shares * 100.0  # Пример: 100 H/s за каждый шар
+        """Рассчитать хэшрейт майнера на основе последних 10 минут"""
+        try:
+            from app.models.database import AsyncSessionLocal
+            from sqlalchemy import select, func
+            from datetime import datetime, UTC, timedelta
+
+            async def get_recent_shares():
+                async with AsyncSessionLocal() as session:
+                    ten_minutes_ago = datetime.now(UTC) - timedelta(minutes=10)
+                    result = await session.execute(
+                        select(func.count(Share.id))
+                        .where(Share.miner_address == miner.bch_address)
+                        .where(Share.is_valid == True)
+                        .where(Share.submitted_at >= ten_minutes_ago)
+                    )
+                    return result.scalar() or 0
+
+            # TODO Для простоты пока используем упрощенный расчет
+            # В будущем можно добавить реальный расчет на основе сложности
+            recent_shares = asyncio.run(get_recent_shares())
+
+            if recent_shares > 0:
+                # Пример: каждый валидный шар = 100 H/s
+                return float(recent_shares) * 100.0 / 10.0  # Нормализуем на 1 минуту
+            else:
+                return 0.0
+
+        except Exception as e:
+            logger.error(f"Ошибка расчета хэшрейта: {e}")
+            return 0.0
 
     async def handle_get_transactions(self, websocket: WebSocket, msg_id: int):
         """Получение транзакций для блока"""

@@ -1,6 +1,6 @@
 from datetime import datetime, UTC
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from app.dependencies import job_manager, stratum_server
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])

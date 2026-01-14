@@ -1,6 +1,5 @@
 import aiohttp
 import asyncio
-import json
 import logging
 from typing import Optional, Dict, Any, Union
 from pathlib import Path
