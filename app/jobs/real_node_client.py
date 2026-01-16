@@ -1,7 +1,7 @@
 import aiohttp
 import asyncio
 import logging
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Union
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class RealBCHNodeClient:
     """Реальный клиент для подключения к BCH ноде"""
-
+    #TODO нужно переделать на bch_rpc_port: int = 18332
     def __init__(self, rpc_host: str = "127.0.0.1", rpc_port: int = 28332,
                  rpc_user: Optional[str] = None, rpc_password: Optional[str] = None,
                  use_cookie: bool = True):
@@ -18,7 +18,7 @@ class RealBCHNodeClient:
         self.rpc_user = rpc_user
         self.rpc_password = rpc_password
         self.use_cookie = use_cookie
-        self.rpc_url = f"http://{rpc_host}:{rpc_port}"
+        self.rpc_url = f"http://{rpc_host}:{rpc_port}/"
         self.session: Optional[aiohttp.ClientSession] = None
         self.request_id = 0
         self.block_height = 0
@@ -204,7 +204,8 @@ class RealBCHNodeClient:
         try:
             result = await self._make_rpc_call("getblockcount")
             return isinstance(result, int)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Ошибка проверки доступности ноды: {e}")
             return False
 
     async def validate_address(self, address: str) -> Optional[Dict]:

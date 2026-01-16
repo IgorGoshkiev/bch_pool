@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 
 from app.models.database import get_db
 from app.models.miner import Miner
@@ -33,7 +33,7 @@ async def pool_stats(db: AsyncSession = Depends(get_db)):
     total_miners = result.scalar()
 
     # Активные майнеры
-    result = await db.execute(select(func.count(Miner.id)).where(Miner.is_active == True))
+    result = await db.execute(select(func.count(Miner.id)).where(Miner.is_active.is_(true())))
     active_miners = result.scalar()
 
     # Общее количество шаров
@@ -41,7 +41,7 @@ async def pool_stats(db: AsyncSession = Depends(get_db)):
     total_shares = result.scalar()
 
     # Валидные шары
-    result = await db.execute(select(func.count(Share.id)).where(Share.is_valid == True))
+    result = await db.execute(select(func.count(Share.id)).where(Share.is_valid.is_(true())))
     valid_shares = result.scalar()
 
     # Количество блоков
@@ -49,7 +49,7 @@ async def pool_stats(db: AsyncSession = Depends(get_db)):
     total_blocks = result.scalar()
 
     # Подтверждённые блоки
-    result = await db.execute(select(func.count(Block.id)).where(Block.confirmed == True))
+    result = await db.execute(select(func.count(Block.id)).where(Block.confirmed.is_(true())))
     confirmed_blocks = result.scalar()
 
     return {

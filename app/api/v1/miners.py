@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
@@ -36,7 +37,7 @@ async def list_miners(
     query = select(Miner)
 
     if active_only:
-        query = query.where(Miner.is_active == True)
+        query = query.where(Miner.is_active.is_(true()))
 
     query = query.offset(skip).limit(limit)
 
@@ -321,6 +322,7 @@ async def get_miner_stats(
     result = await db.execute(
         select(Miner).where(Miner.bch_address == bch_address)
     )
+
     miner = result.scalar_one_or_none()
 
     if not miner:
@@ -329,8 +331,19 @@ async def get_miner_stats(
             detail=f"Майнер с адресом {bch_address} не найден"
         )
 
+    # Допустимые значения
+    valid_time_ranges = {"1h", "24h", "7d", "30d", "all"}
+
+    # Если time_range не задан или некорректен, используем по умолчанию
+    if not time_range or time_range not in  valid_time_ranges:
+        time_range = "24h"
+
+    # Теперь time_range точно строка с допустимым значением
+    time_range_str: str = time_range
+
+
     # Определяем временной диапазон
-    now = datetime.now(UTC)  # <-- Используем timezone-aware datetime
+    now = datetime.now(UTC)
     time_filters = {
         "1h": now - timedelta(hours=1),
         "24h": now - timedelta(days=1),
@@ -344,7 +357,20 @@ async def get_miner_stats(
 
     time_filter = time_filters[time_range]
 
-    # Статистика по шарам
+    # Словарь для человекочитаемого формата
+    human_readable_map = {
+        "1h": "последний час",
+        "24h": "последние 24 часа",
+        "7d": "последние 7 дней",
+        "30d": "последние 30 дней",
+        "all": "вся история"
+    }
+
+    # Гарантируем что time_range есть и в этом словаре
+    if time_range not in human_readable_map:
+        time_range = "24h"
+
+    # ========================== Статистика по шарам
     shares_query = select(Share).where(Share.miner_address == bch_address)
     if time_filter:
         shares_query = shares_query.where(Share.submitted_at >= time_filter)
@@ -361,7 +387,7 @@ async def get_miner_stats(
     if valid_shares:
         avg_difficulty = sum(s.difficulty for s in valid_shares) / len(valid_shares)
 
-    # Статистика по блокам
+    #==========================================Статистика по блокам
     blocks_query = select(Block).where(Block.miner_address == bch_address)
     if time_filter:
         blocks_query = blocks_query.where(Block.found_at >= time_filter)
@@ -372,17 +398,21 @@ async def get_miner_stats(
     # Подтверждённые блоки
     confirmed_blocks = [b for b in blocks if b.confirmed]
 
-    # Рассчитываем хэшрейт (упрощённо)
+    #================================ Рассчитываем хэшрейт (упрощённо)
     hashrate_calc = 0.0
     if valid_shares and time_range != "all":
         # Примерная формула: сумма сложности / время в секундах
         total_difficulty = sum(s.difficulty for s in valid_shares)
-        time_seconds = {
+        # Используем time_range_str вместо time_range
+        time_seconds_map = {
             "1h": 3600,
             "24h": 86400,
             "7d": 604800,
             "30d": 2592000
-        }.get(time_range, 86400)
+        }
+
+        #  time_range_str точно есть в словаре
+        time_seconds = time_seconds_map.get(time_range_str, 86400)
 
         if time_seconds > 0:
             hashrate_calc = total_difficulty / time_seconds
@@ -395,14 +425,8 @@ async def get_miner_stats(
             "registered_at": miner.created_at.isoformat() if hasattr(miner, 'created_at') else None
         },
         "time_range": {
-            "selected": time_range,
-            "human_readable": {
-                "1h": "последний час",
-                "24h": "последние 24 часа",
-                "7d": "последние 7 дней",
-                "30d": "последние 30 дней",
-                "all": "вся история"
-            }[time_range]
+            "selected": time_range_str,
+            "human_readable": human_readable_map[time_range_str]
         },
         "statistics": {
             "shares": {

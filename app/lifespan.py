@@ -1,17 +1,19 @@
+"""
+Управление жизненным циклом приложения
+"""
+
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
 import asyncio
 import logging
 
-# Импортируем ВСЕ серверы из dependencies
-from app.dependencies import job_manager, stratum_server, tcp_stratum_server
-from app.stratum.validator import share_validator
+from app.dependencies import job_manager, stratum_server, tcp_stratum_server, share_validator
+from app.utils.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app):
     """
     Lifespan менеджер для управления событиями запуска/остановки приложения.
     """
@@ -25,20 +27,22 @@ async def lifespan(app: FastAPI):
         # 1. Устанавливаем связь между менеджерами
         job_manager.set_stratum_server(stratum_server)
 
+        # Устанавливаем JobManager в stratum_server
+        stratum_server.set_job_manager(job_manager)
+
         # 2. Инициализируем JobManager
         if await job_manager.initialize():
             logger.info("JobManager готов к работе")
-
-            # Создаем первое общее задание
             await job_manager.broadcast_new_job_to_all()
             logger.info("Первое задание создано")
         else:
             logger.error("Ошибка инициализации JobManager")
 
-        # 3. Запускаем TCP Stratum сервер в фоне
-        tcp_task = asyncio.create_task(tcp_stratum_server.start())
-        background_tasks.append(tcp_task)
-        logger.info(f"TCP Stratum сервер запущен на порту {tcp_stratum_server.port}")
+        # 3. Запускаем TCP Stratum сервер в фоне (если включен)
+        if settings.stratum_tcp_enabled:
+            tcp_task = asyncio.create_task(tcp_stratum_server.start())
+            background_tasks.append(tcp_task)
+            logger.info(f"TCP Stratum сервер запущен на порту {tcp_stratum_server.port}")
 
         # 4. Запускаем периодическую рассылку заданий
         broadcast_task = asyncio.create_task(_periodic_job_broadcaster())
@@ -66,7 +70,7 @@ async def lifespan(app: FastAPI):
             try:
                 await task
             except asyncio.CancelledError:
-                logger.info(f"Задача {task.get_name()} остановлена")
+                pass
             except Exception as e:
                 logger.warning(f"Ошибка при остановке задачи: {e}")
 
@@ -88,7 +92,7 @@ async def _periodic_job_broadcaster():
     """Периодическая рассылка новых заданий"""
     while True:
         try:
-            await asyncio.sleep(30)  # Каждые 30 секунд
+            await asyncio.sleep(settings.job_broadcast_interval)
 
             # Проверяем есть ли активные майнеры
             active_miners = (
@@ -114,14 +118,14 @@ async def _periodic_job_cleanup():
     """Периодическая очистка старых заданий"""
     while True:
         try:
-            await asyncio.sleep(60)  # Каждую минуту
+            await asyncio.sleep(60)
 
             # Очищаем задания в WebSocket сервере
-            stratum_server.cleanup_old_jobs(max_age_seconds=300)
+            stratum_server.cleanup_old_jobs(max_age_seconds=settings.job_cleanup_age)
 
-            # Очищаем задания в TCP сервере (через валидатор)
-            # Важно: share_validator уже импортирован глобально
-            share_validator.cleanup_old_jobs(max_age_seconds=300)
+            # Очищаем задания в валидаторе
+            if hasattr(share_validator, 'cleanup_old_jobs'):
+                share_validator.cleanup_old_jobs(max_age_seconds=settings.job_cleanup_age)
 
             logger.debug("Очистка старых заданий выполнена")
 

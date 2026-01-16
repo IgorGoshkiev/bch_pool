@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import create_engine  # ← ДОБАВЬТЕ для sync миграций
+from sqlalchemy import create_engine
 from app.utils.config import settings
 
 # ========== 1. BASE ДЛЯ МОДЕЛЕЙ ==========

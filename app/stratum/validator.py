@@ -50,15 +50,16 @@ class ShareValidator:
         if job_id not in self.jobs_cache:
             return False, f"Задание {job_id} не найдено"
 
+        # Получаем задание (переменная job не используется дальше, но оставляем для ясности)
         job = self.jobs_cache[job_id]
 
         try:
             # extra_nonce2: длина зависит от extra_nonce2_size (по умолчанию 4 байта = 8 hex символов)
             expected_extra_nonce2_len = self.extra_nonce2_size * 2  # байты -> hex символы
 
-            # 1. Проверяем формат данных
-            if not self._validate_hex_format(extra_nonce2, 8):  # 4 байта = 8 hex символов
-                return False, f"Неверный формат extra_nonce2: {extra_nonce2}"
+            # 1. ************** Проверяем формат данных
+            if not self._validate_hex_format(extra_nonce2, expected_extra_nonce2_len):  # <-- Используем переменную!
+                return False, f"Неверный формат extra_nonce2: {extra_nonce2} (ожидается {expected_extra_nonce2_len} hex символов)"
 
             if not self._validate_hex_format(ntime, 8):
                 return False, f"Неверный формат ntime: {ntime}"
@@ -66,7 +67,7 @@ class ShareValidator:
             if not self._validate_hex_format(nonce, 8):
                 return False, f"Неверный формат nonce: {nonce}"
 
-            # 2. Проверяем ntime (время должно быть в пределах ±2 часов от текущего)
+            # 2. **************** Проверяем ntime (время должно быть в пределах ±2 часов от текущего)
             if not self._validate_ntime(ntime):
                 return False, f"Некорректное время ntime: {ntime}"
 
@@ -95,14 +96,12 @@ class ShareValidator:
             logger.info(f"Валидный шар от {miner_address}: job={job_id}, hash={hash_result[:16]}...")
             return True, None
 
-
         except Exception as e:
             logger.error(f"Ошибка при валидации шара: {e}")
-
             return False, f"Ошибка валидации: {str(e)}"
 
-
-    def _validate_hex_format(self, hex_str: str, expected_length: int) -> bool:
+    @staticmethod
+    def _validate_hex_format(hex_str: str, expected_length: int) -> bool:
         """Проверка формата hex строки"""
         if not hex_str:
             return False
@@ -120,8 +119,8 @@ class ShareValidator:
             logger.debug(f"Неверный hex формат: {hex_str}")
             return False
 
-
-    def _validate_ntime(self, ntime_hex: str) -> bool:
+    @staticmethod
+    def _validate_ntime(ntime_hex: str) -> bool:
         """Проверка корректности времени"""
         try:
             # Преобразуем hex в целое
@@ -141,12 +140,9 @@ class ShareValidator:
 
             return True
 
-
         except Exception as e:
             logger.debug(f"Ошибка парсинга ntime: {ntime_hex}, ошибка: {e}")
-
             return False
-
 
     def _check_nonce_uniqueness(self, job_id: str, nonce: str) -> bool:
         """Проверка уникальности nonce для задания"""
@@ -169,7 +165,6 @@ class ShareValidator:
 
         return True
 
-
     def _cleanup_old_nonces(self, max_per_job: int = 1000):
         """Очистка старых nonce, если их слишком много"""
         for job_id in list(self._used_nonces.keys()):
@@ -178,8 +173,8 @@ class ShareValidator:
                 all_nonces = list(self._used_nonces[job_id])
                 self._used_nonces[job_id] = set(all_nonces[-max_per_job:])
 
-
-    def calculate_hash(self, job_data: dict, extra_nonce2: str, ntime: str, nonce: str) -> str:
+    @staticmethod
+    def calculate_hash(job_data: dict, extra_nonce2: str, ntime: str, nonce: str) -> str:
         """Расчет хэша заголовка блока"""
         try:
             # Параметры из задания Stratum
@@ -187,10 +182,10 @@ class ShareValidator:
             prevhash = params[1]  # предыдущий хэш блока
             coinb1 = params[2]  # первая часть coinbase
             coinb2 = params[3]  # вторая часть coinbase
-            merkle_branch = params[4]  # ветки Merkle дерева
+            # merkle_branch = params[4]  # ветки Merkle дерева (не используется)
             version = params[5]  # версия блока
             nbits = params[6]  # сложность в compact формате
-            ntime_param = params[7]  # время из задания
+            # ntime_param = params[7]  # время из задания (не используется, используем ntime из параметра)
 
             # Используем extra_nonce1 из Stratum ответа на subscribe
             extra_nonce1 = "ae6812eb4cd7735a302a8a9dd95cf71f"
@@ -207,12 +202,12 @@ class ShareValidator:
 
             # Собираем заголовок блока
             header = (
-                    bytes.fromhex(version)[::-1] +  # version (little-endian)
-                    bytes.fromhex(prevhash)[::-1] +  # previous block hash
-                    bytes.fromhex(merkle_root)[::-1] +  # merkle root
-                    bytes.fromhex(ntime)[::-1] +  # timestamp
-                    bytes.fromhex(nbits)[::-1] +  # bits
-                    bytes.fromhex(nonce)[::-1]  # nonce
+                bytes.fromhex(version)[::-1] +  # version (little-endian)
+                bytes.fromhex(prevhash)[::-1] +  # previous block hash
+                bytes.fromhex(merkle_root)[::-1] +  # merkle root
+                bytes.fromhex(ntime)[::-1] +  # timestamp
+                bytes.fromhex(nbits)[::-1] +  # bits
+                bytes.fromhex(nonce)[::-1]  # nonce
             )
 
             # Двойной SHA256
@@ -226,8 +221,8 @@ class ShareValidator:
             logger.error(f"Ошибка расчета хэша: {e}")
             return "0" * 64
 
-
-    def check_difficulty(self, hash_result: str, target_difficulty: float) -> bool:
+    @staticmethod
+    def check_difficulty(hash_result: str, target_difficulty: float) -> bool:
         """Проверка соответствия сложности"""
         try:
             # Преобразуем хэш в число
@@ -245,7 +240,6 @@ class ShareValidator:
         except Exception as e:
             logger.error(f"Ошибка проверки сложности: {e}")
             return False
-
 
     def cleanup_old_jobs(self, max_age_seconds: int = 300):
         """Очистка старых заданий"""
@@ -274,7 +268,3 @@ class ShareValidator:
 
         if jobs_to_remove:
             logger.info(f"Валидатор: очищено {len(jobs_to_remove)} старых заданий")
-
-
-# Создаем глобальный экземпляр валидатора с extra_nonce2_size=4 (по умолчанию в Stratum)
-share_validator = ShareValidator(extra_nonce2_size=4)

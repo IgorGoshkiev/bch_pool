@@ -31,7 +31,7 @@ async def broadcast_new_job():
     return {
         "status": "broadcasted",
         "message": "New job broadcasted to all miners",
-        "active_miners": len(set(stratum_server.miner_addresses.values()))
+        "active_miners": len(set(stratum_server.miner_addresses.values())) if stratum_server else 0
     }
 
 
