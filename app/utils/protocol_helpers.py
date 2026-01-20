@@ -4,6 +4,23 @@
 import time
 from typing import Tuple
 
+# ========== КОНСТАНТЫ STRATUM ПРОТОКОЛА ==========
+STRATUM_EXTRA_NONCE1 = "ae6812eb4cd7735a302a8a9dd95cf71f"
+EXTRA_NONCE2_SIZE = 4  # 4 байта = 8 hex символов
+BLOCK_HEADER_SIZE = 80  # байт
+
+# ========== КОНСТАНТЫ BCH АДРЕСОВ ==========
+BCH_TESTNET_PREFIXES = ['bchtest:', 'qq', 'qp']
+BCH_MAINNET_PREFIXES = ['bitcoincash:', 'q', 'p']
+
+# ========== КОНСТАНТЫ ПАГИНАЦИИ ==========
+DEFAULT_PAGINATION_LIMIT = 100
+MAX_PAGINATION_LIMIT = 1000
+
+# ========== КОНСТАНТЫ ИСТОРИИ ЗАДАНИЙ ==========
+JOB_MAX_HISTORY_SIZE = 100
+
+# ========== ФУНКЦИИ ==========
 
 def create_job_id(timestamp: int = None, counter: int = 0, miner_address: str = None) -> str:
     """Создание уникального ID задания"""
@@ -47,9 +64,5 @@ def validate_bch_address(address: str) -> bool:
     if not address:
         return False
 
-    # Тестнет префиксы BCH
-    testnet_prefixes = ['bchtest:', 'qq', 'qp']
-    mainnet_prefixes = ['bitcoincash:', 'q', 'p']
-
-    valid_prefixes = testnet_prefixes + mainnet_prefixes
+    valid_prefixes = BCH_TESTNET_PREFIXES + BCH_MAINNET_PREFIXES
     return any(address.startswith(prefix) for prefix in valid_prefixes)

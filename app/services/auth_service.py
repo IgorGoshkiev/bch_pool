@@ -4,9 +4,12 @@
 import logging
 from typing import Optional, Tuple
 
-from app.utils.protocol_helpers import parse_stratum_username, validate_bch_address
 from app.services.database_service import database_service
 from app.utils.config import settings
+from app.utils.protocol_helpers import (
+    parse_stratum_username,
+    validate_bch_address,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -1,14 +1,16 @@
 import time
-import logging
+
 from typing import Optional, Dict
 from datetime import datetime, UTC
 
 from app.utils.config import settings
+from app.utils.logging_config import StructuredLogger
 
 from app.jobs.real_node_client import RealBCHNodeClient
 from app.services.job_service import JobService
+from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
 
-logger = logging.getLogger(__name__)
+logger = StructuredLogger("job_manager")
 
 
 class JobManager:
@@ -32,47 +34,87 @@ class JobManager:
 
     async def initialize(self) -> bool:
         """Инициализация менеджера с реальной нодой"""
+        init_start = datetime.now(UTC)
+
         try:
-            logger.info(f"Подключение к BCH ноде: {settings.bch_rpc_host}:{settings.bch_rpc_port}")
+            logger.info(
+                "Инициализация JobManager",
+                event="job_manager_initializing",
+                rpc_host=settings.bch_rpc_host,
+                rpc_port=settings.bch_rpc_port,
+                use_cookie=settings.bch_rpc_use_cookie
+            )
 
             if await self.node_client.connect():
                 # Обновляем локальные переменные из клиента
                 self.block_height = self.node_client.block_height
                 self.difficulty = self.node_client.difficulty
 
-                # Логируем успешное подключение
-                logger.info(f"JobManager инициализирован. Высота блокчейна: {self.block_height}")
+                init_time = (datetime.now(UTC) - init_start).total_seconds() * 1000
+
                 logger.info(
-                    f"   Цепочка: {self.node_client.blockchain_info.get('chain', 'unknown') if hasattr(self.node_client, 'blockchain_info') else 'unknown'}")
-                logger.info(f"   Сложность: {self.difficulty}")
+                    "JobManager успешно инициализирован",
+                    event="job_manager_initialized",
+                    block_height=self.block_height,
+                    difficulty=self.difficulty,
+                    chain=self.node_client.blockchain_info.get('chain', 'unknown') if hasattr(self.node_client,
+                                                                                              'blockchain_info') else 'unknown',
+                    init_time_ms=init_time
+                )
                 return True
             else:
-                logger.error("Не удалось подключиться к BCH ноде")
-                logger.error("Проверьте:")
-                logger.error("1. Запущена ли нода на сервере")
-                logger.error("2. Настройки RPC в bitcoin.conf")
-                logger.error("3. Доступность порта 28332")
-                if settings.bch_rpc_use_cookie:
-                    logger.error("4. Существование .cookie файла")
+                init_time = (datetime.now(UTC) - init_start).total_seconds() * 1000
+                logger.error(
+                    "Не удалось инициализировать JobManager",
+                    event="job_manager_init_failed",
+                    init_time_ms=init_time,
+                    rpc_url=f"{settings.bch_rpc_host}:{settings.bch_rpc_port}"
+                )
                 return False
 
         except Exception as e:
-            logger.error(f"Ошибка инициализации JobManager: {e}")
+            init_time = (datetime.now(UTC) - init_start).total_seconds() * 1000
+            logger.error(
+                "Ошибка инициализации JobManager",
+                event="job_manager_init_error",
+                error=str(e),
+                error_type=type(e).__name__,
+                init_time_ms=init_time
+            )
             return False
 
     async def create_new_job(self, miner_address: str = None) -> Optional[Dict]:
         """Создать новое задание для майнера"""
         try:
+            logger.debug(
+                "Создание нового задания",
+                event="job_manager_creating_job",
+                miner_address=miner_address or "broadcast"
+            )
+
             # Получаем шаблон блока от реальной ноды
             template = await self.node_client.get_block_template()
             if not template:
-                logger.warning("Не удалось получить шаблон блока от ноды")
+                logger.warning(
+                    "Не удалось получить шаблон блока от ноды",
+                    event="job_manager_no_template",
+                    miner_address=miner_address
+                )
                 return None
 
             # Обновляем высоту блока
             if 'height' in template:
+                old_height = self.block_height
                 self.block_height = template['height']
                 self.node_client.block_height = template['height']
+
+                if old_height != self.block_height:
+                    logger.info(
+                        "Высота блокчейна обновлена",
+                        event="job_manager_block_height_updated",
+                        old_height=old_height,
+                        new_height=self.block_height
+                    )
 
             # Создаем уникальный ID задания
             self.job_counter += 1
@@ -102,16 +144,27 @@ class JobManager:
                 "miner_address": miner_address
             }
 
-            logger.info(f"Создано задание {job_id} для майнера {miner_address or 'broadcast'}")
-            logger.debug(f"Высота: {template.get('height', 'unknown')}")
-            logger.debug(f"Предыдущий хэш: {template.get('previousblockhash', '')[:16]}...")
-            logger.debug(f"Время: {template.get('curtime', 'unknown')}")
-            logger.debug(f"Coinbase: {template.get('coinbasevalue', 0)} сатоши")
+            logger.info(
+                "Создано новое задание",
+                event="job_manager_job_created",
+                job_id=job_id,
+                miner_address=miner_address or "broadcast",
+                height=template.get('height', 'unknown'),
+                previous_hash=template.get('previousblockhash', '')[:16] + "...",
+                coinbase_value=template.get('coinbasevalue', 0),
+                job_counter=self.job_counter
+            )
 
             return stratum_job
 
         except Exception as e:
-            logger.error(f"Ошибка при создании задания: {e}")
+            logger.error(
+                "Ошибка при создании задания",
+                event="job_manager_create_job_error",
+                miner_address=miner_address,
+                error=str(e),
+                error_type=type(e).__name__
+            )
             return None
 
     @staticmethod
@@ -134,7 +187,7 @@ class JobManager:
                 ntime_hex,  # ntime
                 True  # clean_jobs
             ],
-            "extra_nonce1": "ae6812eb4cd7735a302a8a9dd95cf71f"  # Добавляем для валидатора
+            "extra_nonce1": STRATUM_EXTRA_NONCE1  # Добавляем для валидатора
         }
 
         return job_data

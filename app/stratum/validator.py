@@ -1,31 +1,73 @@
 import hashlib
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 from datetime import datetime, UTC
-import logging
 
-logger = logging.getLogger(__name__)
+from app.utils.logging_config import StructuredLogger
+
+from app.utils.protocol_helpers import (
+    STRATUM_EXTRA_NONCE1,
+    EXTRA_NONCE2_SIZE,
+    BLOCK_HEADER_SIZE
+)
+
+# ========== КОНСТАНТЫ ВАЛИДАЦИИ ==========
+TARGET_FOR_DIFFICULTY_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
+
+logger = StructuredLogger("validator")
 
 
 class ShareValidator:
     """Валидатор шаров (shares) для Stratum протокола"""
 
-    def __init__(self, target_difficulty: float = 1.0, extra_nonce2_size: int = 4):
+    def __init__(self, target_difficulty: float = 1.0, extra_nonce2_size: int = EXTRA_NONCE2_SIZE):
         self.target_difficulty = target_difficulty
         self.extra_nonce2_size = extra_nonce2_size  # Размер extra_nonce2 в байтах
-        self.jobs_cache = {}  # Кэш заданий: job_id -> job_data
+        self.jobs_cache: Dict[str, dict] = {}  # Кэш заданий: job_id -> job_data
+        self._used_nonces: Dict[str, set] = {}  # job_id -> set of nonces
+        self.validated_shares = 0
+        self.invalid_shares = 0
+        self.start_time = datetime.now(UTC)
+
+        logger.info(
+            "Валидатор инициализирован",
+            event="validator_initialized",
+            target_difficulty=target_difficulty,
+            extra_nonce2_size=extra_nonce2_size,
+            start_time=self.start_time.isoformat()
+        )
 
     def add_job(self, job_id: str, job_data: dict):
         """Добавить задание в кэш для валидации"""
         self.jobs_cache[job_id] = job_data
-        logger.debug(f"Добавлено задание {job_id} в кэш")
+
+        logger.debug(
+            "Добавлено задание в кэш",
+            event="job_added_to_cache",
+            job_id=job_id,
+            jobs_cache_size=len(self.jobs_cache),
+            has_extra_nonce1='extra_nonce1' in job_data
+        )
 
     def remove_job(self, job_id: str):
         """Удалить задание из кэша"""
         removed = self.jobs_cache.pop(job_id, None)
+
         if removed:
-            logger.debug(f"Удалено задание {job_id} из кэша")
+            # Также удаляем использованные nonce для этого задания
+            self._used_nonces.pop(job_id, None)
+
+            logger.debug(
+                "Удалено задание из кэша",
+                event="job_removed_from_cache",
+                job_id=job_id,
+                remaining_jobs=len(self.jobs_cache)
+            )
         else:
-            logger.warning(f"Задание {job_id} не найдено в кэше")
+            logger.warning(
+                "Задание не найдено в кэше",
+                event="job_not_in_cache",
+                job_id=job_id
+            )
 
     def validate_share(self,
                        job_id: str,
@@ -46,8 +88,20 @@ class ShareValidator:
         Returns:
             Tuple[bool, Optional[str]]: (валиден ли шар, сообщение об ошибке)
         """
+
+        validation_start = datetime.now(UTC)
+
         # Проверяем существование задания
         if job_id not in self.jobs_cache:
+            self.invalid_shares += 1
+            logger.warning(
+                "Задание не найдено при валидации шара",
+                event="share_validation_failed",
+                miner_address=miner_address,
+                job_id=job_id,
+                reason="job_not_found",
+                validation_time_ms=(datetime.now(UTC) - validation_start).total_seconds() * 1000
+            )
             return False, f"Задание {job_id} не найдено"
 
 
@@ -59,26 +113,82 @@ class ShareValidator:
 
             # 1. ************** Проверяем формат данных
             if not self._validate_hex_format(extra_nonce2, expected_extra_nonce2_len):  # <-- Используем переменную!
+
+                self.invalid_shares += 1
+                logger.warning(
+                    "Неверный формат extra_nonce2",
+                    event="share_validation_failed",
+                    miner_address=miner_address,
+                    job_id=job_id,
+                    reason="invalid_extra_nonce2_format",
+                    extra_nonce2=extra_nonce2,
+                    expected_length=expected_extra_nonce2_len,
+                    actual_length=len(extra_nonce2)
+                )
                 return False, f"Неверный формат extra_nonce2: {extra_nonce2} (ожидается {expected_extra_nonce2_len} hex символов)"
 
             if not self._validate_hex_format(ntime, 8):
+                self.invalid_shares += 1
+                logger.warning(
+                    "Неверный формат ntime",
+                    event="share_validation_failed",
+                    miner_address=miner_address,
+                    job_id=job_id,
+                    reason="invalid_ntime_format",
+                    ntime=ntime
+                )
                 return False, f"Неверный формат ntime: {ntime}"
 
             if not self._validate_hex_format(nonce, 8):
+                self.invalid_shares += 1
+                logger.warning(
+                    "Неверный формат nonce",
+                    event="share_validation_failed",
+                    miner_address=miner_address,
+                    job_id=job_id,
+                    reason="invalid_nonce_format",
+                    nonce=nonce
+                )
                 return False, f"Неверный формат nonce: {nonce}"
 
             # 2. **************** Проверяем ntime (время должно быть в пределах ±2 часов от текущего)
             if not self._validate_ntime(ntime):
+                self.invalid_shares += 1
+                logger.warning(
+                    "Некорректное время ntime",
+                    event="share_validation_failed",
+                    miner_address=miner_address,
+                    job_id=job_id,
+                    reason="invalid_ntime_value",
+                    ntime=ntime
+                )
                 return False, f"Некорректное время ntime: {ntime}"
 
             # 3. Проверяем уникальность nonce
             if not self._check_nonce_uniqueness(job_id, nonce):
+                self.invalid_shares += 1
+                logger.warning(
+                    "Nonce уже использовался",
+                    event="share_validation_failed",
+                    miner_address=miner_address,
+                    job_id=job_id,
+                    reason="duplicate_nonce",
+                    nonce=nonce
+                )
                 return False, f"Nonce {nonce} уже использовался для задания {job_id}"
 
             # 4. Рассчитываем хэш заголовка
             hash_result = self.calculate_hash(job, extra_nonce2, ntime, nonce)
 
             if hash_result == "0" * 64:
+                self.invalid_shares += 1
+                logger.error(
+                    "Ошибка расчета хэша",
+                    event="share_validation_failed",
+                    miner_address=miner_address,
+                    job_id=job_id,
+                    reason="hash_calculation_error"
+                )
                 return False, "Ошибка расчета хэша"
 
             # 5. Проверяем сложность
@@ -86,19 +196,70 @@ class ShareValidator:
 
             if not is_difficulty_ok:
                 # Хэш не соответствует целевой сложности
-                logger.debug(f"Хэш не соответствует сложности: {hash_result}")
+                self.invalid_shares += 1
+                logger.debug(
+                    "Хэш не соответствует сложности",
+                    event="share_validation_failed",
+                    miner_address=miner_address,
+                    job_id=job_id,
+                    reason="difficulty_not_met",
+                    hash_prefix=hash_result[:16]
+                )
                 return False, "Hash doesn't meet target difficulty"
 
             # 6. Дополнительные проверки
             # Проверяем что хэш меньше чем текущая цель сети
             # TODO: Добавить проверку сетевой сложности
 
-            logger.info(f"Валидный шар от {miner_address}: job={job_id}, hash={hash_result[:16]}...")
+            # Шар валиден!
+            self.validated_shares += 1
+            validation_time = (datetime.now(UTC) - validation_start).total_seconds() * 1000
+
+            logger.info(
+                "Валидный шар от майнера",
+                event="share_validated",
+                miner_address=miner_address,
+                job_id=job_id,
+                hash_prefix=hash_result[:16],
+                validation_time_ms=validation_time,
+                total_validated=self.validated_shares,
+                total_invalid=self.invalid_shares
+            )
             return True, None
 
         except Exception as e:
-            logger.error(f"Ошибка при валидации шара: {e}")
+            self.invalid_shares += 1
+            logger.error(
+                "Ошибка при валидации шара",
+                event="share_validation_error",
+                miner_address=miner_address,
+                job_id=job_id,
+                error=str(e),
+                error_type=type(e).__name__,
+                validation_time_ms=(datetime.now(UTC) - validation_start).total_seconds() * 1000
+            )
             return False, f"Ошибка валидации: {str(e)}"
+
+    def get_stats(self) -> Dict:
+        """Получение статистики валидатора"""
+        stats = {
+            "jobs_in_cache": len(self.jobs_cache),
+            "validated_shares": self.validated_shares,
+            "invalid_shares": self.invalid_shares,
+            "total_shares": self.validated_shares + self.invalid_shares,
+            "success_rate": self.validated_shares / (self.validated_shares + self.invalid_shares)
+            if (self.validated_shares + self.invalid_shares) > 0 else 0,
+            "uptime_seconds": (datetime.now(UTC) - self.start_time).total_seconds(),
+            "target_difficulty": self.target_difficulty
+        }
+
+        logger.debug(
+            "Получение статистики валидатора",
+            event="validator_stats_requested",
+            stats=stats
+        )
+
+        return stats
 
     @staticmethod
     def _validate_hex_format(hex_str: str, expected_length: int) -> bool:

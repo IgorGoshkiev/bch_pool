@@ -1,17 +1,17 @@
 """
 Сервис для работы с базой данных (общий для всех серверов)
 """
-import logging
 from typing import Optional, Dict, List, Tuple
 from datetime import datetime, UTC, timedelta
 from sqlalchemy import select, func
 
+from app.utils.logging_config import StructuredLogger
 from app.models.database import AsyncSessionLocal
 from app.models.miner import Miner
 from app.models.share import Share
 from app.models.block import Block
 
-logger = logging.getLogger(__name__)
+logger = StructuredLogger("database")
 
 
 class DatabaseService:
@@ -27,9 +27,24 @@ class DatabaseService:
                 result = await session.execute(
                     select(Miner).where(Miner.bch_address == bch_address)
                 )
-                return result.scalar_one_or_none()
+                miner = result.scalar_one_or_none()
+
+                logger.debug(
+                    "Получение майнера по адресу",
+                    event="db_get_miner",
+                    bch_address=bch_address,
+                    found=miner is not None
+                )
+                return miner
+
         except Exception as e:
-            logger.error(f"Ошибка получения майнера {bch_address}: {e}")
+            logger.error(
+                "Ошибка получения майнера",
+                event="db_get_miner_error",
+                bch_address=bch_address,
+                error=str(e),
+                error_type=type(e).__name__
+            )
             return None
 
     @staticmethod
@@ -49,6 +64,19 @@ class DatabaseService:
                         miner.worker_name = worker_name
                         await session.commit()
                         await session.refresh(miner)
+
+                        logger.info(
+                            "Обновлено имя воркера майнера",
+                            event="db_update_worker_name",
+                            bch_address=bch_address,
+                            old_worker_name=miner.worker_name,
+                            new_worker_name=worker_name
+                        )
+                    logger.debug(
+                        "Майнер уже существует",
+                        event="db_miner_exists",
+                        bch_address=bch_address
+                    )
                     return miner
 
                 # Создаем нового
@@ -63,11 +91,23 @@ class DatabaseService:
                 await session.commit()
                 await session.refresh(miner)
 
-                logger.info(f"Майнер зарегистрирован: {bch_address}")
+                logger.info(
+                    "Майнер зарегистрирован",
+                    event="db_miner_registered",
+                    bch_address=bch_address,
+                    worker_name=worker_name,
+                    miner_id=miner.id
+                )
                 return miner
 
         except Exception as e:
-            logger.error(f"Ошибка регистрации майнера: {e}")
+            logger.error(
+                "Ошибка регистрации майнера",
+                event="db_register_miner_error",
+                bch_address=bch_address,
+                error=str(e),
+                error_type=type(e).__name__
+            )
             return None
 
     @staticmethod
@@ -82,8 +122,16 @@ class DatabaseService:
                 miner = result.scalar_one_or_none()
 
                 if not miner:
-                    logger.warning(f"Майнер {miner_address} не найден при обновлении статистики")
+                    logger.warning(
+                        "Майнер не найден при обновлении статистики",
+                        event="db_update_miner_stats_not_found",
+                        miner_address=miner_address
+                    )
                     return False
+
+                # Логируем состояние до обновления
+                old_shares = miner.total_shares
+                old_hashrate = miner.hashrate
 
                 # Обновляем счетчик шаров
                 if is_valid_share:
@@ -93,10 +141,27 @@ class DatabaseService:
                 miner.hashrate = await DatabaseService._calculate_hashrate_for_miner(miner_address)
 
                 await session.commit()
+
+                logger.info(
+                    "Статистика майнера обновлена",
+                    event="db_miner_stats_updated",
+                    miner_address=miner_address,
+                    shares_before=old_shares,
+                    shares_after=miner.total_shares,
+                    hashrate_before=old_hashrate,
+                    hashrate_after=miner.hashrate,
+                    was_valid_share=is_valid_share
+                )
+
                 return True
 
         except Exception as e:
-            logger.error(f"Ошибка обновления статистики майнера: {e}")
+            logger.error(
+                "Ошибка обновления статистики майнера",
+                event="db_update_miner_stats_error",
+                miner_address=miner_address,
+                error=str(e)
+            )
             return False
 
     # ========== ШАРЫ (SHARES) ==========
@@ -134,11 +199,26 @@ class DatabaseService:
                 if is_valid:
                     await DatabaseService.update_miner_stats(miner_address, True)
 
-                logger.info(f"Шар сохранен: miner={miner_address}, id={share_id}, valid={is_valid}")
+                logger.info(
+                    "Шар сохранен в БД",
+                    event="db_share_saved",
+                    miner_address=miner_address,
+                    share_id=share_id,
+                    job_id=job_id,
+                    is_valid=is_valid,
+                    difficulty=difficulty
+                )
                 return True, share_id
 
         except Exception as e:
-            logger.error(f"Ошибка сохранения шара: {e}")
+            logger.error(
+                "Ошибка сохранения шара в БД",
+                event="db_save_share_error",
+                miner_address=miner_address,
+                job_id=job_id,
+                error=str(e),
+                error_type=type(e).__name__
+            )
             return False, None
 
     @staticmethod
@@ -152,9 +232,24 @@ class DatabaseService:
                     .order_by(Share.submitted_at.desc())
                     .limit(limit)
                 )
-                return result.scalars().all()
+                shares = result.scalars().all()
+
+                logger.debug(
+                    "Получены шары майнера",
+                    event="db_get_miner_shares",
+                    miner_address=miner_address,
+                    limit=limit,
+                    shares_count=len(shares)
+                )
+                return shares
+
         except Exception as e:
-            logger.error(f"Ошибка получения шаров: {e}")
+            logger.error(
+                "Ошибка получения шаров майнера",
+                event="db_get_miner_shares_error",
+                miner_address=miner_address,
+                error=str(e)
+            )
             return []
 
     # ========== ХЭШРЕЙТ ==========
@@ -164,6 +259,12 @@ class DatabaseService:
         """Рассчитать хэшрейт майнера за последние N секунд"""
         try:
             if time_period <= 0:
+                logger.debug(
+                    "Некорректный период для расчета хэшрейта",
+                    event="db_hashrate_invalid_period",
+                    miner_address=miner_address,
+                    time_period=time_period
+                )
                 return 0.0
 
             async with AsyncSessionLocal() as session:
@@ -180,16 +281,39 @@ class DatabaseService:
                 shares_count = result.scalar() or 0
 
                 if shares_count == 0:
+                    logger.debug(
+                        "Нет шаров для расчета хэшрейта",
+                        event="db_hashrate_no_shares",
+                        miner_address=miner_address,
+                        time_period=time_period,
+                        start_time=start_time.isoformat()
+                    )
                     return 0.0
 
                 # При сложности 1.0, каждый шар = 2^32 хэшей
                 hashes_per_share = 2 ** 32  # 4,294,967,296
                 hashrate = (shares_count * hashes_per_share) / time_period
 
+                logger.debug(
+                    "Рассчитан хэшрейт майнера",
+                    event="db_hashrate_calculated",
+                    miner_address=miner_address,
+                    shares_count=shares_count,
+                    time_period_seconds=time_period,
+                    hashrate=hashrate,
+                    hashes_per_share=hashes_per_share
+                )
+
                 return hashrate
 
         except Exception as e:
-            logger.error(f"Ошибка расчета хэшрейта: {e}")
+            logger.error(
+                "Ошибка расчета хэшрейта",
+                event="db_hashrate_calculation_error",
+                miner_address=miner_address,
+                error=str(e),
+                error_type=type(e).__name__
+            )
             return 0.0
 
     @staticmethod
@@ -201,9 +325,22 @@ class DatabaseService:
                     select(Miner.hashrate).where(Miner.bch_address == miner_address)
                 )
                 hashrate = result.scalar()
+
+                logger.debug(
+                    "Получен хэшрейт майнера из БД",
+                    event="db_get_miner_hashrate",
+                    miner_address=miner_address,
+                    hashrate=hashrate or 0.0
+                )
+
                 return float(hashrate) if hashrate is not None else 0.0
         except Exception as e:
-            logger.error(f"Ошибка получения хэшрейта: {e}")
+            logger.error(
+                "Ошибка получения хэшрейта майнера",
+                event="db_get_miner_hashrate_error",
+                miner_address=miner_address,
+                error=str(e)
+            )
             return 0.0
 
     # ========== БЛОКИ ==========
@@ -225,7 +362,13 @@ class DatabaseService:
                 existing_block = result.scalar_one_or_none()
 
                 if existing_block:
-                    logger.warning(f"Блок {block_hash} уже существует в БД")
+                    logger.warning(
+                        "Блок уже существует в БД",
+                        event="db_block_exists",
+                        block_hash=block_hash,
+                        height=height,
+                        miner_address=miner_address
+                    )
                     return False
 
                 # Создаем запись
@@ -245,9 +388,22 @@ class DatabaseService:
                 miner = result.scalar_one_or_none()
                 if miner:
                     miner.total_blocks += 1
+                    logger.debug(
+                        "Обновлен счетчик блоков майнера",
+                        event="db_miner_blocks_updated",
+                        miner_address=miner_address,
+                        new_total_blocks=miner.total_blocks
+                    )
 
                 await session.commit()
-                logger.info(f"Блок сохранен: height={height}, miner={miner_address}")
+                logger.info(
+                    "Блок сохранен в БД",
+                    event="db_block_saved",
+                    height=height,
+                    block_hash=block_hash[:16] + "...",
+                    miner_address=miner_address,
+                    confirmed=confirmed
+                )
                 return True
 
         except Exception as e:
@@ -292,7 +448,7 @@ class DatabaseService:
                 result = await session.execute(select(func.sum(Miner.hashrate)))
                 total_hashrate = float(result.scalar() or 0.0)
 
-                return {
+                stats = {
                     "miners": {
                         "total": total_miners,
                         "active": active_miners,
@@ -316,8 +472,24 @@ class DatabaseService:
                     }
                 }
 
+                logger.debug(
+                    "Получена статистика пула из БД",
+                    event="db_pool_stats",
+                    total_miners=total_miners,
+                    active_miners=active_miners,
+                    total_shares=total_shares,
+                    valid_shares=valid_shares,
+                    total_blocks=total_blocks
+                )
+                return stats
+
         except Exception as e:
-            logger.error(f"Ошибка получения статистики пула: {e}")
+            logger.error(
+                "Ошибка получения статистики пула из БД",
+                event="db_pool_stats_error",
+                error=str(e),
+                error_type=type(e).__name__
+            )
             return {}
 
     @staticmethod
@@ -332,6 +504,11 @@ class DatabaseService:
                 miner = result.scalar_one_or_none()
 
                 if not miner:
+                    logger.warning(
+                        "Майнер не найден для детальной статистики",
+                        event="db_miner_detailed_stats_not_found",
+                        miner_address=miner_address
+                    )
                     return {}
 
                 # Временной диапазон
@@ -366,7 +543,7 @@ class DatabaseService:
                 )
                 recent_blocks = result.scalar() or 0
 
-                return {
+                stats = {
                     "miner": {
                         "address": miner.bch_address,
                         "worker_name": miner.worker_name,
@@ -388,10 +565,23 @@ class DatabaseService:
                     }
                 }
 
+                logger.info(
+                    "Получена детальная статистика майнера",
+                    event="db_miner_detailed_stats",
+                    miner_address=miner_address,
+                    hours=hours,
+                    recent_shares=recent_shares,
+                    recent_valid_shares=recent_valid_shares,
+                    period_hashrate=period_hashrate
+                )
+                return stats
+
         except Exception as e:
-            logger.error(f"Ошибка получения статистики майнера: {e}")
+            logger.error(
+                "Ошибка получения детальной статистики майнера",
+                event="db_miner_detailed_stats_error",
+                miner_address=miner_address,
+                hours=hours,
+                error=str(e)
+            )
             return {}
-
-
-# Глобальный экземпляр
-database_service = DatabaseService()

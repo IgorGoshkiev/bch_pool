@@ -1,12 +1,13 @@
 """
 Сервис для управления заданиями (jobs) - координация между JobManager и Stratum серверами
 """
-import logging
 from typing import Dict, Optional, Set, List, Tuple
 from datetime import datetime, UTC
 from app.stratum.validator import ShareValidator
+from app.utils.logging_config import StructuredLogger
+from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
 
-logger = logging.getLogger(__name__)
+logger = StructuredLogger("job_service")
 
 
 class JobService:
@@ -61,7 +62,7 @@ class JobService:
         try:
             # Добавляем extra_nonce1 в данные задания для валидатора
             if 'extra_nonce1' not in job_data:
-                job_data['extra_nonce1'] = "ae6812eb4cd7735a302a8a9dd95cf71f"
+                job_data['extra_nonce1'] = STRATUM_EXTRA_NONCE1
 
             # Сохраняем задание
             self.active_jobs[job_id] = job_data
@@ -89,10 +90,25 @@ class JobService:
             if len(self.job_history) > self.max_history_size:
                 self.job_history = self.job_history[-self.max_history_size:]
 
-            logger.debug(f"Задание добавлено: {job_id} для майнера {miner_address or 'broadcast'}")
+            logger.info(
+                "Задание добавлено в систему",
+                event="job_added",
+                job_id=job_id,
+                miner_address=miner_address or "broadcast",
+                job_type="personal" if miner_address else "broadcast",
+                total_active_jobs=len(self.active_jobs),
+                total_subscribed_miners=len(self.miner_subscriptions)
+            )
+
 
         except Exception as e:
-            logger.error(f"Ошибка добавления задания {job_id}: {e}")
+            logger.error(
+                "Ошибка добавления задания",
+                event="job_add_error",
+                job_id=job_id,
+                miner_address=miner_address,
+                error=str(e)
+            )
 
     def remove_job(self, job_id: str):
         """Удалить задание из системы"""

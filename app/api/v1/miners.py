@@ -7,6 +7,7 @@ from typing import Optional
 from datetime import datetime, timedelta, UTC
 
 from app.utils.helpers import humanize_time_ago
+from app.utils.protocol_helpers import DEFAULT_PAGINATION_LIMIT, MAX_PAGINATION_LIMIT
 from app.schemas.models import (
     ApiResponse,
     MinerResponse,
@@ -26,7 +27,7 @@ class ListMinersParams:
     def __init__(
         self,
         skip: int = Query(0, ge=0, description="Сколько записей пропустить"),
-        limit: int = Query(100, ge=1, le=1000, description="Максимальное количество записей"),
+        limit: int = Query(DEFAULT_PAGINATION_LIMIT, ge=1, le=MAX_PAGINATION_LIMIT, description="Максимальное количество записей"),
         active_only: bool = Query(False, description="Только активные майнеры")
     ):
         self.skip = skip
