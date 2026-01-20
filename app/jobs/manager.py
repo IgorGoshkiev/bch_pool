@@ -4,8 +4,8 @@ from typing import Optional, Dict
 from datetime import datetime, UTC
 
 from app.utils.config import settings
-from app.jobs.real_node_client import RealBCHNodeClient
 
+from app.jobs.real_node_client import RealBCHNodeClient
 from app.services.job_service import JobService
 
 logger = logging.getLogger(__name__)
@@ -26,13 +26,9 @@ class JobManager:
         self.job_service = JobService()
         self.current_job = None
         self.job_counter = 0
-        self.stratum_server = None  # Будет установлено через set_stratum_server
         self.block_height = 0
         self.difficulty = 0.0
 
-    def set_stratum_server(self, stratum_server):
-        """Установить ссылку на Stratum сервер"""
-        self.stratum_server = stratum_server
 
     async def initialize(self) -> bool:
         """Инициализация менеджера с реальной нодой"""

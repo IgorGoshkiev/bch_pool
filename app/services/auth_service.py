@@ -4,6 +4,7 @@
 import logging
 from typing import Optional, Tuple
 
+from app.utils.protocol_helpers import parse_stratum_username, validate_bch_address
 from app.services.database_service import database_service
 from app.utils.config import settings
 
@@ -16,11 +17,7 @@ class AuthService:
     @staticmethod
     def parse_username(username: str) -> Tuple[str, str]:
         """Парсинг username в формате address.worker или просто address"""
-        if '.' in username:
-            bch_address, worker_name = username.split('.', 1)
-            return bch_address.strip(), worker_name.strip()
-        else:
-            return username.strip(), "default"
+        return parse_stratum_username(username)
 
     @staticmethod
     async def authorize_miner(username: str, password: str = "") -> Tuple[bool, Optional[str], Optional[str]]:
@@ -92,9 +89,5 @@ class AuthService:
 
     @staticmethod
     def validate_bch_address(address: str) -> bool:
-        """Простая валидация BCH адреса"""
-        if not address:
-            return False
-        # Проверяем базовые префиксы BCH тестнета
-        testnet_prefixes = ['bchtest:', 'qq', 'qp']
-        return any(address.startswith(prefix) for prefix in testnet_prefixes)
+        """валидация BCH адреса"""
+        return validate_bch_address(address)

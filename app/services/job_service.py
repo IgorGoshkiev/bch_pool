@@ -30,8 +30,8 @@ class JobService:
         # Последнее общее задание
         self.last_broadcast_job: Optional[dict] = None
 
-        # Валидатор (может быть None)
-        self.validator = ShareValidator
+        # Валидатор - создаем ЭКЗЕМПЛЯР класса
+        self.validator = ShareValidator()
 
         logger.info("JobService инициализирован")
 

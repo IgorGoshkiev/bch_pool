@@ -50,7 +50,7 @@ class ShareValidator:
         if job_id not in self.jobs_cache:
             return False, f"Задание {job_id} не найдено"
 
-        # Получаем задание (переменная job не используется дальше, но оставляем для ясности)
+
         job = self.jobs_cache[job_id]
 
         try:

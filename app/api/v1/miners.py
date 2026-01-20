@@ -7,6 +7,11 @@ from typing import Optional
 from datetime import datetime, timedelta, UTC
 
 from app.utils.helpers import humanize_time_ago
+from app.schemas.models import (
+    ApiResponse,
+    MinerResponse,
+    MinerCreate,
+)
 
 from app.models.database import get_db
 from app.models.miner import Miner
@@ -16,65 +21,80 @@ from app.models.block import Block
 router = APIRouter(prefix="/miners", tags=["miners"])
 
 
+class ListMinersParams:
+    """Параметры для списка майнеров"""
+    def __init__(
+        self,
+        skip: int = Query(0, ge=0, description="Сколько записей пропустить"),
+        limit: int = Query(100, ge=1, le=1000, description="Максимальное количество записей"),
+        active_only: bool = Query(False, description="Только активные майнеры")
+    ):
+        self.skip = skip
+        self.limit = limit
+        self.active_only = active_only
+
 @router.get(
     "/",
     summary="Список всех майнеров",
-    response_description="Список зарегистрированных майнеров"
-)  # Будет /api/v1/miners/
+    response_description="Список зарегистрированных майнеров",
+    response_model=ApiResponse
+)
 async def list_miners(
-        skip: int = 0,
-        limit: int = 100,
-        active_only: bool = False,
-        db: AsyncSession = Depends(get_db)
+    params: ListMinersParams = Depends(),
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Получение списка майнеров с пагинацией.
-
-    - **skip**: Сколько записей пропустить (для пагинации)
-    - **limit**: Максимальное количество записей (по умолчанию 100)
-    - **active_only**: Только активные майнеры (опционально)
     """
     query = select(Miner)
 
-    if active_only:
+    if params.active_only:
         query = query.where(Miner.is_active.is_(true()))
 
-    query = query.offset(skip).limit(limit)
+    query = query.offset(params.skip).limit(params.limit)
 
     result = await db.execute(query)
     miners = result.scalars().all()
 
-    return {
-        "count": len(miners),
-        "skip": skip,
-        "limit": limit,
-        "active_only": active_only,
-        "miners": [
-            {
-                "id": m.id,
-                "bch_address": m.bch_address,
-                "worker_name": m.worker_name,
-                "is_active": m.is_active,
-                "total_shares": m.total_shares,
-                "total_blocks": m.total_blocks,
-                "hashrate": m.hashrate,
-                "registered_at": m.created_at.isoformat() if hasattr(m, 'created_at') else None
+    # Преобразуем SQLAlchemy модели в Pydantic схемы
+    miner_responses = [
+        MinerResponse(
+            id=m.id,
+            bch_address=m.bch_address,
+            worker_name=m.worker_name,
+            is_active=m.is_active,
+            total_shares=m.total_shares,
+            total_blocks=m.total_blocks,
+            hashrate=m.hashrate,
+            registered_at=m.created_at
+        )
+        for m in miners
+    ]
+
+    return ApiResponse(
+        status="success",
+        message=f"Найдено {len(miner_responses)} майнеров",
+        data={
+            "miners": [miner.model_dump() for miner in miner_responses],
+            "pagination": {
+                "skip": params.skip,
+                "limit": params.limit,
+                "total": len(miner_responses)
             }
-            for m in miners
-        ]
-    }
+        }
+    )
 
 
 @router.post(
     "/register",
     status_code=status.HTTP_201_CREATED,
     summary="Регистрация нового майнера",
-    response_description="Данные зарегистрированного майнера"
-)  # Будет /api/v1/miners/register
+    response_description="Данные зарегистрированного майнера",
+    response_model=ApiResponse
+)
 async def register_miner(
-        bch_address: str,
-        worker_name: str = "default",
-        db: AsyncSession = Depends(get_db)
+    miner_data: MinerCreate,  # ИСПОЛЬЗУЕМ PYDANTIC СХЕМУ
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Регистрация майнера в соло-пуле.
@@ -82,12 +102,9 @@ async def register_miner(
     - **bch_address**: Адрес Bitcoin Cash для выплат (обязательно)
     - **worker_name**: Имя воркера (опционально, по умолчанию "default")
     """
-    # Проверка формата адреса (упрощённо)
-    if not bch_address or len(bch_address) < 10:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Некорректный BCH адрес"
-        )
+    # Данные уже валидированы через MinerCreate
+    bch_address = miner_data.bch_address
+    worker_name = miner_data.worker_name
 
     # Проверяем, существует ли уже майнер
     result = await db.execute(
@@ -112,18 +129,23 @@ async def register_miner(
         await db.commit()
         await db.refresh(new_miner)
 
-        return {
-            "status": "registered",
-            "message": "Майнер успешно зарегистрирован",
-            "miner": {
-                "id": new_miner.id,
-                "bch_address": new_miner.bch_address,
-                "worker_name": new_miner.worker_name,
-                "registered_at": new_miner.created_at.isoformat() if hasattr(new_miner, 'created_at') else None,
-                "total_shares": new_miner.total_shares,
-                "total_blocks": new_miner.total_blocks
-            }
-        }
+        # Создаем ответ через Pydantic
+        miner_response = MinerResponse(
+            id=new_miner.id,
+            bch_address=new_miner.bch_address,
+            worker_name=new_miner.worker_name,
+            is_active=new_miner.is_active,
+            total_shares=new_miner.total_shares,
+            total_blocks=new_miner.total_blocks,
+            hashrate=new_miner.hashrate,
+            registered_at=new_miner.created_at
+        )
+
+        return ApiResponse(
+            status="registered",
+            message="Майнер успешно зарегистрирован",
+            data={"miner": miner_response.model_dump()}
+        )
 
     except IntegrityError:
         await db.rollback()
@@ -131,7 +153,6 @@ async def register_miner(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ошибка при сохранении майнера"
         )
-
 
 @router.get(
     "/{bch_address}",

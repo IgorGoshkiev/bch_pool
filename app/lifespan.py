@@ -24,12 +24,6 @@ async def lifespan(_app):
     background_tasks = []
 
     try:
-        # 1. Устанавливаем связь между менеджерами
-        job_manager.set_stratum_server(stratum_server)
-
-        # Устанавливаем JobManager в stratum_server
-        stratum_server.set_job_manager(job_manager)
-
         # 2. Инициализируем JobManager
         if await job_manager.initialize():
             logger.info("JobManager готов к работе")

@@ -1,18 +1,16 @@
 import logging
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, Any
 from fastapi import WebSocket
-
 
 from app.services.auth_service import AuthService
 from app.services.database_service import DatabaseService
 from app.services.job_service import JobService
-from app.jobs.manager import JobManager
 
 logger = logging.getLogger(__name__)
 
 
 class StratumServer:
-    def __init__(self):
+    def __init__(self, job_manager: Optional[Any] = None):
         self.active_connections: Dict[str, WebSocket] = {}
         self.miner_addresses: Dict[str, str] = {}  # websocket_id -> bch_address
         self.subscriptions: Dict[str, Set[str]] = {}  # miner_address -> job_ids
@@ -20,7 +18,7 @@ class StratumServer:
         self.auth_service = AuthService()
         self.database_service = DatabaseService()
         self.job_service = JobService()
-        self.job_manager = JobManager()
+        self.job_manager = job_manager
 
         logger.info("WebSocket Stratum сервер инициализирован")
 
@@ -147,6 +145,7 @@ class StratumServer:
         # После успешной авторизации отправляем первое задание
         await self.send_new_job(websocket, authorized_address)
 
+
     async def handle_submit(self, websocket: WebSocket, msg_id: int, params: list, miner_address: str):
         """Обработка найденного решения (шара)"""
         if len(params) < 5:
@@ -192,6 +191,19 @@ class StratumServer:
                 return
 
             # Также передаем в JobManager для обработки (если нужно)
+            # ПРОВЕРЯЕМ, что job_manager установлен
+            if not self.job_manager:
+                logger.error("JobManager не установлен в StratumServer!")
+                # Можно сохранить шар без передачи в JobManager
+                response = {
+                    "id": msg_id,
+                    "result": True,
+                    "error": None
+                }
+                await websocket.send_json(response)
+                logger.info(f"Валидный шар принят от {miner_address}, ID={share_id} (без JobManager)")
+                return
+
             share_data = {
                 "job_id": job_id,
                 "worker_name": worker_name,

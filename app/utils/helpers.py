@@ -24,3 +24,31 @@ def humanize_time_ago(dt: datetime) -> str:
         return f"{diff.seconds // 60} минут назад"
     else:
         return f"{diff.seconds} секунд назад"
+
+
+def calculate_pagination_info(skip: int, limit: int, total: int, current_count: int):
+    """
+    Рассчитывает информацию о пагинации
+
+    Args:
+        skip: Пропущено записей
+        limit: Лимит на странице
+        total: Всего записей
+        current_count: Количество на текущей странице
+
+    Returns:
+        Словарь с информацией о пагинации
+    """
+    current_page = (skip // limit) + 1 if limit > 0 else 1
+    total_pages = (total + limit - 1) // limit if limit > 0 else 1
+
+    return {
+        "skip": skip,
+        "limit": limit,
+        "total": total,
+        "current_page": current_page,
+        "total_pages": total_pages,
+        "has_next": (skip + current_count) < total,
+        "has_prev": skip > 0,
+        "returned": current_count
+    }

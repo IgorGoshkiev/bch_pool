@@ -68,7 +68,8 @@ class DependencyContainer:
     def stratum_server(self):
         if self._stratum_server is None:
             from app.stratum.websocket_server import StratumServer
-            self._stratum_server = StratumServer()
+            # Передаем job_manager при создании
+            self._stratum_server = StratumServer(job_manager=self.job_manager)
             logger.debug("StratumServer инициализирован")
         return self._stratum_server
 
