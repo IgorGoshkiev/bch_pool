@@ -1,9 +1,7 @@
 """Единый контейнер зависимостей для всего приложения"""
+from app.utils.logging_config import StructuredLogger
 
-import logging
-
-
-logger = logging.getLogger(__name__)
+logger = StructuredLogger("dependencies")
 
 
 class DependencyContainer:
@@ -18,13 +16,21 @@ class DependencyContainer:
         self._stratum_server = None
         self._tcp_stratum_server = None
 
+        logger.info(
+            "DependencyContainer инициализирован",
+            event="dependencies_container_created"
+        )
+
     # === AUTH SERVICE ===
     @property
     def auth_service(self):
         if self._auth_service is None:
             from app.services.auth_service import AuthService
             self._auth_service = AuthService()
-            logger.debug("AuthService инициализирован")
+            logger.info(
+                "AuthService создан",
+                event="auth_service_created"
+            )
         return self._auth_service
 
     # === DATABASE SERVICE ===
@@ -33,7 +39,10 @@ class DependencyContainer:
         if self._database_service is None:
             from app.services.database_service import DatabaseService
             self._database_service = DatabaseService()
-            logger.debug("DatabaseService инициализирован")
+            logger.info(
+                "DatabaseService создан",
+                event="database_service_created"
+            )
         return self._database_service
 
     # === SHARE VALIDATOR ===
@@ -42,7 +51,11 @@ class DependencyContainer:
         if self._share_validator is None:
             from app.stratum.validator import ShareValidator
             self._share_validator = ShareValidator()
-            logger.debug("ShareValidator инициализирован")
+            logger.info(
+                "ShareValidator создан",
+                event="share_validator_created",
+                target_difficulty=self._share_validator.target_difficulty
+            )
         return self._share_validator
 
     # === JOB SERVICE ===
@@ -51,7 +64,10 @@ class DependencyContainer:
         if self._job_service is None:
             from app.services.job_service import JobService
             self._job_service = JobService()
-            logger.debug("JobService инициализирован")
+            logger.info(
+                "JobService создан",
+                event="job_service_created"
+            )
         return self._job_service
 
     # === JOB MANAGER ===
@@ -60,7 +76,11 @@ class DependencyContainer:
         if self._job_manager is None:
             from app.jobs.manager import JobManager
             self._job_manager = JobManager()
-            logger.debug("JobManager инициализирован")
+            logger.info(
+                "JobManager создан",
+                event="job_manager_created",
+                has_node_client=self._job_manager.node_client is not None
+            )
         return self._job_manager
 
     # === STRATUM SERVER ===
@@ -70,7 +90,11 @@ class DependencyContainer:
             from app.stratum.websocket_server import StratumServer
             # Передаем job_manager при создании
             self._stratum_server = StratumServer(job_manager=self.job_manager)
-            logger.debug("StratumServer инициализирован")
+            logger.info(
+                "StratumServer создан",
+                event="stratum_server_created",
+                has_job_manager=self.job_manager is not None
+            )
         return self._stratum_server
 
     # === TCP STRATUM SERVER ===
@@ -79,8 +103,34 @@ class DependencyContainer:
         if self._tcp_stratum_server is None:
             from app.stratum.tcp_server import StratumTCPServer
             self._tcp_stratum_server = StratumTCPServer()
-            logger.debug("TcpStratumServer инициализирован")
+            logger.info(
+                "TcpStratumServer создан",
+                event="tcp_stratum_server_created",
+                host=self._tcp_stratum_server.host,
+                port=self._tcp_stratum_server.port
+            )
         return self._tcp_stratum_server
+
+    def get_stats(self) -> dict:
+        """Получить статистику всех сервисов"""
+        stats = {
+            "auth_service": self._auth_service is not None,
+            "database_service": self._database_service is not None,
+            "job_service": self._job_service is not None,
+            "share_validator": self._share_validator is not None,
+            "job_manager": self._job_manager is not None,
+            "stratum_server": self._stratum_server is not None,
+            "tcp_stratum_server": self._tcp_stratum_server is not None
+        }
+
+        logger.debug(
+            "Получение статистики DependencyContainer",
+            event="dependencies_stats",
+            services_initialized=sum(1 for v in stats.values() if v),
+            total_services=len(stats)
+        )
+
+        return stats
 
 
 # Глобальный экземпляр контейнера

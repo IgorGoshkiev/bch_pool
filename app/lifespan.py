@@ -1,7 +1,6 @@
 """
 Управление жизненным циклом приложения
 """
-
 from contextlib import asynccontextmanager
 import asyncio
 from datetime import datetime, UTC

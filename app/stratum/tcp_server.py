@@ -4,9 +4,7 @@ from datetime import datetime, UTC
 from typing import Dict, Optional
 
 from app.utils.logging_config import StructuredLogger
-from app.services.auth_service import AuthService
-from app.services.database_service import DatabaseService
-from app.services.job_service import JobService
+from app.dependencies import auth_service, database_service, job_service
 from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE
 
 logger = StructuredLogger("stratum_tcp")
@@ -22,9 +20,9 @@ class StratumTCPServer:
         self.connections: Dict[str, asyncio.StreamWriter] = {}
         self.miners: Dict[str, str] = {}  # client_id -> bch_address
         self._connection_times: Dict[str, datetime] = {}
-        self.auth_service = AuthService()
-        self.database_service = DatabaseService()
-        self.job_service = JobService()
+        self.auth_service = auth_service
+        self.database_service = database_service
+        self.job_service = job_service
         self.start_time = datetime.now(UTC)
 
         logger.info(

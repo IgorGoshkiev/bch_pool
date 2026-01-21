@@ -3,9 +3,7 @@ from datetime import datetime, UTC
 from fastapi import WebSocket
 
 from app.utils.logging_config import StructuredLogger
-from app.services.auth_service import AuthService
-from app.services.database_service import DatabaseService
-from app.services.job_service import JobService
+from app.dependencies import auth_service, database_service, job_service
 from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE
 
 logger = StructuredLogger("stratum_ws")
@@ -17,9 +15,9 @@ class StratumServer:
         self.miner_addresses: Dict[str, str] = {}  # websocket_id -> bch_address
         self.subscriptions: Dict[str, Set[str]] = {}  # miner_address -> job_ids
         self.current_job_id = None
-        self.auth_service = AuthService()
-        self.database_service = DatabaseService()
-        self.job_service = JobService()
+        self.auth_service = auth_service
+        self.database_service = database_service
+        self.job_service = job_service
         self.job_manager = job_manager
         self.start_time = datetime.now(UTC)
         self._connection_times: Dict[str, datetime] = {}

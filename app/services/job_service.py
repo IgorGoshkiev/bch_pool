@@ -3,7 +3,8 @@
 """
 from typing import Dict, Optional, Set, List, Tuple
 from datetime import datetime, UTC
-from app.stratum.validator import ShareValidator
+
+from app.dependencies import share_validator
 from app.utils.logging_config import StructuredLogger
 from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
 
@@ -32,7 +33,7 @@ class JobService:
         self.last_broadcast_job: Optional[dict] = None
 
         # Валидатор - создаем ЭКЗЕМПЛЯР класса
-        self.validator = ShareValidator()
+        self.validator = share_validator
 
         logger.info("JobService инициализирован")
 
@@ -45,10 +46,20 @@ class JobService:
 
         if miner_address:
             # Персональное задание для майнера
-            return f"job_{timestamp}_{self.job_counter:08x}_{miner_address[:8]}"
+            job_id = f"job_{timestamp}_{self.job_counter:08x}_{miner_address[:8]}"
         else:
             # Общее задание для broadcast
-            return f"job_{timestamp}_{self.job_counter:08x}_broadcast"
+            job_id = f"job_{timestamp}_{self.job_counter:08x}_broadcast"
+
+        logger.debug(
+            "Создан ID задания",
+            event="job_service_job_id_created",
+            job_id=job_id,
+            miner_address=miner_address or "broadcast",
+            job_counter=self.job_counter
+        )
+
+        return job_id
 
     def add_job(self, job_id: str, job_data: dict, miner_address: str = None):
         """
@@ -139,11 +150,29 @@ class JobService:
 
     def get_job(self, job_id: str) -> Optional[dict]:
         """Получить задание по ID"""
-        return self.active_jobs.get(job_id)
+        job = self.active_jobs.get(job_id)
+
+        logger.debug(
+            "Получение задания по ID",
+            event="job_service_get_job",
+            job_id=job_id,
+            found=job is not None
+        )
+
+        return job
 
     def get_miner_jobs(self, miner_address: str) -> Set[str]:
         """Получить все задания майнера"""
-        return self.miner_subscriptions.get(miner_address, set())
+        jobs = self.miner_subscriptions.get(miner_address, set())
+
+        logger.debug(
+            "Получение заданий майнера",
+            event="job_service_get_miner_jobs",
+            miner_address=miner_address,
+            jobs_count=len(jobs)
+        )
+
+        return jobs
 
     def get_job_for_miner(self, miner_address: str) -> Optional[dict]:
         """
@@ -160,17 +189,35 @@ class JobService:
                 for job_id in sorted(miner_jobs, reverse=True):
                     job_data = self.get_job(job_id)
                     if job_data:
+                        logger.debug(
+                            "Найдено персональное задание для майнера",
+                            event="job_service_found_personal_job",
+                            miner_address=miner_address,
+                            job_id=job_id
+                        )
                         return job_data
 
             # Если нет персональных заданий, используем последнее общее
             if self.last_broadcast_job:
+                logger.debug(
+                    "Используется broadcast задание для майнера",
+                    event="job_service_using_broadcast_job",
+                    miner_address=miner_address
+                )
                 return self.last_broadcast_job
 
             # Если вообще нет заданий, создаем fallback
             return self.create_fallback_job(miner_address)
 
+
         except Exception as e:
-            logger.error(f"Ошибка получения задания для майнера {miner_address}: {e}")
+            logger.error(
+                "Ошибка получения задания для майнера",
+                event="job_service_get_job_for_miner_error",
+                miner_address=miner_address,
+                error=str(e)
+            )
+
             return self.create_fallback_job(miner_address)
 
     # ========== BROADCAST ==========
@@ -183,7 +230,11 @@ class JobService:
         job_id = job_data["params"][0]
         self.add_job(job_id, job_data)
 
-        logger.info(f"Установлено broadcast задание: {job_id}")
+        logger.info(
+            "Установлено broadcast задание",
+            event="job_service_set_broadcast_job",
+            job_id=job_id
+        )
 
     def create_fallback_job(self, miner_address: str = None) -> dict:
         """Создать fallback задание (когда нет реальных заданий)"""
@@ -211,7 +262,12 @@ class JobService:
         # Сохраняем в системе
         self.add_job(job_id, job_data, miner_address)
 
-        logger.warning(f"Создано fallback задание: {job_id}")
+        logger.warning(
+            "Создание fallback задания",
+            event="job_service_create_fallback",
+            miner_address=miner_address or "unknown",
+            reason="no_real_jobs_available"
+        )
         return job_data
 
     # ========== ОЧИСТКА ==========

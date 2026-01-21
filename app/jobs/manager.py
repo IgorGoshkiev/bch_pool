@@ -4,11 +4,12 @@ from typing import Optional, Dict
 from datetime import datetime, UTC
 
 from app.utils.config import settings
+from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
 from app.utils.logging_config import StructuredLogger
 
 from app.jobs.real_node_client import RealBCHNodeClient
-from app.services.job_service import JobService
-from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
+
+from app.dependencies import job_service
 
 logger = StructuredLogger("job_manager")
 
@@ -25,12 +26,19 @@ class JobManager:
             rpc_password=settings.bch_rpc_password,
             use_cookie=settings.bch_rpc_use_cookie
         )
-        self.job_service = JobService()
+        self.job_service = job_service
         self.current_job = None
         self.job_counter = 0
         self.block_height = 0
         self.difficulty = 0.0
 
+        logger.info(
+            "JobManager инициализирован",
+            event="job_manager_created",
+            rpc_host=settings.bch_rpc_host,
+            rpc_port=settings.bch_rpc_port,
+            use_cookie=settings.bch_rpc_use_cookie
+        )
 
     async def initialize(self) -> bool:
         """Инициализация менеджера с реальной нодой"""
@@ -190,42 +198,83 @@ class JobManager:
             "extra_nonce1": STRATUM_EXTRA_NONCE1  # Добавляем для валидатора
         }
 
+        logger.debug(
+            "Шаблон конвертирован в Stratum задание",
+            event="job_manager_template_converted",
+            job_id=job_id,
+            height=template.get('height', 'unknown'),
+            prevhash_prefix=template.get('previousblockhash', '')[:16] + "..."
+        )
+
         return job_data
 
     async def broadcast_new_job_to_all(self):
         """Рассылать новое задание всем подключенным майнерам"""
+        logger.info(
+            "Начинаем рассылку задания всем майнерам",
+            event="job_manager_broadcast_start"
+        )
+
         # Создаем общее задание для всех майнеров
         job_data = await self.create_new_job()
         if not job_data:
-            logger.warning("Не удалось создать задание для рассылки")
+            logger.warning(
+                "Не удалось создать задание для рассылки",
+                event="job_manager_broadcast_no_job"
+            )
             return
 
         # Задание уже сохранено в job_service через create_new_job()
         # Рассылку делают серверы через job_service.get_job_for_miner()
 
-        logger.info(f"Broadcast задание создано: {job_data['params'][0]}")
+        logger.info(
+            "Broadcast задание создано",
+            event="job_manager_broadcast_job_created",
+            job_id=job_data['params'][0] if 'params' in job_data else 'unknown'
+        )
 
     async def send_job_to_miner(self, miner_address: str) -> bool:
         """Отправить персональное задание конкретному майнеру"""
+        logger.info(
+            "Создание персонального задания для майнера",
+            event="job_manager_personal_job_start",
+            miner_address=miner_address
+        )
+
         # Создаем персональное задание
         job_data = await self.create_new_job(miner_address)
         if not job_data:
-            logger.warning(f"Не удалось создать задание для майнера {miner_address}")
+            logger.warning(
+                "Не удалось создать персональное задание",
+                event="job_manager_personal_job_failed",
+                miner_address=miner_address
+            )
             return False
 
         # Задание уже сохранено в job_service через create_new_job()
-        logger.info(f"Персональное задание создано для майнера {miner_address}")
+        logger.info(
+            "Персональное задание создано",
+            event="job_manager_personal_job_created",
+            miner_address=miner_address,
+            job_id=job_data['params'][0] if 'params' in job_data else 'unknown'
+        )
         return True
 
     @staticmethod
     async def validate_and_save_share(miner_address: str, share_data: Dict) -> Dict:
         """Валидация и сохранение шара - теперь делегируем job_service"""
-        logger.info(f"Шар от майнера {miner_address}: job={share_data.get('job_id')}")
+        logger.info(
+            "Валидация и сохранение шара",
+            event="job_manager_validate_share_start",
+            miner_address=miner_address,
+            job_id=share_data.get('job_id', 'unknown'),
+            share_id=share_data.get('share_id')
+        )
 
         # Большая часть валидации теперь делается в job_service и validator
         # Этот метод оставляем для совместимости и дополнительной логики
 
-        return {
+        result = {
             "status": "accepted",
             "message": "Share accepted (delegated to job_service)",
             "difficulty": 1.0,
@@ -233,23 +282,46 @@ class JobManager:
             "timestamp": datetime.now(UTC).isoformat()
         }
 
+        logger.info(
+            "Шар принят (делегировано job_service)",
+            event="job_manager_share_accepted",
+            miner_address=miner_address,
+            job_id=share_data.get('job_id'),
+            share_id=share_data.get('share_id')
+        )
+
+        return result
+
     @staticmethod
     async def submit_block_solution(miner_address: str, block_data: Dict) -> Dict:
         """Обработка найденного блока"""
-        logger.info(f"БЛОК НАЙДЕН! Майнер: {miner_address}")
+        logger.info(
+            "БЛОК НАЙДЕН! Обработка решения",
+            event="job_manager_block_found",
+            miner_address=miner_address,
+            block_data_keys=list(block_data.keys()) if block_data else []
+        )
 
         # TODO: Реализовать обработку блока с использованием block_builder
         # Пока возвращаем заглушку
 
-        return {
+        result = {
             "status": "rejected",
             "message": "Block processing not implemented yet",
             "miner": miner_address
         }
 
+        logger.warning(
+            "Обработка блока не реализована",
+            event="job_manager_block_processing_not_implemented",
+            miner_address=miner_address
+        )
+
+        return result
+
     def get_stats(self) -> Dict:
         """Получить статистику JobManager"""
-        return {
+        stats = {
             "status": "connected" if self.block_height > 0 else "disconnected",
             "current_job": self.current_job["id"] if self.current_job else None,
             "total_jobs_created": self.job_counter,
@@ -261,13 +333,47 @@ class JobManager:
             }
         }
 
+        logger.debug(
+            "Получение статистики JobManager",
+            event="job_manager_get_stats",
+            block_height=self.block_height,
+            job_counter=self.job_counter,
+            has_current_job=self.current_job is not None
+        )
+
+        return stats
+
     async def get_current_difficulty(self) -> float:
         """Получить текущую сложность сети"""
         try:
+            logger.debug(
+                "Запрос текущей сложности сети",
+                event="job_manager_get_difficulty"
+            )
+
             mining_info = await self.node_client.get_mining_info()
             if mining_info and 'difficulty' in mining_info:
-                return float(mining_info['difficulty'])
+                difficulty = float(mining_info['difficulty'])
+
+                logger.debug(
+                    "Получена сложность сети",
+                    event="job_manager_difficulty_received",
+                    difficulty=difficulty
+                )
+                return difficulty
+
+            logger.debug(
+                "Используется сохраненная сложность",
+                event="job_manager_using_cached_difficulty",
+                difficulty=self.difficulty
+            )
             return self.difficulty
+
         except Exception as e:
-            logger.error(f"Ошибка получения сложности: {e}")
+            logger.error(
+                "Ошибка получения сложности сети",
+                event="job_manager_get_difficulty_error",
+                error=str(e),
+                error_type=type(e).__name__
+            )
             return self.difficulty
