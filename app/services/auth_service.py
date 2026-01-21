@@ -5,7 +5,7 @@ from typing import Optional, Tuple
 from datetime import datetime, UTC
 
 from app.utils.logging_config import StructuredLogger
-from app.dependencies import database_service
+#from app.dependencies import database_service
 from app.utils.config import settings
 from app.utils.protocol_helpers import (
     parse_stratum_username,
@@ -18,7 +18,7 @@ logger = StructuredLogger("auth")
 class AuthService:
     """Сервис для авторизации майнеров"""
 
-    def __init__(self):
+    def __init__(self, database_service=None):
         self.database_service = database_service
 
         logger.info(
@@ -59,6 +59,10 @@ class AuthService:
 
         Returns: (success, bch_address, error_message)
         """
+
+        if self.database_service is None:
+            logger.error("DatabaseService не инициализирован в AuthService")
+            return False, None, "Database service not available"
 
         auth_start = datetime.now(UTC)
 

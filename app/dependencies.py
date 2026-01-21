@@ -26,7 +26,7 @@ class DependencyContainer:
     def auth_service(self):
         if self._auth_service is None:
             from app.services.auth_service import AuthService
-            self._auth_service = AuthService()
+            self._auth_service = AuthService(database_service=self.database_service)
             logger.info(
                 "AuthService создан",
                 event="auth_service_created"
@@ -63,7 +63,7 @@ class DependencyContainer:
     def job_service(self):
         if self._job_service is None:
             from app.services.job_service import JobService
-            self._job_service = JobService()
+            self._job_service = JobService(validator=self.share_validator)
             logger.info(
                 "JobService создан",
                 event="job_service_created"

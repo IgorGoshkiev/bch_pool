@@ -72,3 +72,29 @@ async def get_tcp_connections():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка получения списка подключений: {str(e)}"
         )
+
+
+@router.get("/health", response_model=ApiResponse)
+async def check_tcp_stratum_health():
+    """Проверка здоровья TCP Stratum сервера"""
+    try:
+        is_running = tcp_stratum_server.server is not None and not tcp_stratum_server.server.is_serving()
+
+        return ApiResponse(
+            status="success",
+            message="Статус TCP Stratum сервера проверен",
+            data={
+                "status": "running" if is_running else "stopped",
+                "host": tcp_stratum_server.host,
+                "port": tcp_stratum_server.port,
+                "active_connections": len(tcp_stratum_server.connections),
+                "uptime_seconds": (datetime.now(UTC) - tcp_stratum_server.start_time).total_seconds() if hasattr(
+                    tcp_stratum_server, 'start_time') else 0,
+                "timestamp": datetime.now(UTC).isoformat()
+            }
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка проверки здоровья TCP сервера: {str(e)}"
+        )

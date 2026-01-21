@@ -10,7 +10,7 @@ import asyncio
 import json
 import time
 
-from app.utils.logging_config import setup_logging, StructuredLogger
+from app.utils.logging_config import  StructuredLogger
 
 from app.schemas.models import ApiResponse
 from app.models.database import get_db
@@ -24,7 +24,6 @@ from app.dependencies import stratum_server, tcp_stratum_server, database_servic
     job_manager, share_validator
 
 # Настройка логов
-logger = setup_logging()
 api_logger = StructuredLogger("api")
 
 app = FastAPI(
@@ -239,7 +238,7 @@ async def database_stats(db: AsyncSession = Depends(get_db)):
                     "empty": count == 0
                 }
             except Exception as e:
-                logger.debug(f"Ошибка получения статистики для таблицы {table}: {e}")
+                api_logger.debug(f"Ошибка получения статистики для таблицы {table}: {e}")
                 stats[table] = {"error": f"table error: {type(e).__name__}"}
 
         return ApiResponse(
@@ -265,7 +264,7 @@ async def database_stats(db: AsyncSession = Depends(get_db)):
 @app.websocket("/stratum/ws/{miner_address}")
 async def websocket_endpoint(websocket: WebSocket, miner_address: str):
     """Stratum WebSocket для подключения майнеров"""
-    logger.info(f"Stratum подключение: {miner_address}")
+    api_logger.info(f"Stratum подключение: {miner_address}")
 
     connection_id = None
 
@@ -275,18 +274,18 @@ async def websocket_endpoint(websocket: WebSocket, miner_address: str):
         try:
             while True:
                 data = await websocket.receive_json()
-                logger.debug(f"Stratum сообщение от {miner_address}: {data}")
+                api_logger.debug(f"Stratum сообщение от {miner_address}: {data}")
                 await stratum_server.handle_message(websocket, connection_id, data)
 
         except WebSocketDisconnect:
-            logger.info(f"Stratum отключился: {miner_address}")
+            api_logger.info(f"Stratum отключился: {miner_address}")
         except json.JSONDecodeError as e:
-            logger.error(f"Невалидный JSON от {miner_address}: {e}")
+            api_logger.error(f"Невалидный JSON от {miner_address}: {e}")
         except Exception as e:
-            logger.error(f"Ошибка в WebSocket: {type(e).__name__}: {e}")
+            api_logger.error(f"Ошибка в WebSocket: {type(e).__name__}: {e}")
 
     except Exception as e:
-        logger.error(f"Ошибка подключения WebSocket: {e}")
+        api_logger.error(f"Ошибка подключения WebSocket: {e}")
     finally:
         if 'connection_id':
             await stratum_server.disconnect(connection_id)
@@ -343,7 +342,7 @@ async def get_services_stats():
             try:
                 pool_stats = await database_service.get_pool_stats()
             except Exception as e:
-                logger.error(f"Ошибка получения статистики пула из database_service: {e}")
+                api_logger.error(f"Ошибка получения статистики пула из database_service: {e}")
                 pool_stats = {"error": "unavailable"}
 
         return ApiResponse(

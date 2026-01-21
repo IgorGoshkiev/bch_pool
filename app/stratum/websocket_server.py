@@ -320,22 +320,26 @@ class StratumServer:
                 logger.error(
                     "JobManager не установлен в StratumServer",
                     event="stratum_job_manager_missing",
-                    connection_id=connection_id
+                    connection_id=connection_id,
+                    miner_address=miner_address,
+                    job_id=job_id
                 )
-                # Можно сохранить шар без передачи в JobManager
+                # Можно сохранить шар без передачи в JobManager только сохранение в БД
                 response = {
                     "id": msg_id,
                     "result": True,
                     "error": None
                 }
                 await websocket.send_json(response)
+
                 logger.info(
-                    f"Валидный шар принят от {miner_address}",
+                    f"Валидный шар принят (без обработки JobManager)",
                     event="stratum_share_accepted_no_job_manager",
                     connection_id=connection_id,
                     miner_address=miner_address,
                     share_id=share_id,
-                    job_id=job_id
+                    job_id=job_id,
+                    note="JobManager был недоступен, шар сохранен только в БД"
                 )
                 return
 
@@ -349,20 +353,36 @@ class StratumServer:
                 "share_id": share_id
             }
 
-            # Передаем шар в JobManager для дальнейшей обработки
-            result = await self.job_manager.validate_and_save_share(miner_address, share_data)
+            # ********************Передаем шар в JobManager для дальнейшей обработки
+            try:
+                result = await self.job_manager.validate_and_save_share(miner_address, share_data)
 
-            if result.get("status") != "accepted":
-                logger.warning(
-                    "JobManager отклонил шар",
-                    event="stratum_share_rejected_by_job_manager",
+                if result.get("status") != "accepted":
+                    logger.warning(
+                        "JobManager отклонил шар",
+                        event="stratum_share_rejected_by_job_manager",
+                        connection_id=connection_id,
+                        miner_address=miner_address,
+                        job_id=job_id,
+                        rejection_reason=result.get("message", "Unknown")
+                    )
+                    await self._send_error(websocket, msg_id, result.get("message", "Share rejected"))
+                    return
+
+            except Exception as e:
+                logger.error(
+                    "Ошибка при обработке шара в JobManager",
+                    event="stratum_job_manager_error",
                     connection_id=connection_id,
                     miner_address=miner_address,
                     job_id=job_id,
-                    rejection_reason=result.get("message", "Unknown")
+                    error=str(e),
+                    error_type=type(e).__name__
                 )
-                await self._send_error(websocket, msg_id, result.get("message", "Share rejected"))
-                return
+                # Продолжаем обработку, так как шар уже сохранен в БД
+                # Это fallback на случай ошибки в JobManager
+
+
 
             response = {
                 "id": msg_id,
@@ -378,7 +398,8 @@ class StratumServer:
                 miner_address=miner_address,
                 share_id=share_id,
                 job_id=job_id,
-                saved_to_db=saved
+                saved_to_db=saved,
+                job_manager_available=self.job_manager is not None
             )
 
         except Exception as e:

@@ -152,14 +152,11 @@ class StratumTCPServer:
         finally:
             # Очистка
             connection_duration = None
-
             # Всегда пытаемся получить время подключения
             connect_time = self._connection_times.pop(client_id, None)
+
             if connect_time:
                 connection_duration = (datetime.now(UTC) - connect_time).total_seconds()
-
-            # Очищаем соединение (если еще не очищено)
-            self.connections.pop(client_id, None)
 
             # Очищаем задания майнера если он был авторизован
             miner_address = self.miners.get(client_id)
@@ -168,17 +165,10 @@ class StratumTCPServer:
                 self.miners.pop(client_id, None)
 
             try:
-                writer.close()
-                await writer.wait_closed()
+                if not writer.is_closing():
+                    writer.close()
+                    await writer.wait_closed()
 
-                logger.info(
-                    'Клиент отключен',
-                    event="tcp_client_disconnected",
-                    client_id=client_id,
-                    miner_address=miner_address or "unauthorized",
-                    connection_duration_seconds=connection_duration,
-                    remaining_connections=len(self.connections)
-                )
             except Exception as e:
                 logger.warning(
                     'Ошибка при закрытии соединения',
@@ -186,6 +176,19 @@ class StratumTCPServer:
                     client_id=client_id,
                     error=str(e)
                 )
+            finally:
+                # Очистка
+                self.connections.pop(client_id, None)
+                self.miners.pop(client_id, None)
+
+            logger.info(
+                'Клиент отключен',
+                event="tcp_client_disconnected",
+                client_id=client_id,
+                miner_address=miner_address or "unauthorized",
+                connection_duration_seconds=connection_duration,
+                remaining_connections=len(self.connections)
+            )
 
     @staticmethod
     async def _send_welcome(writer: asyncio.StreamWriter):

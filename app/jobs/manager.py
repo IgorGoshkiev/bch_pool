@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 from typing import Optional, Dict
@@ -53,32 +54,59 @@ class JobManager:
                 use_cookie=settings.bch_rpc_use_cookie
             )
 
-            if await self.node_client.connect():
-                # Обновляем локальные переменные из клиента
-                self.block_height = self.node_client.block_height
-                self.difficulty = self.node_client.difficulty
+            # Пробуем подключиться несколько раз
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    if await self.node_client.connect():
+                        # Обновляем локальные переменные из клиента
+                        self.block_height = self.node_client.block_height
+                        self.difficulty = self.node_client.difficulty
 
-                init_time = (datetime.now(UTC) - init_start).total_seconds() * 1000
+                        init_time = (datetime.now(UTC) - init_start).total_seconds() * 1000
 
-                logger.info(
-                    "JobManager успешно инициализирован",
-                    event="job_manager_initialized",
-                    block_height=self.block_height,
-                    difficulty=self.difficulty,
-                    chain=self.node_client.blockchain_info.get('chain', 'unknown') if hasattr(self.node_client,
-                                                                                              'blockchain_info') else 'unknown',
-                    init_time_ms=init_time
-                )
-                return True
-            else:
-                init_time = (datetime.now(UTC) - init_start).total_seconds() * 1000
-                logger.error(
-                    "Не удалось инициализировать JobManager",
-                    event="job_manager_init_failed",
-                    init_time_ms=init_time,
-                    rpc_url=f"{settings.bch_rpc_host}:{settings.bch_rpc_port}"
-                )
-                return False
+                        logger.info(
+                            "JobManager успешно инициализирован",
+                            event="job_manager_initialized",
+                            block_height=self.block_height,
+                            difficulty=self.difficulty,
+                            chain=self.node_client.blockchain_info.get('chain', 'unknown') if hasattr(self.node_client,
+                                                                                                      'blockchain_info') else 'unknown',
+                            init_time_ms=init_time,
+                            connection_attempts=attempt + 1
+                        )
+                        return True
+                    else:
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** attempt  # Экспоненциальная задержка
+                            logger.warning(
+                                f"Попытка {attempt + 1} из {max_retries} не удалась, повтор через {wait_time} сек",
+                                event="job_manager_retry",
+                                attempt=attempt + 1,
+                                max_retries=max_retries,
+                                wait_time_seconds=wait_time
+                            )
+                            await asyncio.sleep(wait_time)
+                except Exception as e:
+                    logger.error(
+                        f"Ошибка при попытке подключения {attempt + 1}",
+                        event="job_manager_connection_error",
+                        attempt=attempt + 1,
+                        error=str(e)
+                    )
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)
+
+            # Все попытки исчерпаны
+            init_time = (datetime.now(UTC) - init_start).total_seconds() * 1000
+            logger.error(
+                "Не удалось инициализировать JobManager после всех попыток",
+                event="job_manager_init_failed",
+                init_time_ms=init_time,
+                rpc_url=f"{settings.bch_rpc_host}:{settings.bch_rpc_port}",
+                max_retries=max_retries
+            )
+            return False
 
         except Exception as e:
             init_time = (datetime.now(UTC) - init_start).total_seconds() * 1000

@@ -112,7 +112,7 @@ class ShareValidator:
             expected_extra_nonce2_len = self.extra_nonce2_size * 2  # байты -> hex символы
 
             # 1. ************** Проверяем формат данных
-            if not self._validate_hex_format(extra_nonce2, expected_extra_nonce2_len):  # <-- Используем переменную!
+            if not self._validate_hex_format(extra_nonce2, expected_extra_nonce2_len):
 
                 self.invalid_shares += 1
                 logger.warning(

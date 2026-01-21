@@ -4,7 +4,6 @@
 from typing import Dict, Optional, Set, List, Tuple
 from datetime import datetime, UTC
 
-from app.dependencies import share_validator
 from app.utils.logging_config import StructuredLogger
 from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
 
@@ -14,7 +13,7 @@ logger = StructuredLogger("job_service")
 class JobService:
     """Сервис для управления заданиями майнинг-пула"""
 
-    def __init__(self):
+    def __init__(self, validator=None):
 
         # Активные задания: job_id -> job_data
         self.active_jobs: Dict[str, dict] = {}
@@ -33,9 +32,10 @@ class JobService:
         self.last_broadcast_job: Optional[dict] = None
 
         # Валидатор - создаем ЭКЗЕМПЛЯР класса
-        self.validator = share_validator
+        self.validator = validator  # Может быть None, если не передан
 
         logger.info("JobService инициализирован")
+
 
     # ========== УПРАВЛЕНИЕ ЗАДАНИЯМИ ==========
 
@@ -378,14 +378,18 @@ class JobService:
             if not job_data:
                 return False, f"Задание {job_id} не найдено", None
 
-            # Валидируем через общий валидатор
+            if self.validator is None:
+                logger.error("Валидатор не инициализирован в JobService")
+                return False, "Validator not initialized", None
+
+            # Валидируем
             is_valid, error_msg = self.validator.validate_share(
                 job_id=job_id,
                 extra_nonce2=extra_nonce2,
                 ntime=ntime,
                 nonce=nonce,
                 miner_address=miner_address
-            ) # noqa
+            )
 
             if not is_valid:
                 return False, error_msg, None

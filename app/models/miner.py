@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Float, func
-from app.models.database import Base
+from app.models import Base
 
 
 class Miner(Base):

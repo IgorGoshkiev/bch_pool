@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from typing import Optional
 from datetime import datetime, timedelta, UTC
 
+from app.utils.logging_config import StructuredLogger
 from app.utils.helpers import humanize_time_ago
 from app.utils.protocol_helpers import DEFAULT_PAGINATION_LIMIT, MAX_PAGINATION_LIMIT
 from app.schemas.models import (
@@ -18,6 +19,8 @@ from app.models.database import get_db
 from app.models.miner import Miner
 from app.models.share import Share
 from app.models.block import Block
+
+logger = StructuredLogger("api")
 
 router = APIRouter(prefix="/miners", tags=["miners"])
 
@@ -322,7 +325,8 @@ async def update_miner(
 @router.get(
     "/{bch_address}/stats",
     summary="Подробная статистика майнера",
-    response_description="Детальная статистика по майнеру"
+    response_description="Детальная статистика по майнеру",
+    response_model=ApiResponse
 )
 async def get_miner_stats(
         bch_address: str,
@@ -340,143 +344,154 @@ async def get_miner_stats(
         - 30d: Последние 30 дней
         - all: Вся история
     """
-    # Сначала находим майнера
-    result = await db.execute(
-        select(Miner).where(Miner.bch_address == bch_address)
-    )
 
-    miner = result.scalar_one_or_none()
-
-    if not miner:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Майнер с адресом {bch_address} не найден"
+    try:
+        # Сначала находим майнера
+        result = await db.execute(
+            select(Miner).where(Miner.bch_address == bch_address)
         )
 
-    # Допустимые значения
-    valid_time_ranges = {"1h", "24h", "7d", "30d", "all"}
+        miner = result.scalar_one_or_none()
 
-    # Если time_range не задан или некорректен, используем по умолчанию
-    if not time_range or time_range not in  valid_time_ranges:
-        time_range = "24h"
+        if not miner:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Майнер с адресом {bch_address} не найден"
+            )
 
-    # Теперь time_range точно строка с допустимым значением
-    time_range_str: str = time_range
+        # Допустимые значения
+        valid_time_ranges = {"1h", "24h", "7d", "30d", "all"}
 
+        # Если time_range не задан или некорректен, используем по умолчанию
+        if not time_range or time_range not in  valid_time_ranges:
+            time_range = "24h"
 
-    # Определяем временной диапазон
-    now = datetime.now(UTC)
-    time_filters = {
-        "1h": now - timedelta(hours=1),
-        "24h": now - timedelta(days=1),
-        "7d": now - timedelta(days=7),
-        "30d": now - timedelta(days=30),
-        "all": None
-    }
-
-    if time_range not in time_filters:
-        time_range = "24h"  # По умолчанию
-
-    time_filter = time_filters[time_range]
-
-    # Словарь для человекочитаемого формата
-    human_readable_map = {
-        "1h": "последний час",
-        "24h": "последние 24 часа",
-        "7d": "последние 7 дней",
-        "30d": "последние 30 дней",
-        "all": "вся история"
-    }
-
-    # Гарантируем что time_range есть и в этом словаре
-    if time_range not in human_readable_map:
-        time_range = "24h"
-
-    # ========================== Статистика по шарам
-    shares_query = select(Share).where(Share.miner_address == bch_address)
-    if time_filter:
-        shares_query = shares_query.where(Share.submitted_at >= time_filter)
-
-    result = await db.execute(shares_query)
-    shares = result.scalars().all()
-
-    # Валидные и невалидные шары
-    valid_shares = [s for s in shares if s.is_valid]
-    invalid_shares = [s for s in shares if not s.is_valid]
-
-    # Средняя сложность
-    avg_difficulty = 0
-    if valid_shares:
-        avg_difficulty = sum(s.difficulty for s in valid_shares) / len(valid_shares)
-
-    #==========================================Статистика по блокам
-    blocks_query = select(Block).where(Block.miner_address == bch_address)
-    if time_filter:
-        blocks_query = blocks_query.where(Block.found_at >= time_filter)
-
-    result = await db.execute(blocks_query)
-    blocks = result.scalars().all()
-
-    # Подтверждённые блоки
-    confirmed_blocks = [b for b in blocks if b.confirmed]
-
-    #================================ Рассчитываем хэшрейт (упрощённо)
-    hashrate_calc = 0.0
-    if valid_shares and time_range != "all":
-        # Примерная формула: сумма сложности / время в секундах
-        total_difficulty = sum(s.difficulty for s in valid_shares)
-        # Используем time_range_str вместо time_range
-        time_seconds_map = {
-            "1h": 3600,
-            "24h": 86400,
-            "7d": 604800,
-            "30d": 2592000
+        # Определяем временной диапазон
+        now = datetime.now(UTC)
+        time_filters = {
+            "1h": now - timedelta(hours=1),
+            "24h": now - timedelta(days=1),
+            "7d": now - timedelta(days=7),
+            "30d": now - timedelta(days=30),
+            "all": None
         }
 
-        #  time_range_str точно есть в словаре
-        time_seconds = time_seconds_map.get(time_range_str, 86400)
+        time_filter = time_filters.get(time_range, time_filters["24h"])
 
-        if time_seconds > 0:
-            hashrate_calc = total_difficulty / time_seconds
+        # Словарь для человекочитаемого формата
+        human_readable_map = {
+            "1h": "последний час",
+            "24h": "последние 24 часа",
+            "7d": "последние 7 дней",
+            "30d": "последние 30 дней",
+            "all": "вся история"
+        }
 
-    return {
-        "miner": {
-            "bch_address": miner.bch_address,
-            "worker_name": miner.worker_name,
-            "is_active": miner.is_active,
-            "registered_at": miner.created_at.isoformat() if hasattr(miner, 'created_at') else None
-        },
-        "time_range": {
-            "selected": time_range_str,
-            "human_readable": human_readable_map[time_range_str]
-        },
-        "statistics": {
-            "shares": {
-                "total": len(shares),
-                "valid": len(valid_shares),
-                "invalid": len(invalid_shares),
-                "validity_rate": len(valid_shares) / len(shares) if shares else 0,
-                "avg_difficulty": avg_difficulty
-            },
-            "blocks": {
-                "total": len(blocks),
-                "confirmed": len(confirmed_blocks),
-                "unconfirmed": len(blocks) - len(confirmed_blocks),
-                "confirmation_rate": len(confirmed_blocks) / len(blocks) if blocks else 0
-            },
-            "performance": {
-                "total_shares": miner.total_shares,
-                "total_blocks": miner.total_blocks,
-                "current_hashrate": miner.hashrate,  # Из БД
-                "calculated_hashrate": hashrate_calc,  # Рассчитанный для периода
-                "unit": "H/s"
+        human_readable = human_readable_map.get(time_range, "последние 24 часа")
+
+        # ========================== Статистика по шарам
+        shares_query = select(Share).where(Share.miner_address == bch_address)
+        if time_filter:
+            shares_query = shares_query.where(Share.submitted_at >= time_filter)
+
+        result = await db.execute(shares_query)
+        shares = result.scalars().all()
+
+        # Валидные и невалидные шары
+        valid_shares = [s for s in shares if s.is_valid]
+        invalid_shares = [s for s in shares if not s.is_valid]
+
+        # Средняя сложность
+        avg_difficulty = 0
+        if valid_shares:
+            avg_difficulty = sum(s.difficulty for s in valid_shares) / len(valid_shares)
+
+        #==========================================Статистика по блокам
+        blocks_query = select(Block).where(Block.miner_address == bch_address)
+        if time_filter:
+            blocks_query = blocks_query.where(Block.found_at >= time_filter)
+
+        result = await db.execute(blocks_query)
+        blocks = result.scalars().all()
+
+        # Подтверждённые блоки
+        confirmed_blocks = [b for b in blocks if b.confirmed]
+
+        #================================ Рассчитываем хэшрейт (упрощённо)
+        hashrate_calc = 0.0
+        if valid_shares and time_range != "all":
+            # Примерная формула: сумма сложности / время в секундах
+            total_difficulty = sum(s.difficulty for s in valid_shares)
+            # Используем time_range_str вместо time_range
+            time_seconds_map = {
+                "1h": 3600,
+                "24h": 86400,
+                "7d": 604800,
+                "30d": 2592000
             }
-        },
-        "recent_activity": {
-            "last_share": shares[-1].submitted_at.isoformat() if shares else None,
-            "last_block": blocks[-1].found_at.isoformat() if blocks else None
-        }
-    }
+
+            #  time_range_str точно есть в словаре
+            time_seconds = time_seconds_map.get(time_range, 86400)
+
+            if valid_shares and time_seconds is not None and time_seconds > 0:
+                # Примерная формула: сумма сложности / время в секундах
+                # Каждый шар с difficulty 1.0 соответствует 2^32 хэшей
+                hashes_per_share = 2 ** 32  # 4,294,967,296
+                total_hashes = sum(s.difficulty * hashes_per_share for s in valid_shares)
+                hashrate_calc = total_hashes / time_seconds
+
+                # Форматируем ответ через ApiResponse
+            return ApiResponse(
+                status="success",
+                message=f"Статистика майнера {bch_address} получена",
+                data={
+                    "miner": {
+                        "bch_address": miner.bch_address,
+                        "worker_name": miner.worker_name,
+                        "is_active": miner.is_active,
+                        "registered_at": miner.created_at.isoformat() if hasattr(miner, 'created_at') else None
+                    },
+                    "time_range": {
+                        "selected": time_range,
+                        "human_readable": human_readable
+                    },
+                    "statistics": {
+                        "shares": {
+                            "total": len(shares),
+                            "valid": len(valid_shares),
+                            "invalid": len(invalid_shares),
+                            "validity_rate": len(valid_shares) / len(shares) if shares else 0,
+                            "avg_difficulty": avg_difficulty
+                        },
+                        "blocks": {
+                            "total": len(blocks),
+                            "confirmed": len(confirmed_blocks),
+                            "unconfirmed": len(blocks) - len(confirmed_blocks),
+                            "confirmation_rate": len(confirmed_blocks) / len(blocks) if blocks else 0
+                        },
+                        "performance": {
+                            "total_shares": miner.total_shares,
+                            "total_blocks": miner.total_blocks,
+                            "current_hashrate": miner.hashrate,  # Из БД
+                            "calculated_hashrate": hashrate_calc,  # Рассчитанный для периода
+                            "unit": "H/s"
+                        }
+                    },
+                    "recent_activity": {
+                        "last_share": shares[-1].submitted_at.isoformat() if shares else None,
+                        "last_block": blocks[-1].found_at.isoformat() if blocks else None
+                    }
+                }
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики майнера {bch_address}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка при получении статистики: {str(e)}"
+        )
 
 
 @router.get(

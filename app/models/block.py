@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from datetime import datetime, UTC
-from app.models.database import Base
+from app.models import Base
 
 
 class Block(Base):

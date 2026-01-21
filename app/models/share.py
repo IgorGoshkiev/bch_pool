@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Float
 from datetime import datetime, UTC
-from app.models.database import Base
+from app.models import Base
 
 
 class Share(Base):

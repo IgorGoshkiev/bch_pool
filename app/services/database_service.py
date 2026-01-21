@@ -7,9 +7,8 @@ from sqlalchemy import select, func
 
 from app.utils.logging_config import StructuredLogger
 from app.models.database import AsyncSessionLocal
-from app.models.miner import Miner
-from app.models.share import Share
-from app.models.block import Block
+from app.models import Miner, Share, Block
+
 
 logger = StructuredLogger("database")
 
