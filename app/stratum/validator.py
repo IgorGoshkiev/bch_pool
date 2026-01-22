@@ -13,7 +13,7 @@ from app.utils.protocol_helpers import (
 # ========== КОНСТАНТЫ ВАЛИДАЦИИ ==========
 TARGET_FOR_DIFFICULTY_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
 
-logger = StructuredLogger("validator")
+logger = StructuredLogger(__name__)
 
 
 class ShareValidator:

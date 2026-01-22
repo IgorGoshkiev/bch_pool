@@ -1,8 +1,12 @@
 from datetime import datetime, UTC
 
+from app.utils.logging_config import StructuredLogger
+
 from fastapi import APIRouter, HTTPException, status
 from app.schemas.models import ApiResponse
 from app.dependencies import job_manager, stratum_server
+
+logger = StructuredLogger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -11,6 +15,7 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 async def get_job_stats():
     """Статистика JobManager"""
     try:
+        logger.debug("Запрос статистики заданий")
         stats = job_manager.get_stats()
 
         return ApiResponse(

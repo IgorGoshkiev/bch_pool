@@ -9,7 +9,7 @@ from app.utils.logging_config import StructuredLogger
 from app.dependencies import job_manager, stratum_server, tcp_stratum_server, share_validator
 from app.utils.config import settings
 
-logger = StructuredLogger("lifespan")
+logger = StructuredLogger(__name__)
 
 
 @asynccontextmanager

@@ -1,9 +1,13 @@
 """TCP Stratum API endpoints"""
 from datetime import datetime, UTC
 
+from app.utils.logging_config import StructuredLogger
+
 from fastapi import APIRouter, HTTPException, status
 from app.schemas.models import ApiResponse
 from app.dependencies import tcp_stratum_server
+
+logger = StructuredLogger(__name__)
 
 router = APIRouter(prefix="/tcp-stratum", tags=["tcp-stratum"])
 
@@ -12,6 +16,7 @@ router = APIRouter(prefix="/tcp-stratum", tags=["tcp-stratum"])
 async def get_tcp_stratum_stats():
     """Статистика TCP Stratum сервера"""
     try:
+        logger.debug("Запрос статистики TCP Stratum")
         return ApiResponse(
             status="success",
             message="Статистика TCP Stratum сервера получена",

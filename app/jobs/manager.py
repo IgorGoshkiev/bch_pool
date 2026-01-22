@@ -12,7 +12,7 @@ from app.jobs.real_node_client import RealBCHNodeClient
 
 from app.dependencies import job_service
 
-logger = StructuredLogger("job_manager")
+logger = StructuredLogger(__name__)
 
 
 class JobManager:

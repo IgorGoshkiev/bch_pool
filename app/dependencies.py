@@ -1,7 +1,7 @@
 """Единый контейнер зависимостей для всего приложения"""
 from app.utils.logging_config import StructuredLogger
 
-logger = StructuredLogger("dependencies")
+logger = StructuredLogger(__name__)
 
 
 class DependencyContainer:

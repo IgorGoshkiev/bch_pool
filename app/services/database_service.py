@@ -10,7 +10,7 @@ from app.models.database import AsyncSessionLocal
 from app.models import Miner, Share, Block
 
 
-logger = StructuredLogger("database")
+logger = StructuredLogger(__name__)
 
 
 class DatabaseService:

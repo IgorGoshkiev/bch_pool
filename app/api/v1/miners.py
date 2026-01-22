@@ -20,7 +20,7 @@ from app.models.miner import Miner
 from app.models.share import Share
 from app.models.block import Block
 
-logger = StructuredLogger("api")
+logger = StructuredLogger(__name__)
 
 router = APIRouter(prefix="/miners", tags=["miners"])
 

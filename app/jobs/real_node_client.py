@@ -8,7 +8,7 @@ from datetime import datetime, UTC
 from app.utils.logging_config import StructuredLogger
 from app.utils.config import settings
 
-logger = StructuredLogger("bch_node")
+logger = StructuredLogger(__name__)
 
 
 class RealBCHNodeClient:

@@ -231,10 +231,3 @@ class StructuredLogger:
                   miner_address=miner_address,
                   **kwargs)
 
-
-# Глобальные логгеры для разных компонентов
-app_logger = StructuredLogger("app")
-stratum_logger = StructuredLogger("stratum")
-job_logger = StructuredLogger("jobs")
-db_logger = StructuredLogger("database")
-api_logger = StructuredLogger("api")

@@ -7,7 +7,7 @@ from datetime import datetime, UTC
 from app.utils.logging_config import StructuredLogger
 from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
 
-logger = StructuredLogger("job_service")
+logger = StructuredLogger(__name__)
 
 
 class JobService:

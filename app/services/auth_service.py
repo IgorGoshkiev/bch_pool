@@ -12,7 +12,7 @@ from app.utils.protocol_helpers import (
     validate_bch_address
 )
 
-logger = StructuredLogger("auth")
+logger = StructuredLogger(__name__)
 
 
 class AuthService:

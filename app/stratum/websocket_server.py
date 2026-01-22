@@ -6,7 +6,7 @@ from app.utils.logging_config import StructuredLogger
 from app.dependencies import auth_service, database_service, job_service
 from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE
 
-logger = StructuredLogger("stratum_ws")
+logger = StructuredLogger(__name__)
 
 
 class StratumServer:

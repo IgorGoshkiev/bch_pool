@@ -4,11 +4,15 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select, true
 
+from app.utils.logging_config import StructuredLogger
+
 from app.schemas.models import ApiResponse
 from app.models.database import get_db
 from app.models.miner import Miner
 from app.models.share import Share
 from app.models.block import Block
+
+logger = StructuredLogger(__name__)
 
 router = APIRouter(prefix="/pool", tags=["pool"])
 
@@ -36,6 +40,7 @@ async def pool_stats(db: AsyncSession = Depends(get_db)):
     - Общий хэшрейт
     """
     try:
+        logger.debug("Запрос статистики пула")
         # Количество майнеров
         result = await db.execute(select(func.count(Miner.id)))
         total_miners = result.scalar() or 0

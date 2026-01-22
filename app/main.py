@@ -24,7 +24,7 @@ from app.dependencies import stratum_server, tcp_stratum_server, database_servic
     job_manager, share_validator
 
 # Настройка логов
-api_logger = StructuredLogger("api")
+api_logger = StructuredLogger(__name__)
 
 app = FastAPI(
     title="BCH Solo Pool API",
