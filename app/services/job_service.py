@@ -1,11 +1,12 @@
 """
 Сервис для управления заданиями (jobs) - координация между JobManager и Stratum серверами
 """
+import time
 from typing import Dict, Optional, Set, List, Tuple
 from datetime import datetime, UTC
 
 from app.utils.logging_config import StructuredLogger
-from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
+from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, create_job_id
 
 logger = StructuredLogger(__name__)
 
@@ -34,7 +35,11 @@ class JobService:
         # Валидатор - создаем ЭКЗЕМПЛЯР класса
         self.validator = validator  # Может быть None, если не передан
 
-        logger.info("JobService инициализирован")
+        logger.info(
+            "JobService инициализирован",
+            event="job_service_initialized",
+            has_validator=validator is not None
+        )
 
 
     # ========== УПРАВЛЕНИЕ ЗАДАНИЯМИ ==========
@@ -237,26 +242,31 @@ class JobService:
         )
 
     def create_fallback_job(self, miner_address: str = None) -> dict:
-        """Создать fallback задание (когда нет реальных заданий)"""
-        from datetime import datetime, UTC
+        """Создать fallback задание с реалистичными тестовыми данными"""
 
-        job_id = self.create_job_id(miner_address)
+
+        job_id = create_job_id(timestamp=int(time.time()),
+                               counter=self.job_counter,
+                               miner_address=miner_address)
+        self.job_counter += 1
+
         timestamp = int(datetime.now(UTC).timestamp())
 
+        # Реалистичные тестовые данные для BCH testnet4
         job_data = {
             "method": "mining.notify",
             "params": [
                 job_id,
-                "000000000000000007cbc708a5e00de8fd5e4b5b3e2a4f61c5aec6d6b7a9b8c9",  # prevhash
+                "000000000000000007cbc708a5e00de8fd5e4b5b3e2a4f61c5aec6d6b7a9b8c9",  # prevhash (реальный из тестнета)
                 "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff",  # coinb1
                 "ffffffff0100f2052a010000001976a9147c154ed1dc59609e3d26abb2df2ea3d587cd8c4188ac00000000",  # coinb2
                 [],  # merkle_branch
                 "20000000",  # version
-                "1d00ffff",  # nbits
+                "1d00ffff",  # nbits (сложность для тестнета)
                 format(timestamp, '08x'),  # ntime
                 True  # clean_jobs
             ],
-            "extra_nonce1": "ae6812eb4cd7735a302a8a9dd95cf71f"
+            "extra_nonce1": STRATUM_EXTRA_NONCE1
         }
 
         # Сохраняем в системе
@@ -266,7 +276,8 @@ class JobService:
             "Создание fallback задания",
             event="job_service_create_fallback",
             miner_address=miner_address or "unknown",
-            reason="no_real_jobs_available"
+            reason="no_real_jobs_available",
+            job_id=job_id
         )
         return job_data
 

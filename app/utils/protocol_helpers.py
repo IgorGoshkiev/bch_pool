@@ -60,9 +60,36 @@ def format_hashrate(hashrate: float) -> str:
 
 
 def validate_bch_address(address: str) -> bool:
-    """Простая валидация BCH адреса"""
-    if not address:
+    """Валидация BCH адреса"""
+    if not address or not isinstance(address, str):
         return False
 
+    # Убираем префикс если есть
+    clean_address = address.lower()
+
+    # Проверяем префиксы
     valid_prefixes = BCH_TESTNET_PREFIXES + BCH_MAINNET_PREFIXES
-    return any(address.startswith(prefix) for prefix in valid_prefixes)
+
+    # Если адрес начинается с префикса, проверяем формат
+    for prefix in valid_prefixes:
+        if clean_address.startswith(prefix):
+            # Убираем префикс для дальнейшей проверки
+            address_part = clean_address[len(prefix):]
+
+            # Базовые проверки длины
+            if len(address_part) < 25 or len(address_part) > 36:
+                return False
+
+            # Проверяем наличие недопустимых символов
+            import re
+            if not re.match(r'^[0-9a-z]+$', address_part):
+                return False
+
+            return True
+
+    # Если нет известного префикса, проверяем legacy форматы
+    if clean_address.startswith('1') or clean_address.startswith('3'):
+        # Legacy Bitcoin форматы (иногда используются в BCH)
+        return 26 <= len(clean_address) <= 35
+
+    return False

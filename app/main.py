@@ -287,7 +287,7 @@ async def websocket_endpoint(websocket: WebSocket, miner_address: str):
     except Exception as e:
         api_logger.error(f"Ошибка подключения WebSocket: {e}")
     finally:
-        if 'connection_id':
+        if connection_id:
             await stratum_server.disconnect(connection_id)
 
 

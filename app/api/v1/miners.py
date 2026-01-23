@@ -441,48 +441,48 @@ async def get_miner_stats(
                 hashrate_calc = total_hashes / time_seconds
 
                 # Форматируем ответ через ApiResponse
-            return ApiResponse(
-                status="success",
-                message=f"Статистика майнера {bch_address} получена",
-                data={
-                    "miner": {
-                        "bch_address": miner.bch_address,
-                        "worker_name": miner.worker_name,
-                        "is_active": miner.is_active,
-                        "registered_at": miner.created_at.isoformat() if hasattr(miner, 'created_at') else None
+        return ApiResponse(
+            status="success",
+            message=f"Статистика майнера {bch_address} получена",
+            data={
+                "miner": {
+                    "bch_address": miner.bch_address,
+                    "worker_name": miner.worker_name,
+                    "is_active": miner.is_active,
+                    "registered_at": miner.created_at.isoformat() if hasattr(miner, 'created_at') else None
+                },
+                "time_range": {
+                    "selected": time_range,
+                    "human_readable": human_readable
+                },
+                "statistics": {
+                    "shares": {
+                        "total": len(shares),
+                        "valid": len(valid_shares),
+                        "invalid": len(invalid_shares),
+                        "validity_rate": len(valid_shares) / len(shares) if shares else 0,
+                        "avg_difficulty": avg_difficulty
                     },
-                    "time_range": {
-                        "selected": time_range,
-                        "human_readable": human_readable
+                    "blocks": {
+                        "total": len(blocks),
+                        "confirmed": len(confirmed_blocks),
+                        "unconfirmed": len(blocks) - len(confirmed_blocks),
+                        "confirmation_rate": len(confirmed_blocks) / len(blocks) if blocks else 0
                     },
-                    "statistics": {
-                        "shares": {
-                            "total": len(shares),
-                            "valid": len(valid_shares),
-                            "invalid": len(invalid_shares),
-                            "validity_rate": len(valid_shares) / len(shares) if shares else 0,
-                            "avg_difficulty": avg_difficulty
-                        },
-                        "blocks": {
-                            "total": len(blocks),
-                            "confirmed": len(confirmed_blocks),
-                            "unconfirmed": len(blocks) - len(confirmed_blocks),
-                            "confirmation_rate": len(confirmed_blocks) / len(blocks) if blocks else 0
-                        },
-                        "performance": {
-                            "total_shares": miner.total_shares,
-                            "total_blocks": miner.total_blocks,
-                            "current_hashrate": miner.hashrate,  # Из БД
-                            "calculated_hashrate": hashrate_calc,  # Рассчитанный для периода
-                            "unit": "H/s"
-                        }
-                    },
-                    "recent_activity": {
-                        "last_share": shares[-1].submitted_at.isoformat() if shares else None,
-                        "last_block": blocks[-1].found_at.isoformat() if blocks else None
+                    "performance": {
+                        "total_shares": miner.total_shares,
+                        "total_blocks": miner.total_blocks,
+                        "current_hashrate": miner.hashrate,  # Из БД
+                        "calculated_hashrate": hashrate_calc,  # Рассчитанный для периода
+                        "unit": "H/s"
                     }
+                },
+                "recent_activity": {
+                    "last_share": shares[-1].submitted_at.isoformat() if shares else None,
+                    "last_block": blocks[-1].found_at.isoformat() if blocks else None
                 }
-            )
+            }
+        )
 
     except HTTPException:
         raise

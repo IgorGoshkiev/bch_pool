@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, UTC
 
 from app.utils.logging_config import StructuredLogger
-from app.dependencies import job_manager, stratum_server, tcp_stratum_server, share_validator
+from app.dependencies import job_manager, stratum_server, tcp_stratum_server, share_validator, difficulty_service
 from app.utils.config import settings
 
 logger = StructuredLogger(__name__)
@@ -114,6 +114,24 @@ async def lifespan(_app):
                 event="job_cleanup_start_failed",
                 error=str(e)
             )
+
+        # 6. Запускаем периодическое обновление сложности
+        if settings.enable_dynamic_difficulty:
+            try:
+                difficulty_task = asyncio.create_task(_periodic_difficulty_updater())
+                background_tasks.append(difficulty_task)
+                logger.info(
+                    "Периодическое обновление сложности запущено",
+                    event="difficulty_updater_started",
+                    interval_seconds=settings.difficulty_update_interval,
+                    task_id=id(difficulty_task)
+                )
+            except Exception as e:
+                logger.error(
+                    "Ошибка запуска обновления сложности",
+                    event="difficulty_updater_start_failed",
+                    error=str(e)
+                )
 
         # Логируем успешный запуск
         startup_duration = (datetime.now(UTC) - startup_time).total_seconds()
@@ -283,6 +301,66 @@ async def _periodic_job_broadcaster():
             )
             await asyncio.sleep(5)
 
+
+# Добавим новую фоновую задачу:
+async def _periodic_difficulty_updater():
+    """Периодическое обновление сложности"""
+    iteration = 0
+    task_id = id(asyncio.current_task())
+
+    logger.debug(
+        "Запуск периодического обновления сложности",
+        event="difficulty_updater_loop_started",
+        task_id=task_id
+    )
+
+    while True:
+        iteration += 1
+        try:
+            await asyncio.sleep(settings.difficulty_update_interval)
+
+            # Обновляем сложность
+            updated, new_difficulty, message = await difficulty_service.update_difficulty()
+
+            if updated:
+                # Обновляем валидатор
+                share_validator.target_difficulty = new_difficulty
+
+                logger.info(
+                    "Сложность обновлена периодической задачей",
+                    event="difficulty_periodic_update",
+                    iteration=iteration,
+                    new_difficulty=new_difficulty,
+                    message=message
+                )
+            else:
+                logger.debug(
+                    "Сложность не изменилась",
+                    event="difficulty_no_update",
+                    iteration=iteration,
+                    current_difficulty=difficulty_service.current_difficulty,
+                    message=message
+                )
+
+            # Очищаем старые данные
+            difficulty_service.cleanup_old_data(max_age_hours=24)
+
+        except asyncio.CancelledError:
+            logger.info(
+                "Задача обновления сложности остановлена",
+                event="difficulty_updater_stopped",
+                task_id=task_id,
+                total_iterations=iteration
+            )
+            break
+        except Exception as e:
+            logger.error(
+                "Ошибка в обновлении сложности",
+                event="difficulty_updater_error",
+                iteration=iteration,
+                error=str(e)
+            )
+            await asyncio.sleep(30)
 
 async def _periodic_job_cleanup():
     """Периодическая очистка старых заданий"""

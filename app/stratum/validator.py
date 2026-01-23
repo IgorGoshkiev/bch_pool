@@ -19,9 +19,13 @@ logger = StructuredLogger(__name__)
 class ShareValidator:
     """Валидатор шаров (shares) для Stratum протокола"""
 
-    def __init__(self, target_difficulty: float = 1.0, extra_nonce2_size: int = EXTRA_NONCE2_SIZE):
+    def __init__(self,
+                 target_difficulty: float = 1.0,
+                 extra_nonce2_size: int = EXTRA_NONCE2_SIZE,
+                 extra_nonce1: str = STRATUM_EXTRA_NONCE1):
         self.target_difficulty = target_difficulty
         self.extra_nonce2_size = extra_nonce2_size  # Размер extra_nonce2 в байтах
+        self.extra_nonce1 = extra_nonce1  # Extra nonce 1 из конфигурации
         self.jobs_cache: Dict[str, dict] = {}  # Кэш заданий: job_id -> job_data
         self._used_nonces: Dict[str, set] = {}  # job_id -> set of nonces
         self.validated_shares = 0
@@ -33,6 +37,7 @@ class ShareValidator:
             event="validator_initialized",
             target_difficulty=target_difficulty,
             extra_nonce2_size=extra_nonce2_size,
+            extra_nonce1_length=len(extra_nonce1),
             start_time=self.start_time.isoformat()
         )
 
@@ -308,8 +313,8 @@ class ShareValidator:
     def _check_nonce_uniqueness(self, job_id: str, nonce: str) -> bool:
         """Проверка уникальности nonce для задания"""
         # Используем set для хранения использованных nonce
-        if not hasattr(self, '_used_nonces'):
-            self._used_nonces = {}  # job_id -> set of nonces
+        # if not hasattr(self, '_used_nonces'):
+        #     self._used_nonces = {}  # job_id -> set of nonces
 
         if job_id not in self._used_nonces:
             self._used_nonces[job_id] = set()
@@ -335,7 +340,7 @@ class ShareValidator:
                 self._used_nonces[job_id] = set(all_nonces[-max_per_job:])
 
     @staticmethod
-    def calculate_hash(job_data: dict, extra_nonce2: str, ntime: str, nonce: str) -> str:
+    def calculate_hash(self, job_data: dict, extra_nonce2: str, ntime: str, nonce: str) -> str:
         """Расчет хэша заголовка блока"""
         try:
             # Параметры из задания Stratum
@@ -346,10 +351,10 @@ class ShareValidator:
             # merkle_branch = params[4]  # ветки Merkle дерева (не используется)
             version = params[5]  # версия блока
             nbits = params[6]  # сложность в compact формате
-            # ntime_param = params[7]  # время из задания (не используется, используем ntime из параметра)
+            # ntime_param = params[7]  # время из задания
 
-            # Используем extra_nonce1 из Stratum ответа на subscribe
-            extra_nonce1 = "ae6812eb4cd7735a302a8a9dd95cf71f"
+            # Используем extra_nonce1 из инициализации
+            extra_nonce1 = self.extra_nonce1
 
             # Собираем coinbase транзакцию
             coinbase = coinb1 + extra_nonce1 + extra_nonce2 + coinb2
@@ -358,17 +363,17 @@ class ShareValidator:
             coinbase_hash = hashlib.sha256(hashlib.sha256(bytes.fromhex(coinbase)).digest()).digest()
 
             # Для упрощения используем только coinbase хэш как Merkle root
-            # TODO В реальности нужно вычислить полное Merkle дерево
+            # TODO: В реальности нужно вычислить полное Merkle дерево с другими транзакциями
             merkle_root = coinbase_hash.hex()
 
             # Собираем заголовок блока
             header = (
-                bytes.fromhex(version)[::-1] +  # version (little-endian)
-                bytes.fromhex(prevhash)[::-1] +  # previous block hash
-                bytes.fromhex(merkle_root)[::-1] +  # merkle root
-                bytes.fromhex(ntime)[::-1] +  # timestamp
-                bytes.fromhex(nbits)[::-1] +  # bits
-                bytes.fromhex(nonce)[::-1]  # nonce
+                    bytes.fromhex(version)[::-1] +  # version (little-endian)
+                    bytes.fromhex(prevhash)[::-1] +  # previous block hash
+                    bytes.fromhex(merkle_root)[::-1] +  # merkle root
+                    bytes.fromhex(ntime)[::-1] +  # timestamp
+                    bytes.fromhex(nbits)[::-1] +  # bits
+                    bytes.fromhex(nonce)[::-1]  # nonce
             )
 
             # Двойной SHA256

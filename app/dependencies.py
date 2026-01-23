@@ -15,11 +15,44 @@ class DependencyContainer:
         self._job_manager = None
         self._stratum_server = None
         self._tcp_stratum_server = None
+        self._difficulty_service = None
+        self._network_manager = None
 
         logger.info(
             "DependencyContainer инициализирован",
             event="dependencies_container_created"
         )
+
+        # === NETWORK MANAGER ===
+
+    @property
+    def network_manager(self):
+        if self._network_manager is None:
+            from app.utils.network_config import NetworkManager
+            self._network_manager = NetworkManager()
+            logger.info(
+                "NetworkManager создан",
+                event="network_manager_created",
+                network=self._network_manager.network
+            )
+        return self._network_manager
+
+    # === DIFFICULTY SERVICE ===
+    @property
+    def difficulty_service(self):
+        if self._difficulty_service is None:
+            from app.services.difficulty_service import DifficultyService
+            # Передаем network_manager в конструктор
+            self._difficulty_service = DifficultyService(
+                network_manager=self.network_manager
+            )
+            logger.info(
+                "DifficultyService создан",
+                event="difficulty_service_created",
+                current_difficulty=self._difficulty_service.current_difficulty,
+                network=self._difficulty_service.network_manager.network
+            )
+        return self._difficulty_service
 
     # === AUTH SERVICE ===
     @property
@@ -50,11 +83,22 @@ class DependencyContainer:
     def share_validator(self):
         if self._share_validator is None:
             from app.stratum.validator import ShareValidator
-            self._share_validator = ShareValidator()
+            from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE
+
+            # Используем сложность из difficulty_service
+            initial_difficulty = self.difficulty_service.current_difficulty
+
+            self._share_validator = ShareValidator(
+                target_difficulty=initial_difficulty,
+                extra_nonce2_size=EXTRA_NONCE2_SIZE,
+                extra_nonce1=STRATUM_EXTRA_NONCE1
+            )
+
             logger.info(
                 "ShareValidator создан",
                 event="share_validator_created",
-                target_difficulty=self._share_validator.target_difficulty
+                target_difficulty=initial_difficulty,
+                extra_nonce2_size=EXTRA_NONCE2_SIZE
             )
         return self._share_validator
 
@@ -66,7 +110,8 @@ class DependencyContainer:
             self._job_service = JobService(validator=self.share_validator)
             logger.info(
                 "JobService создан",
-                event="job_service_created"
+                event="job_service_created",
+                has_validator=self.share_validator is not None
             )
         return self._job_service
 
@@ -120,7 +165,9 @@ class DependencyContainer:
             "share_validator": self._share_validator is not None,
             "job_manager": self._job_manager is not None,
             "stratum_server": self._stratum_server is not None,
-            "tcp_stratum_server": self._tcp_stratum_server is not None
+            "tcp_stratum_server": self._tcp_stratum_server is not None,
+            "difficulty_service": self._difficulty_service is not None,
+            "network_manager": self._network_manager is not None
         }
 
         logger.debug(
@@ -144,3 +191,5 @@ job_service = container.job_service
 job_manager = container.job_manager
 stratum_server = container.stratum_server
 tcp_stratum_server = container.tcp_stratum_server
+difficulty_service = container.difficulty_service
+network_manager = container.network_manager

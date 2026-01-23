@@ -12,15 +12,24 @@ class Settings(BaseSettings):
 
     # BCH нода
     bch_rpc_host: str = "127.0.0.1"
-    bch_rpc_port: int = 28332  #
+    bch_rpc_port: int = 28332  #  testnet4 по умолчанию
     bch_rpc_user: Optional[str] = None  # Используем cookie
     bch_rpc_password: Optional[str] = None
-    # bch_use_cookie: bool = True
     bch_rpc_use_cookie: bool = True
+
+    # Настройка сети (автоматически определяется по порту)
+    bch_network: Optional[str] = None  # mainnet, testnet, testnet4, regtest
 
     # Настройки пула
     pool_fee_percent: float = 1.5
     pool_wallet: str = ""
+
+    # Динамическая сложность
+    enable_dynamic_difficulty: bool = True
+    difficulty_update_interval: int = 300  # секунды
+    min_difficulty: float = 0.001
+    max_difficulty: float = 1000.0
+    target_shares_per_minute: int = 60  # Цель - 1 шар в секунду
 
     # Stratum серверы
     stratum_host: str = "0.0.0.0"

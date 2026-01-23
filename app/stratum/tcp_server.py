@@ -24,6 +24,8 @@ class StratumTCPServer:
         self.database_service = database_service
         self.job_service = job_service
         self.start_time = datetime.now(UTC)
+        self._lock = asyncio.Lock()  # Для синхронизации доступа
+        self.max_connections = 1000  # Максимальное количество подключений
 
         logger.info(
             "TCP Stratum сервер инициализирован",
@@ -78,10 +80,27 @@ class StratumTCPServer:
         addr = writer.get_extra_info('peername')
         client_id = f"{addr[0]}:{addr[1]}"
 
+        # Проверка максимального количества подключений:
+        async with self._lock:
+            if len(self.connections) >= self.max_connections:
+                logger.warning(
+                    "Превышено максимальное количество подключений",
+                    event="tcp_max_connections_reached",
+                    client_id=client_id,
+                    current_connections=len(self.connections),
+                    max_connections=self.max_connections
+                )
+                writer.close()
+                await writer.wait_closed()
+                return
+
+
         # Записываем время подключения
         connect_time = datetime.now(UTC)
-        self._connection_times[client_id] = connect_time
-        self.connections[client_id] = writer
+
+        async with self._lock:
+            self._connection_times[client_id] = connect_time
+            self.connections[client_id] = writer
 
         logger.info(
             'Новое TCP подключение',
@@ -150,25 +169,36 @@ class StratumTCPServer:
                 error_type=type(e).__name__
             )
         finally:
-            # Очистка
+            # Получаем данные до очистки
+            miner_address = None
             connection_duration = None
-            # Всегда пытаемся получить время подключения
-            connect_time = self._connection_times.pop(client_id, None)
 
+            async with self._lock:
+                # Получаем информацию о майнере и времени подключения
+                miner_address = self.miners.get(client_id)
+                connect_time = self._connection_times.get(client_id)
+
+                # Получаем количество оставшихся подключений ДО очистки
+                remaining = len(self.connections) - 1 if client_id in self.connections else len(self.connections)
+
+                # Очищаем все данные клиента
+                self.miners.pop(client_id, None)
+                self.connections.pop(client_id, None)
+                self._connection_times.pop(client_id, None)
+
+            # Рассчитываем длительность подключения
             if connect_time:
                 connection_duration = (datetime.now(UTC) - connect_time).total_seconds()
 
             # Очищаем задания майнера если он был авторизован
-            miner_address = self.miners.get(client_id)
             if miner_address:
                 self.job_service.cleanup_miner_jobs(miner_address)
-                self.miners.pop(client_id, None)
 
+            # Закрываем соединение
             try:
                 if not writer.is_closing():
                     writer.close()
                     await writer.wait_closed()
-
             except Exception as e:
                 logger.warning(
                     'Ошибка при закрытии соединения',
@@ -176,10 +206,6 @@ class StratumTCPServer:
                     client_id=client_id,
                     error=str(e)
                 )
-            finally:
-                # Очистка
-                self.connections.pop(client_id, None)
-                self.miners.pop(client_id, None)
 
             logger.info(
                 'Клиент отключен',
@@ -187,7 +213,7 @@ class StratumTCPServer:
                 client_id=client_id,
                 miner_address=miner_address or "unauthorized",
                 connection_duration_seconds=connection_duration,
-                remaining_connections=len(self.connections)
+                remaining_connections=remaining  # Используем предварительно рассчитанное значение
             )
 
     @staticmethod
@@ -254,9 +280,9 @@ class StratumTCPServer:
                     return
 
                 # Сохраняем адрес майнера
-                self.miners[client_id] = authorized_address
-                miner_address = authorized_address
-                self.connections[client_id] = writer
+                async with self._lock:
+                    self.miners[client_id] = authorized_address
+                    miner_address = authorized_address
 
                 # Отправляем успешный ответ
                 response = {

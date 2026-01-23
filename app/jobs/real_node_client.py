@@ -13,7 +13,6 @@ logger = StructuredLogger(__name__)
 
 class RealBCHNodeClient:
     """Реальный клиент для подключения к BCH ноде"""
-    #TODO нужно переделать на bch_rpc_port: int = 18332
     def __init__(self,
                  rpc_host: str = settings.bch_rpc_host,
                  rpc_port: int = settings.bch_rpc_port,
