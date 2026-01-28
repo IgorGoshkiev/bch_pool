@@ -1,5 +1,5 @@
 """
-Утилиты для работы с BCH адресами (обновленная версия)
+Утилиты для работы с BCH адресами
 Использует CashAddr класс для полной поддержки BCH адресов
 """
 from typing import Optional, Tuple
@@ -35,6 +35,8 @@ class BCHAddress:
                     info=info,
                     network=network or "any"
                 )
+                return is_valid, info
+
             else:
                 logger.warning(
                     "BCH адрес невалиден",
@@ -43,8 +45,7 @@ class BCHAddress:
                     info=info,
                     network=network or "any"
                 )
-
-            return is_valid, info if is_valid else None
+                return is_valid, info
 
         except ValueError as e:
             # Ошибки валидации
@@ -395,12 +396,12 @@ def detect_address_type(address: str) -> Optional[str]:
     try:
         if ':' in address.lower():
             # CashAddr формат
-            _, addr_type, _ = CashAddr.decode_address(address)
+            _, addr_type, _ = CashAddr.decode_address(address.lower())
             return addr_type
         else:
-            # Legacy формат
+            # Legacy формат - НЕ используем lower!
             import base58
-            decoded = base58.b58decode_check(address.lower())
+            decoded = base58.b58decode_check(address)  # Убрали .lower()
             version = decoded[0]
 
             if version in [0x00, 0x6f]:  # P2KH

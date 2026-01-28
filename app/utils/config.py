@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 from typing import Optional
 
 
@@ -12,7 +13,7 @@ class Settings(BaseSettings):
 
     # BCH нода
     bch_rpc_host: str = "127.0.0.1"
-    bch_rpc_port: int = 28332  #  testnet4 по умолчанию
+    bch_rpc_port: int = 28332  # testnet4 по умолчанию
     bch_rpc_user: Optional[str] = None  # Используем cookie
     bch_rpc_password: Optional[str] = None
     bch_rpc_use_cookie: bool = True
@@ -61,10 +62,11 @@ class Settings(BaseSettings):
     # Разработка
     debug: bool = False
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"  # ← ВАЖНО: игнорируем лишние поля
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
 
 settings = Settings()

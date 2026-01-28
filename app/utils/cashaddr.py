@@ -12,7 +12,7 @@ logger = StructuredLogger(__name__)
 
 # Константы CashAddr
 CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-CHECKSUM_CONST = 1
+CHECKSUM_CONST = 0
 GENERATOR = [0x98f2bc8e61, 0x79b76d99e2, 0xf33e5fb3c4, 0xae2eabe2a8, 0x1e4f43e470]
 
 # Типы адресов
@@ -25,6 +25,7 @@ ADDRESS_TYPES = {
 NETWORK_PREFIXES = {
     'mainnet': 'bitcoincash',
     'testnet': 'bchtest',
+    'testnet4': 'bchtest',
     'regtest': 'bchreg'
 }
 
@@ -35,6 +36,7 @@ class CashAddr:
     @staticmethod
     def polymod(values: List[int]) -> int:
         """Полиномиальная функция для расчета checksum"""
+        # Реализация из спецификации CashAddr
         chk = 1
         for value in values:
             top = chk >> 35
@@ -42,7 +44,7 @@ class CashAddr:
             for i in range(5):
                 if (top >> i) & 1:
                     chk ^= GENERATOR[i]
-        return chk ^ 1
+        return chk ^ 1  # ВНИМАНИЕ: здесь XOR с 1
 
     @staticmethod
     def expand_prefix(prefix: str) -> List[int]:
@@ -52,7 +54,13 @@ class CashAddr:
     @staticmethod
     def calculate_checksum(prefix: str, payload: List[int]) -> List[int]:
         """Расчет checksum для CashAddr"""
-        poly = CashAddr.polymod(CashAddr.expand_prefix(prefix) + payload + [0, 0, 0, 0, 0, 0, 0, 0])
+        # Создаем расширенный payload с нулями вместо checksum
+        expanded = CashAddr.expand_prefix(prefix) + payload + [0, 0, 0, 0, 0, 0, 0, 0]
+
+        # Вычисляем полином
+        poly = CashAddr.polymod(expanded)
+
+        # Преобразуем результат в checksum (8 символов по 5 бит)
         checksum = []
         for i in range(8):
             checksum.append((poly >> (5 * (7 - i))) & 0x1f)
@@ -60,13 +68,16 @@ class CashAddr:
 
     @staticmethod
     def verify_checksum(prefix: str, payload: List[int]) -> bool:
-        """Проверка checksum CashAddr"""
-        poly = CashAddr.polymod(CashAddr.expand_prefix(prefix) + payload)
-        return poly == CHECKSUM_CONST
+        """Проверка checksum CashAddr """
+        # Согласно спецификации, checksum рассчитывается для всей payload ВКЛЮЧАЯ checksum
+        # И результат должен быть 0
+        expanded = CashAddr.expand_prefix(prefix) + payload
+        return CashAddr.polymod(expanded) == 0
 
     @staticmethod
     def encode(prefix: str, payload: List[int]) -> str:
         """Кодирование в CashAddr"""
+        # Сначала рассчитываем checksum для payload БЕЗ checksum
         checksum = CashAddr.calculate_checksum(prefix, payload)
         combined = payload + checksum
         result = prefix + ':'
@@ -84,19 +95,27 @@ class CashAddr:
 
         prefix, encoded = address.split(':')
 
-        # Проверяем префикс
-        if prefix not in NETWORK_PREFIXES.values():
+        # Проверяем регистр (не должен быть смешанным)
+        if encoded.lower() != encoded and encoded.upper() != encoded:
+            raise ValueError("Mixed case in address")
+
+        # Используем нижний регистр
+        encoded = encoded.lower()
+
+        # Проверяем префикс - разрешаем все возможные префиксы
+        valid_prefixes = ['bitcoincash', 'bchtest', 'bchreg']
+        if prefix not in valid_prefixes:
             raise ValueError(f"Unknown prefix: {prefix}")
 
         # Декодируем payload
         payload = []
-        for char in encoded.lower():
+        for char in encoded:
             if char not in CHARSET:
                 raise ValueError(f"Invalid character in address: {char}")
             payload.append(CHARSET.index(char))
 
         # Проверяем checksum
-        if not CashAddr.verify_checksum(prefix, payload[:-8]):
+        if not CashAddr.verify_checksum(prefix, payload):
             raise ValueError(f"Invalid checksum for address: {address}")
 
         # Возвращаем без checksum
@@ -271,10 +290,9 @@ class BCHAddressUtils:
             if not address:
                 return False, "Empty address"
 
-            address_lower = address.lower()
-
-            # Проверяем CashAddr формат
-            if ':' in address_lower:
+            # Для CashAddr используем lower для проверки регистра
+            if ':' in address:
+                address_lower = address.lower()
                 try:
                     prefix, address_type, _ = CashAddr.decode_address(address_lower)
 
@@ -293,10 +311,10 @@ class BCHAddressUtils:
                 except Exception as e:
                     return False, f"Invalid CashAddr: {str(e)}"
 
-            # Проверяем legacy формат
+            # Для legacy формата НЕ используем lower!
             else:
                 try:
-                    decoded = base58.b58decode_check(address_lower)
+                    decoded = base58.b58decode_check(address)
                     if len(decoded) != 21:
                         return False, f"Invalid length: {len(decoded)}"
 
@@ -313,7 +331,7 @@ class BCHAddressUtils:
                     if version in version_to_network:
                         addr_type, addr_network = version_to_network[version]
 
-                        # Проверяем сеть если указана - ПАРАМЕТР ИСПОЛЬЗУЕТСЯ!
+                        # Проверяем сеть если указана
                         if network and addr_network != network:
                             return False, f"Wrong network. Expected {network}, got {addr_network}"
 
@@ -370,7 +388,7 @@ class BCHAddressUtils:
                     return hash_bytes
             else:
                 # Legacy формат
-                decoded = base58.b58decode_check(address.lower())
+                decoded = base58.b58decode_check(address)
                 version = decoded[0]
 
                 # Только P2KH адреса
@@ -389,7 +407,7 @@ class BCHAddressUtils:
         try:
             if ':' in address.lower():
                 # CashAddr формат
-                prefix, _, _ = CashAddr.decode_address(address)
+                prefix, _, _ = CashAddr.decode_address(address.lower())
 
                 # Находим сеть по префиксу
                 for network, net_prefix in NETWORK_PREFIXES.items():
@@ -398,8 +416,8 @@ class BCHAddressUtils:
 
                 return None
             else:
-                # Legacy формат
-                decoded = base58.b58decode_check(address.lower())
+                # Legacy формат - НЕ используем lower!
+                decoded = base58.b58decode_check(address)
                 version = decoded[0]
 
                 # Определяем сеть по версии
@@ -409,7 +427,6 @@ class BCHAddressUtils:
                     return 'testnet'
                 else:
                     return None
-
 
         except Exception as e:
             logger.error(f"Error detect network {address}: {e}")

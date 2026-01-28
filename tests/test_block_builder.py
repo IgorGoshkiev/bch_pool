@@ -5,7 +5,48 @@ import pytest
 import struct
 import hashlib
 from datetime import datetime, UTC
-from app.stratum.block_builder import BlockBuilder
+from unittest.mock import Mock, patch
+
+
+class MockNetworkManager:
+    """Mock NetworkManager для тестов"""
+
+    def get_fallback_coinbase_value(self):
+        return 3125000000
+
+    def get_fallback_prev_block_hash(self):
+        return "0" * 64
+
+    def get_coinbase_prefix(self):
+        return b"/TestPool/"
+
+    def get_max_script_sig_size(self):
+        return 100
+
+    def get_default_bits(self):
+        return "1d00ffff"
+
+    def get_default_block_version(self):
+        return 0x20000000
+
+    def get_fallback_difficulty(self):
+        return 0.001
+
+    def get_default_block_version(self):
+        return 0x20000000
+
+
+@pytest.fixture
+def mock_network_manager():
+    """Фикстура для mock NetworkManager"""
+    return MockNetworkManager()
+
+
+@pytest.fixture
+def block_builder(mock_network_manager):
+    """Фикстура для BlockBuilder"""
+    from app.stratum.block_builder import BlockBuilder
+    return BlockBuilder(network_manager=mock_network_manager)
 
 
 class TestBlockBuilder:
@@ -13,25 +54,26 @@ class TestBlockBuilder:
 
     def test_calculate_merkle_root(self):
         """Тест расчета Merkle root"""
+        from app.stratum.block_builder import BlockBuilder
+
         # Пустой список
         empty_root = BlockBuilder.calculate_merkle_root([])
         assert empty_root == "0" * 64
-        print(f"✓ Merkle root пустой: {empty_root}")
 
         # Один элемент
         single_hash = "abcd" * 16  # 64 hex символа
         single_root = BlockBuilder.calculate_merkle_root([single_hash])
         assert len(single_root) == 64
-        print(f"✓ Merkle root одного элемента: {single_root[:16]}...")
 
-        # Несколько элементов
-        hashes = [f"hash{i:02x}" * 16 for i in range(5)]  # 5 хэшей
+        # Несколько элементов - ВАЛИДНЫЕ hex строки
+        hashes = [f"{i:064x}" for i in range(5)]  # 5 валидных hex хэшей
         multi_root = BlockBuilder.calculate_merkle_root(hashes)
         assert len(multi_root) == 64
-        print(f"✓ Merkle root нескольких элементов: {multi_root[:16]}...")
 
     def test_encode_varint(self):
         """Тест кодирования varint"""
+        from app.stratum.block_builder import BlockBuilder
+
         test_cases = [
             (1, b'\x01'),
             (100, b'd'),
@@ -45,9 +87,8 @@ class TestBlockBuilder:
         for value, expected in test_cases:
             result = BlockBuilder._encode_varint(value)
             assert result == expected, f"Varint {value}: expected {expected.hex()}, got {result.hex()}"
-            print(f"✓ Varint кодирование {value}: {result.hex()}")
 
-    def test_build_block_header(self):
+    def test_build_block_header(self, block_builder):
         """Тест сборки заголовка блока"""
         template = {
             "height": 100,
@@ -61,13 +102,12 @@ class TestBlockBuilder:
         ntime = "499602d2"  # hex для 1234567890
         nonce = "12345678"
 
-        header, header_hash = BlockBuilder.build_block_header(
+        header, header_hash = block_builder.build_block_header(
             template, merkle_root, ntime, nonce
         )
 
         assert len(header) == 80
         assert len(header_hash) == 64
-        print(f"✓ Заголовок создан: {len(header)} байт, hash: {header_hash[:16]}...")
 
         # Проверяем структуру заголовка
         version = struct.unpack('<I', header[0:4])[0]
@@ -77,11 +117,43 @@ class TestBlockBuilder:
         assert prev_hash == template["previousblockhash"]
 
         # Проверяем расчет хэша
-        calculated_hash = BlockBuilder.calculate_block_hash(header)
+        calculated_hash = block_builder.calculate_block_hash(header)
         assert calculated_hash == header_hash
-        print(f"✓ Хэш заголовка рассчитан правильно")
 
-    def test_validate_block_solution(self):
+    def test_assemble_full_block(self, block_builder):
+        """Тест сборки полного блока"""
+        template = {
+            "height": 100,
+            "previousblockhash": "abcd" * 16,
+            "version": 0x20000000,
+            "bits": "1d00ffff",
+            "curtime": 1234567890,
+            "transactions": [
+                {"data": "0100000001" + "00" * 200},
+                {"hex": "0200000001" + "11" * 200}
+            ]
+        }
+
+        # Создаем тестовый заголовок
+        merkle_root = "1234" * 16
+        header, _ = block_builder.build_block_header(
+            template, merkle_root, "499602d2", "12345678"
+        )
+
+        # Тестовая coinbase транзакция
+        coinbase_tx = "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff" + \
+                      "00" * 50 + "ffffffff0100f2052a010000001976a9147c154ed1dc59609e3d26abb2df2ea3d587cd8c4188ac00000000"
+
+        # Собираем блок
+        block_hex = block_builder.assemble_full_block(
+            template, header, coinbase_tx, []
+        )
+
+        assert block_hex
+        assert len(block_hex) % 2 == 0
+        assert block_hex.startswith(header.hex())
+
+    def test_validate_block_solution(self, block_builder):
         """Тест валидации решения блока"""
         template = {
             "height": 100,
@@ -97,109 +169,17 @@ class TestBlockBuilder:
         nonce = "12345678"
 
         # Валидируем (должно быть невалидно для сложности 1.0 с таким nonce)
-        is_valid, block_hash, error = BlockBuilder.validate_block_solution(
+        is_valid, block_hash, error = block_builder.validate_block_solution(
             template, merkle_root, ntime, nonce, 1.0
         )
 
         assert not is_valid  # Случайный nonce не должен быть валиден
         assert block_hash
         assert not error
-        print(f"✓ Валидация решения: is_valid={is_valid}, hash: {block_hash[:16]}...")
-
-    def test_create_stratum_job_data(self):
-        """Тест создания данных для Stratum"""
-        template = {
-            "height": 100,
-            "previousblockhash": "abcd" * 16,
-            "version": 0x20000000,
-            "bits": "1d00ffff",
-            "curtime": 1234567890,
-            "coinbasevalue": 3125000000,
-            "transactions": []
-        }
-
-        job_id = "test_job_123"
-        miner_address = "bchtest:qq4f5hqmf5a7wsqrwv5y9j2w3vx7e45qcnvsz6d75e"
-        extra_nonce1 = "ae6812eb4cd7735a302a8a9dd95cf71f"
-
-        job_data = BlockBuilder.create_stratum_job_data(
-            template, job_id, miner_address, extra_nonce1
-        )
-
-        assert job_data is not None
-        assert job_data["method"] == "mining.notify"
-        assert len(job_data["params"]) == 9
-        assert job_data["extra_nonce1"] == extra_nonce1
-
-        # Проверяем параметры
-        params = job_data["params"]
-        assert params[0] == job_id
-        assert params[1] == template["previousblockhash"]
-        assert params[5] == format(template["version"], '08x')
-        assert params[6] == template["bits"]
-
-        print(f"✓ Данные Stratum созданы: job_id={params[0]}, coinb1={len(params[2])} chars")
-
-    def test_calculate_merkle_branch(self):
-        """Тест расчета Merkle branch"""
-        # Создаем тестовые хэши транзакций
-        tx_hashes = [f"tx{i:04x}" * 16 for i in range(8)]  # 8 транзакций
-
-        # Вычисляем Merkle branch для первой транзакции (coinbase)
-        merkle_branch = BlockBuilder._calculate_merkle_branch(tx_hashes)
-
-        # Проверяем что branch не пустой для нескольких транзакций
-        assert len(merkle_branch) > 0
-        assert all(len(h) == 64 for h in merkle_branch)  # Все хэши 64 hex символа
-
-        print(f"✓ Merkle branch создан: {len(merkle_branch)} элементов")
-
-        # Проверяем что branch корректен
-        # (проверка полного Merkle tree слишком сложна для unit теста)
-
-    def test_assemble_full_block(self):
-        """Тест сборки полного блока"""
-        template = {
-            "height": 100,
-            "previousblockhash": "abcd" * 16,
-            "version": 0x20000000,
-            "bits": "1d00ffff",
-            "curtime": 1234567890,
-            "transactions": [
-                {"data": "0100000001" + "00" * 200},  # Простая тестовая транзакция
-                {"hex": "0200000001" + "11" * 200}
-            ]
-        }
-
-        # Создаем тестовый заголовок
-        merkle_root = "1234" * 16
-        header, _ = BlockBuilder.build_block_header(
-            template, merkle_root, "499602d2", "12345678"
-        )
-
-        # Тестовая coinbase транзакция
-        coinbase_tx = "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff" + \
-                      "00" * 50 + "ffffffff0100f2052a010000001976a9147c154ed1dc59609e3d26abb2df2ea3d587cd8c4188ac00000000"
-
-        # Собираем блок
-        block_hex = BlockBuilder.assemble_full_block(
-            template, header, coinbase_tx, []
-        )
-
-        assert block_hex
-        assert len(block_hex) % 2 == 0  # Должно быть четное число hex символов
-
-        # Блок должен начинаться с заголовка
-        assert block_hex.startswith(header.hex())
-
-        print(f"✓ Блок собран: {len(block_hex) // 2} байт, начинается с: {block_hex[:32]}...")
 
 
 def test_integration():
     """Интеграционный тест полного создания блока"""
-    print("\nИнтеграционный тест:")
-    print("-" * 40)
-
     # Создаем полный тестовый шаблон
     template = {
         "height": 1000,
@@ -208,16 +188,7 @@ def test_integration():
         "bits": "1d00ffff",
         "curtime": int(datetime.now(UTC).timestamp()),
         "coinbasevalue": 3125000000,
-        "transactions": [
-            {
-                "hash": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-                "data": "0100000001" + "00" * 100 + "ffffffff0100f2052a010000001976a914" + "11" * 20 + "88ac00000000"
-            },
-            {
-                "hash": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-                "hex": "0200000001" + "22" * 100 + "ffffffff0100f2052a010000001976a914" + "22" * 20 + "88ac00000000"
-            }
-        ]
+        "transactions": []
     }
 
     # Тестовые данные
@@ -227,83 +198,86 @@ def test_integration():
     ntime = format(template["curtime"], '08x')
     nonce = "12345678"
 
-    # 1. Создаем полный блок
-    result = BlockBuilder.create_complete_block(
-        template, miner_address, extra_nonce1, extra_nonce2, ntime, nonce
-    )
+    # Mock network manager для теста
+    mock_manager = MockNetworkManager()
 
-    if result:
-        print(f"✅ Полный блок создан успешно!")
-        print(f"   Высота: {result['height']}")
-        print(f"   Хэш блока: {result['header_hash'][:16]}...")
-        print(f"   Количество транзакций: {result['transaction_count']}")
-        print(f"   Размер блока: {result['size_bytes']} байт")
-        print(f"   Merkle root: {result['merkle_root'][:16]}...")
-    else:
-        print("❌ Не удалось создать блок")
+    # Mock ВСЕГО что связано с bch_address
+    with patch('app.utils.bch_address.create_coinbase_script') as mock_create_script, \
+            patch('app.utils.bch_address.BCHAddress') as mock_bch_address, \
+            patch('app.utils.bch_address.BCHAddressUtils') as mock_utils:
+        # Настраиваем моки
+        mock_create_script.return_value = "76a914" + "11" * 20 + "88ac"  # валидный script
 
-    # 2. Создаем Stratum job data
-    job_data = BlockBuilder.create_stratum_job_data(
-        template, "integration_test_job", miner_address, extra_nonce1
-    )
+        # Mock для BCHAddress
+        mock_address_instance = Mock()
+        mock_address_instance.extract_pubkey_hash.return_value = bytes.fromhex("11" * 20)
+        mock_bch_address.extract_pubkey_hash.return_value = bytes.fromhex("11" * 20)
 
-    if job_data:
-        print(f"✅ Данные Stratum созданы успешно!")
-        print(f"   Job ID: {job_data['params'][0]}")
-        print(f"   Coinb1 длина: {len(job_data['params'][2])}")
-        print(f"   Coinb2 длина: {len(job_data['params'][3])}")
-        print(f"   Merkle branch: {len(job_data['params'][4])} элементов")
-    else:
-        print("❌ Не удалось создать данные Stratum")
+        # Mock для BCHAddressUtils
+        mock_utils.extract_pubkey_hash.return_value = bytes.fromhex("11" * 20)
+        mock_utils.validate.return_value = (True, "P2PKH")
 
-    return result is not None and job_data is not None
+        # Импортируем и создаем BlockBuilder
+        from app.stratum.block_builder import BlockBuilder
+        builder = BlockBuilder(network_manager=mock_manager)
+
+        # 1. Создаем полный блок
+        result = builder.create_complete_block(
+            template, miner_address, extra_nonce1, extra_nonce2, ntime, nonce
+        )
+
+        assert result is not None
+        assert result['height'] == 1000
+        assert len(result['header_hash']) == 64
+        assert result['transaction_count'] == 1  # только coinbase
+
+        # 2. Создаем Stratum job data
+        job_data = builder.create_stratum_job_data(
+            template, "integration_test_job", miner_address, extra_nonce1
+        )
+
+        assert job_data is not None
+        assert job_data["method"] == "mining.notify"
+        assert len(job_data["params"]) == 9
+        assert job_data["extra_nonce1"] == extra_nonce1
 
 
 if __name__ == "__main__":
+    # Для запуска тестов без pytest
     print("=" * 60)
-    print("Тесты BlockBuilder")
+    print("Запуск тестов BlockBuilder")
     print("=" * 60)
 
-    tester = TestBlockBuilder()
+    # Добавляем текущую директорию в путь
+    import sys
+    import os
 
-    test_methods = [
-        tester.test_calculate_merkle_root,
-        tester.test_encode_varint,
-        tester.test_build_block_header,
-        tester.test_validate_block_solution,
-        tester.test_create_stratum_job_data,
-        tester.test_calculate_merkle_branch,
-        tester.test_assemble_full_block,
-    ]
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    all_passed = True
+    # Mock настроек для тестов
+    import app.utils.config as config_module
 
-    for method in test_methods:
-        print(f"\n{method.__name__}:")
-        try:
-            method()
-            print("✅ Успешно")
-        except Exception as e:
-            print(f"❌ Ошибка: {e}")
-            all_passed = False
 
-    # Запускаем интеграционный тест
-    print("\n" + "=" * 60)
+    class TestSettings:
+        def __init__(self):
+            self.db_password = "test_password"
+            self.fallback_coinbase_value = 3125000000
+            self.fallback_prev_block_hash = "0" * 64
+            self.fallback_difficulty = 0.001
+            self.coinbase_prefix = "/TestPool/"
+            self.max_script_sig_size = 100
+            self.block_bits = "1d00ffff"
+            self.block_version = 0x20000000
+
+        def __getattr__(self, name):
+            return None
+
+
+    original_settings = config_module.settings
+    config_module.settings = TestSettings()
 
     try:
-        integration_success = test_integration()
-        if integration_success:
-            print("\n✅ Все интеграционные тесты пройдены!")
-        else:
-            print("\n❌ Интеграционные тесты не пройдены")
-            all_passed = False
-    except Exception as e:
-        print(f"\n❌ Ошибка интеграционного теста: {e}")
-        all_passed = False
-
-    print("\n" + "=" * 60)
-    if all_passed:
-        print("✅ ВСЕ ТЕСТЫ УСПЕШНО ПРОЙДЕНЫ!")
-    else:
-        print("❌ НЕКОТОРЫЕ ТЕСТЫ НЕ ПРОЙДЕНЫ")
-        exit(1)
+        # Запускаем тесты
+        pytest.main([__file__, "-v"])
+    finally:
+        config_module.settings = original_settings

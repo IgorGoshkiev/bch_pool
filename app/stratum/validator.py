@@ -8,7 +8,6 @@ from app.utils.protocol_helpers import (
     EXTRA_NONCE2_SIZE,
 )
 
-
 # ========== КОНСТАНТЫ ВАЛИДАЦИИ ==========
 TARGET_FOR_DIFFICULTY_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
 
@@ -454,17 +453,37 @@ class ShareValidator:
             # Преобразуем хэш в число
             hash_int = int(hash_result, 16)
 
-            # Целевое значение (для сложности 1.0)
+            # Максимальный возможный хэш (2^256 - 1)
+            max_hash = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+
+            # Если хэш равен максимальному, он никогда не пройдет
+            if hash_int == max_hash:
+                return False
+
+            # Целевое значение для сложности 1.0 (стандарт Bitcoin/BCH)
+            # Это максимальный target (самая простая сложность)
             target_for_difficulty_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
 
-            # Вычисляем target для текущей сложности
-            target = target_for_difficulty_1 // int(target_difficulty)
+            # Для теста: при сложности 0.001 target должен быть БОЛЬШЕ
+            # Сложность = target_for_difficulty_1 / target
+            # Значит target = target_for_difficulty_1 / difficulty
+
+            if target_difficulty <= 0:
+                logger.warning(f"Некорректная сложность: {target_difficulty}")
+                return False
+
+            # Вычисляем target
+            # Используем float для деления, затем округляем
+            target_float = float(target_for_difficulty_1) / target_difficulty
+
+            # Преобразуем обратно в int (округление вниз)
+            target = int(target_float)
 
             # Проверяем: хэш должен быть меньше или равен target
             return hash_int <= target
 
         except Exception as e:
-            logger.error(f"Ошибка проверки сложности: {e}")
+            logger.error(f"Ошибка проверки сложности {target_difficulty}: {e}")
             return False
 
     def check_network_difficulty(self, hash_result: str) -> bool:
@@ -521,20 +540,34 @@ class ShareValidator:
         current_time = datetime.now(UTC)
         jobs_to_remove = []
 
-        for job_id, job_data in self.jobs_cache.items():
-            # Извлекаем timestamp из job_id
+        for job_id in list(self.jobs_cache.keys()):  # Используем list() чтобы избежать изменения во время итерации
             try:
+                # Извлекаем timestamp из job_id
+                # Формат: job_{timestamp}_{counter}_{address}
                 if job_id.startswith("job_"):
                     parts = job_id.split('_')
                     if len(parts) >= 2:
                         timestamp_str = parts[1]
-                        job_time = datetime.fromtimestamp(float(timestamp_str), UTC)
+                        try:
+                            # Парсим timestamp
+                            job_time = datetime.fromtimestamp(int(timestamp_str), UTC)
+                            age = (current_time - job_time).total_seconds()
 
-                        age = (current_time - job_time).total_seconds()
-                        if age > max_age_seconds:
+                            if age > max_age_seconds:
+                                jobs_to_remove.append(job_id)
+                        except (ValueError, OSError, OverflowError) as e:
+                            # Если не можем распарсить timestamp, удаляем
+                            logger.debug(f"Не удалось распарсить timestamp из job_id {job_id}: {e}")
                             jobs_to_remove.append(job_id)
-            except (IndexError, ValueError, AttributeError):
-                # Если не можем распарсить, удаляем
+                    else:
+                        # Неправильный формат, удаляем
+                        jobs_to_remove.append(job_id)
+                else:
+                    # Не начинается с "job_", удаляем
+                    jobs_to_remove.append(job_id)
+
+            except Exception as e:
+                logger.debug(f"Ошибка обработки job_id {job_id}: {e}")
                 jobs_to_remove.append(job_id)
 
         # Удаляем старые задания
