@@ -14,7 +14,7 @@ logger = StructuredLogger(__name__)
 class JobService:
     """Сервис для управления заданиями майнинг-пула"""
 
-    def __init__(self, validator=None):
+    def __init__(self, validator=None, network_manager=None):
 
         # Активные задания: job_id -> job_data
         self.active_jobs: Dict[str, dict] = {}
@@ -34,6 +34,8 @@ class JobService:
 
         # Валидатор - создаем ЭКЗЕМПЛЯР класса
         self.validator = validator  # Может быть None, если не передан
+
+        self.network_manager = network_manager
 
         logger.info(
             "JobService инициализирован",
@@ -257,16 +259,17 @@ class JobService:
             "method": "mining.notify",
             "params": [
                 job_id,
-                "000000000000000007cbc708a5e00de8fd5e4b5b3e2a4f61c5aec6d6b7a9b8c9",  # prevhash (реальный из тестнета)
-                "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff",  # coinb1
-                "ffffffff0100f2052a010000001976a9147c154ed1dc59609e3d26abb2df2ea3d587cd8c4188ac00000000",  # coinb2
-                [],  # merkle_branch
-                "20000000",  # version
-                "1d00ffff",  # nbits (сложность для тестнета)
-                format(timestamp, '08x'),  # ntime
-                True  # clean_jobs
+                self.network_manager.get_fallback_prev_block_hash(),  # из конфига
+                "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff",
+                "ffffffff0100f2052a010000001976a9147c154ed1dc59609e3d26abb2df2ea3d587cd8c4188ac00000000",
+                [],
+                format(self.network_manager.get_default_block_version(), '08x'),  # из конфига
+                self.network_manager.get_default_bits(),  # из конфига
+                format(timestamp, '08x'),
+                True
             ],
-            "extra_nonce1": STRATUM_EXTRA_NONCE1
+            "extra_nonce1": STRATUM_EXTRA_NONCE1,
+            "coinbase_value": self.network_manager.get_fallback_coinbase_value()
         }
 
         # Сохраняем в системе

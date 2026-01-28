@@ -8,6 +8,13 @@ from app.utils.logging_config import StructuredLogger
 
 logger = StructuredLogger(__name__)
 
+# ========== ГЛОБАЛЬНЫЕ КОНСТАНТЫ ==========
+# Эти константы одинаковы для всех сетей
+SATOSHIS_PER_BCH = 100_000_000
+BLOCK_HEADER_SIZE = 80
+TX_VERSION_DEFAULT = 1
+SEQUENCE_FINAL = 0xffffffff
+
 # Конфигурация для разных сетей
 NETWORK_CONFIGS = {
     'mainnet': {
@@ -167,6 +174,73 @@ class NetworkManager:
 
         return reward
 
+    @staticmethod
+    def get_satoshis_per_bch() -> int:
+        """Получение количества сатоши в одном BCH"""
+        return SATOSHIS_PER_BCH
+
+    @staticmethod
+    def bch_to_satoshis(bch_amount: float) -> int:
+        """Конвертация BCH в сатоши"""
+        return int(bch_amount * SATOSHIS_PER_BCH)
+
+    @staticmethod
+    def satoshis_to_bch(satoshis: int) -> float:
+        """Конвертация сатоши в BCH"""
+        return satoshis / SATOSHIS_PER_BCH
+
+    def get_fallback_coinbase_value(self) -> int:
+        """Получение fallback значения coinbase"""
+        # Если в настройках указано значение, используем его
+        if hasattr(settings, 'fallback_coinbase_value'):
+            return settings.fallback_coinbase_value
+
+        # Иначе рассчитываем из награды за блок
+        reward_bch = self.get_block_reward()
+        return self.bch_to_satoshis(reward_bch)
+
+    @staticmethod
+    def get_coinbase_prefix() -> bytes:
+        """Получение префикса для ScriptSig coinbase"""
+        prefix = getattr(settings, 'coinbase_prefix', '/BCHPool/')
+        return prefix.encode('utf-8')
+
+    @staticmethod
+    def get_max_script_sig_size() -> int:
+        """Получение максимального размера ScriptSig"""
+        return getattr(settings, 'max_script_sig_size', 100)
+
+    @staticmethod
+    def get_default_block_version() -> int:
+        """Получение версии блока по умолчанию"""
+        return getattr(settings, 'block_version', 0x20000000)
+
+    @staticmethod
+    def get_default_bits() -> str:
+        """Получение bits по умолчанию"""
+        return getattr(settings, 'block_bits', '1d00ffff')
+
+    @staticmethod
+    def get_fallback_prev_block_hash() -> str:
+        """Получение fallback хэша предыдущего блока"""
+        return getattr(settings, 'fallback_prev_block_hash',
+                       '000000000000000007cbc708a5e00de8fd5e4b5b3e2a4f61c5aec6d6b7a9b8c9')
+
+    @staticmethod
+    def get_fallback_difficulty() -> float:
+        """Получение fallback сложности"""
+        return getattr(settings, 'fallback_difficulty', 0.001)
+
+    def format_satoshis(self, satoshis: int) -> str:
+        """Форматирование сатоши в читаемый вид"""
+        bch = self.satoshis_to_bch(satoshis)
+        return f"{bch:.8f} BCH ({satoshis:,} satoshis)"
+
+    def calculate_block_subsidy(self, height: int) -> int:
+        """Расчет субсидии за блок (без комиссий)"""
+        reward_bch = self.get_block_reward(height)
+        return self.bch_to_satoshis(reward_bch)
+
     def validate_address_for_network(self, address: str) -> bool:
         """Валидация адреса для текущей сети"""
         from app.utils.cashaddr import BCHAddressUtils
@@ -195,6 +269,10 @@ class NetworkManager:
                 logger.error(f"Ошибка валидации адреса {address}: {e}")
                 return False
 
+
+def get_network_manager(network: str = None) -> NetworkManager:
+    """Получение NetworkManager для указанной сети"""
+    return NetworkManager(network)
 
 def get_network_info(self) -> Dict[str, Any]:
         """Получение информации о сети"""

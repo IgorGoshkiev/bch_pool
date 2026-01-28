@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # Настройки пула
     pool_fee_percent: float = 1.5
     pool_wallet: str = ""
+    pool_name: str = "BCH Solo Pool"
 
     # Динамическая сложность
     enable_dynamic_difficulty: bool = True
@@ -40,6 +41,18 @@ class Settings(BaseSettings):
     # Настройки заданий
     job_broadcast_interval: int = 30  # секунды
     job_cleanup_age: int = 300  # секунды (5 минут)
+    job_max_history_size: int = 100
+
+    # Настройки блоков
+    block_version: int = 0x20000000  # Версия блока по умолчанию
+    block_bits: str = "1d00ffff"  # Сложность по умолчанию
+    max_script_sig_size: int = 100  # Максимальный размер ScriptSig
+    coinbase_prefix: str = "/BCHPool/"  # Префикс в ScriptSig coinbase
+
+    # Fallback значения
+    fallback_coinbase_value: int = 3125000000  # 31.25 BCH для testnet4
+    fallback_prev_block_hash: str = "000000000000000007cbc708a5e00de8fd5e4b5b3e2a4f61c5aec6d6b7a9b8c9"
+    fallback_difficulty: float = 0.001  # Сложность для fallback заданий
 
     # Авторегистрация майнеров
     auto_register_miners: bool = True

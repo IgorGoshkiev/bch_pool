@@ -17,6 +17,7 @@ class DependencyContainer:
         self._tcp_stratum_server = None
         self._difficulty_service = None
         self._network_manager = None
+        self._block_builder = None
 
         logger.info(
             "DependencyContainer инициализирован",
@@ -36,6 +37,20 @@ class DependencyContainer:
                 network=self._network_manager.network
             )
         return self._network_manager
+
+        # === BLOCK BUILDER ===
+
+    @property
+    def block_builder(self):
+        if self._block_builder is None:
+            from app.stratum.block_builder import BlockBuilder
+            self._block_builder = BlockBuilder(network_manager=self.network_manager)
+            logger.info(
+                "BlockBuilder создан",
+                event="block_builder_created",
+                has_network_manager=self.network_manager is not None
+            )
+        return self._block_builder
 
     # === DIFFICULTY SERVICE ===
     @property
@@ -107,7 +122,7 @@ class DependencyContainer:
     def job_service(self):
         if self._job_service is None:
             from app.services.job_service import JobService
-            self._job_service = JobService(validator=self.share_validator)
+            self._job_service = JobService(validator=self.share_validator, network_manager=self.network_manager)
             logger.info(
                 "JobService создан",
                 event="job_service_created",
@@ -193,3 +208,4 @@ stratum_server = container.stratum_server
 tcp_stratum_server = container.tcp_stratum_server
 difficulty_service = container.difficulty_service
 network_manager = container.network_manager
+block_builder = container.block_builder

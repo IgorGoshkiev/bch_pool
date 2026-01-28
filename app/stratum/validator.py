@@ -3,12 +3,11 @@ from typing import Optional, Tuple, Dict
 from datetime import datetime, UTC
 
 from app.utils.logging_config import StructuredLogger
-
 from app.utils.protocol_helpers import (
     STRATUM_EXTRA_NONCE1,
     EXTRA_NONCE2_SIZE,
-    BLOCK_HEADER_SIZE
 )
+
 
 # ========== КОНСТАНТЫ ВАЛИДАЦИИ ==========
 TARGET_FOR_DIFFICULTY_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
@@ -31,6 +30,10 @@ class ShareValidator:
         self.validated_shares = 0
         self.invalid_shares = 0
         self.start_time = datetime.now(UTC)
+
+        # Сетевые параметры (для проверки сетевой сложности)
+        self.network_difficulty = target_difficulty
+        self.last_network_update = None
 
         logger.info(
             "Валидатор инициализирован",
@@ -109,7 +112,6 @@ class ShareValidator:
             )
             return False, f"Задание {job_id} не найдено"
 
-
         job = self.jobs_cache[job_id]
 
         try:
@@ -118,7 +120,6 @@ class ShareValidator:
 
             # 1. ************** Проверяем формат данных
             if not self._validate_hex_format(extra_nonce2, expected_extra_nonce2_len):
-
                 self.invalid_shares += 1
                 logger.warning(
                     "Неверный формат extra_nonce2",
@@ -196,25 +197,53 @@ class ShareValidator:
                 )
                 return False, "Ошибка расчета хэша"
 
-            # 5. Проверяем сложность
-            is_difficulty_ok = self.check_difficulty(hash_result, self.target_difficulty)
+            # 5. Проверяем сложность (целевую сложность пула)
+            is_pool_difficulty_ok = self.check_difficulty(hash_result, self.target_difficulty)
 
-            if not is_difficulty_ok:
-                # Хэш не соответствует целевой сложности
+            if not is_pool_difficulty_ok:
+                # Хэш не соответствует целевой сложности пула
                 self.invalid_shares += 1
                 logger.debug(
-                    "Хэш не соответствует сложности",
+                    "Хэш не соответствует сложности пула",
                     event="share_validation_failed",
                     miner_address=miner_address,
                     job_id=job_id,
-                    reason="difficulty_not_met",
-                    hash_prefix=hash_result[:16]
+                    reason="pool_difficulty_not_met",
+                    hash_prefix=hash_result[:16],
+                    pool_difficulty=self.target_difficulty
                 )
-                return False, "Hash doesn't meet target difficulty"
+                return False, "Hash doesn't meet pool target difficulty"
 
-            # 6. Дополнительные проверки
-            # Проверяем что хэш меньше чем текущая цель сети
-            # TODO: Добавить проверку сетевой сложности
+            # 6. Проверяем сетевую сложность
+            is_network_difficulty_ok = self.check_network_difficulty(hash_result)
+
+            if not is_network_difficulty_ok:
+                # Хэш не соответствует сетевой сложности (слишком легкий для сети)
+                self.invalid_shares += 1
+                logger.debug(
+                    "Хэш не соответствует сетевой сложности",
+                    event="share_validation_failed",
+                    miner_address=miner_address,
+                    job_id=job_id,
+                    reason="network_difficulty_not_met",
+                    hash_prefix=hash_result[:16],
+                    network_difficulty=self.network_difficulty
+                )
+                return False, "Hash doesn't meet network difficulty"
+
+            # 7. Проверяем, является ли шар действительным блоком (выше сетевой сложности)
+            is_valid_block = self.check_if_valid_block(hash_result)
+
+            if is_valid_block:
+                logger.warning(
+                    "ШАР ЯВЛЯЕТСЯ ДЕЙСТВИТЕЛЬНЫМ БЛОКОМ!",
+                    event="share_is_valid_block",
+                    miner_address=miner_address,
+                    job_id=job_id,
+                    hash=hash_result,
+                    network_difficulty=self.network_difficulty
+                )
+                # Здесь должна быть дополнительная логика для обработки найденного блока
 
             # Шар валиден!
             self.validated_shares += 1
@@ -228,7 +257,8 @@ class ShareValidator:
                 hash_prefix=hash_result[:16],
                 validation_time_ms=validation_time,
                 total_validated=self.validated_shares,
-                total_invalid=self.invalid_shares
+                total_invalid=self.invalid_shares,
+                is_valid_block=is_valid_block
             )
             return True, None
 
@@ -247,15 +277,19 @@ class ShareValidator:
 
     def get_stats(self) -> Dict:
         """Получение статистики валидатора"""
+        total_shares = self.validated_shares + self.invalid_shares
+        success_rate = self.validated_shares / total_shares if total_shares > 0 else 0
+
         stats = {
             "jobs_in_cache": len(self.jobs_cache),
             "validated_shares": self.validated_shares,
             "invalid_shares": self.invalid_shares,
-            "total_shares": self.validated_shares + self.invalid_shares,
-            "success_rate": self.validated_shares / (self.validated_shares + self.invalid_shares)
-            if (self.validated_shares + self.invalid_shares) > 0 else 0,
-            "uptime_seconds": (datetime.now(UTC) - self.start_time).total_seconds(),
-            "target_difficulty": self.target_difficulty
+            "total_shares": total_shares,
+            "success_rate": f"{success_rate:.2%}",
+            "uptime_seconds": int((datetime.now(UTC) - self.start_time).total_seconds()),
+            "target_difficulty": self.target_difficulty,
+            "network_difficulty": self.network_difficulty,
+            "last_network_update": self.last_network_update.isoformat() if self.last_network_update else None
         }
 
         logger.debug(
@@ -312,10 +346,6 @@ class ShareValidator:
 
     def _check_nonce_uniqueness(self, job_id: str, nonce: str) -> bool:
         """Проверка уникальности nonce для задания"""
-        # Используем set для хранения использованных nonce
-        # if not hasattr(self, '_used_nonces'):
-        #     self._used_nonces = {}  # job_id -> set of nonces
-
         if job_id not in self._used_nonces:
             self._used_nonces[job_id] = set()
 
@@ -339,7 +369,6 @@ class ShareValidator:
                 all_nonces = list(self._used_nonces[job_id])
                 self._used_nonces[job_id] = set(all_nonces[-max_per_job:])
 
-    @staticmethod
     def calculate_hash(self, job_data: dict, extra_nonce2: str, ntime: str, nonce: str) -> str:
         """Расчет хэша заголовка блока"""
         try:
@@ -348,7 +377,7 @@ class ShareValidator:
             prevhash = params[1]  # предыдущий хэш блока
             coinb1 = params[2]  # первая часть coinbase
             coinb2 = params[3]  # вторая часть coinbase
-            # merkle_branch = params[4]  # ветки Merkle дерева (не используется)
+            merkle_branch = params[4]  # ветки Merkle дерева
             version = params[5]  # версия блока
             nbits = params[6]  # сложность в compact формате
             # ntime_param = params[7]  # время из задания
@@ -360,11 +389,14 @@ class ShareValidator:
             coinbase = coinb1 + extra_nonce1 + extra_nonce2 + coinb2
 
             # Хэшируем coinbase транзакцию (двойной SHA256)
-            coinbase_hash = hashlib.sha256(hashlib.sha256(bytes.fromhex(coinbase)).digest()).digest()
+            coinbase_hash_obj = hashlib.sha256(bytes.fromhex(coinbase))
+            coinbase_hash = hashlib.sha256(coinbase_hash_obj.digest()).digest()
 
-            # Для упрощения используем только coinbase хэш как Merkle root
-            # TODO: В реальности нужно вычислить полное Merkle дерево с другими транзакциями
-            merkle_root = coinbase_hash.hex()
+            # Вычисляем Merkle root с использованием merkle_branch
+            merkle_root = self._calculate_merkle_root_with_branch(
+                coinbase_hash.hex(),
+                merkle_branch
+            )
 
             # Собираем заголовок блока
             header = (
@@ -377,8 +409,10 @@ class ShareValidator:
             )
 
             # Двойной SHA256
-            first_hash = hashlib.sha256(header).digest()
-            block_hash = hashlib.sha256(first_hash).digest()
+            first_hash_obj = hashlib.sha256(header)
+            first_hash = first_hash_obj.digest()
+            block_hash_obj = hashlib.sha256(first_hash)
+            block_hash = block_hash_obj.digest()
 
             # Переворачиваем (little-endian -> big-endian для отображения)
             return block_hash[::-1].hex()
@@ -386,6 +420,32 @@ class ShareValidator:
         except Exception as e:
             logger.error(f"Ошибка расчета хэша: {e}")
             return "0" * 64
+
+    @staticmethod
+    def _calculate_merkle_root_with_branch(coinbase_hash: str, merkle_branch: list) -> str:
+        """Вычисление Merkle root с использованием ветвей"""
+        try:
+            # Начинаем с хэша coinbase
+            current_hash = bytes.fromhex(coinbase_hash)[::-1]  # little-endian
+
+            # Проходим по всем ветвям Merkle дерева
+            for branch_hash_hex in merkle_branch:
+                branch_hash = bytes.fromhex(branch_hash_hex)[::-1]
+
+                # Конкатенируем и вычисляем родительский хэш
+                # Порядок важен: для четного индекса - текущий хэш слева
+                concat = current_hash + branch_hash
+                first_hash_obj = hashlib.sha256(concat)
+                first_hash = first_hash_obj.digest()
+                current_hash = hashlib.sha256(first_hash).digest()
+
+            # Возвращаем в big-endian
+            return current_hash[::-1].hex()
+
+        except Exception as e:
+            logger.error(f"Ошибка расчета Merkle root: {e}")
+            # Fallback: используем только coinbase hash
+            return coinbase_hash
 
     @staticmethod
     def check_difficulty(hash_result: str, target_difficulty: float) -> bool:
@@ -406,6 +466,55 @@ class ShareValidator:
         except Exception as e:
             logger.error(f"Ошибка проверки сложности: {e}")
             return False
+
+    def check_network_difficulty(self, hash_result: str) -> bool:
+        """Проверка соответствия сетевой сложности"""
+        try:
+            # Преобразуем хэш в число
+            hash_int = int(hash_result, 16)
+
+            # Целевое значение для сложности 1.0
+            target_for_difficulty_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
+
+            # Вычисляем target для сетевой сложности
+            # network_difficulty должна обновляться извне (из JobManager)
+            target = target_for_difficulty_1 // int(self.network_difficulty)
+
+            # Проверяем: хэш должен быть меньше или равен сетевому target
+            return hash_int <= target
+
+        except Exception as e:
+            logger.error(f"Ошибка проверки сетевой сложности: {e}")
+            # В случае ошибки считаем что шар проходит проверку
+            return True
+
+    def check_if_valid_block(self, hash_result: str) -> bool:
+        """Проверяем, является ли шар действительным блоком (выше сетевой сложности)"""
+        try:
+            # Для блока хэш должен быть МЕНЬШЕ сетевого target
+            hash_int = int(hash_result, 16)
+            target_for_difficulty_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
+            target = target_for_difficulty_1 // int(self.network_difficulty)
+
+            return hash_int <= target
+
+        except Exception as e:
+            logger.error(f"Ошибка проверки валидности блока: {e}")
+            return False
+
+    def update_network_difficulty(self, new_difficulty: float):
+        """Обновление сетевой сложности"""
+        old_difficulty = self.network_difficulty
+        self.network_difficulty = new_difficulty
+        self.last_network_update = datetime.now(UTC)
+
+        logger.info(
+            "Обновлена сетевая сложность",
+            event="validator_network_difficulty_updated",
+            old_difficulty=old_difficulty,
+            new_difficulty=new_difficulty,
+            update_time=self.last_network_update.isoformat()
+        )
 
     def cleanup_old_jobs(self, max_age_seconds: int = 300):
         """Очистка старых заданий"""

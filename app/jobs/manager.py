@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 
 from typing import Optional, Dict
@@ -10,7 +11,7 @@ from app.utils.logging_config import StructuredLogger
 
 from app.jobs.real_node_client import RealBCHNodeClient
 
-from app.dependencies import job_service
+from app.dependencies import job_service, block_builder
 
 logger = StructuredLogger(__name__)
 
@@ -161,8 +162,17 @@ class JobManager:
             else:
                 job_id = f"job_{timestamp}_{self.job_counter:08x}"
 
-            # Конвертируем в Stratum формат
-            stratum_job = self._convert_to_stratum_job(template, job_id)
+            # Используем block_builder для создания Stratum задания
+            stratum_job = await self._create_stratum_job_from_template(template, job_id, miner_address)
+
+            if not stratum_job:
+                logger.warning(
+                    "Не удалось создать Stratum задание из шаблона",
+                    event="job_manager_stratum_job_failed",
+                    height=template.get('height', 'unknown')
+                )
+                return None
+
 
             # Сохраняем задание в job_service
             if miner_address:
@@ -203,38 +213,70 @@ class JobManager:
             )
             return None
 
+    async def _create_stratum_job_from_template(self, template: Dict, job_id: str, miner_address: str = None) -> \
+    Optional[Dict]:
+        """Создать Stratum задание из шаблона блока"""
+        try:
+            # Если есть адрес майнера, используем его, иначе адрес пула
+            if miner_address:
+                address = miner_address
+            else:
+                # публичный тестовый адрес из Bitcoin Cash документации
+                address = settings.pool_wallet if settings.pool_wallet else "qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a"
+
+            # Используем block_builder для создания данных задания
+            job_data = block_builder.create_stratum_job_data(
+                template=template,
+                job_id=job_id,
+                miner_address=address,
+                extra_nonce1=STRATUM_EXTRA_NONCE1
+            )
+
+            if not job_data:
+                logger.warning(
+                    "BlockBuilder не смог создать данные задания",
+                    event="job_manager_block_builder_failed",
+                    job_id=job_id
+                )
+                # Создаем fallback задание
+                return self._create_fallback_stratum_job(template, job_id)
+
+            return job_data
+
+        except Exception as e:
+            logger.error(
+                "Ошибка создания Stratum задания из шаблона",
+                event="job_manager_stratum_conversion_error",
+                job_id=job_id,
+                error=str(e)
+            )
+            return self._create_fallback_stratum_job(template, job_id)
+
+
     @staticmethod
-    def _convert_to_stratum_job(template: Dict, job_id: str) -> Dict:
-        """Конвертировать шаблон блока в Stratum задание"""
+    def _create_fallback_stratum_job(template: Dict, job_id: str) -> Dict:
+        """Создать fallback Stratum задание"""
         curtime = template.get("curtime", int(time.time()))
         ntime_hex = format(curtime, '08x')
 
-        # Формируем Stratum сообщение mining.notify
-        job_data = {
+        return {
             "method": "mining.notify",
             "params": [
-                job_id,  # Job ID
-                template.get("previousblockhash", "0" * 64),  # prevhash
-                "fdfd0800",  # coinb1 (часть coinbase транзакции)
-                "",  # coinb2 (остальная часть coinbase)
+                job_id,
+                template.get("previousblockhash", "0" * 64),
+                "fdfd0800",  # coinb1
+                "",  # coinb2
                 [],  # merkle_branch
-                format(template.get("version", 0x20000000), '08x'),  # version
-                template.get("bits", "1d00ffff"),  # nbits
-                ntime_hex,  # ntime
-                True  # clean_jobs
+                format(template.get("version", 0x20000000), '08x'),
+                template.get("bits", "1d00ffff"),
+                ntime_hex,
+                True
             ],
-            "extra_nonce1": STRATUM_EXTRA_NONCE1  # Добавляем для валидатора
+            "extra_nonce1": STRATUM_EXTRA_NONCE1,
+            "template": template
         }
 
-        logger.debug(
-            "Шаблон конвертирован в Stratum задание",
-            event="job_manager_template_converted",
-            job_id=job_id,
-            height=template.get('height', 'unknown'),
-            prevhash_prefix=template.get('previousblockhash', '')[:16] + "..."
-        )
 
-        return job_data
 
     async def broadcast_new_job_to_all(self):
         """Рассылать новое задание всем подключенным майнерам"""
@@ -320,8 +362,7 @@ class JobManager:
 
         return result
 
-    @staticmethod
-    async def submit_block_solution(miner_address: str, block_data: Dict) -> Dict:
+    async def submit_block_solution(self, miner_address: str, block_data: Dict) -> Dict:
         """Обработка найденного блока"""
         logger.info(
             "БЛОК НАЙДЕН! Обработка решения",
@@ -330,22 +371,99 @@ class JobManager:
             block_data_keys=list(block_data.keys()) if block_data else []
         )
 
-        # TODO: Реализовать обработку блока с использованием block_builder
-        # Пока возвращаем заглушку
+        try:
+            # Получаем необходимые данные
+            job_id = block_data.get('job_id')
+            extra_nonce2 = block_data.get('extra_nonce2')
+            ntime = block_data.get('ntime')
+            nonce = block_data.get('nonce')
 
-        result = {
-            "status": "rejected",
-            "message": "Block processing not implemented yet",
-            "miner": miner_address
-        }
+            if not all([job_id, extra_nonce2, ntime, nonce]):
+                return {
+                    "status": "rejected",
+                    "message": "Missing required block data",
+                    "miner": miner_address
+                }
 
-        logger.warning(
-            "Обработка блока не реализована",
-            event="job_manager_block_processing_not_implemented",
-            miner_address=miner_address
-        )
+            # Получаем шаблон задания из job_service
+            job_data = self.job_service.get_job(job_id)
+            if not job_data:
+                return {
+                    "status": "rejected",
+                    "message": "Job not found",
+                    "miner": miner_address,
+                    "job_id": job_id
+                }
 
-        return result
+            # Получаем шаблон блока из данных задания
+            template = job_data.get('template')
+            if not template:
+                return {
+                    "status": "rejected",
+                    "message": "Template not found in job data",
+                    "miner": miner_address
+                }
+
+            # Создаем полный блок
+            complete_block = block_builder.create_complete_block(
+                template=template,
+                miner_address=miner_address,
+                extra_nonce1=STRATUM_EXTRA_NONCE1,
+                extra_nonce2=extra_nonce2,
+                ntime=ntime,
+                nonce=nonce
+            )
+
+            if not complete_block:
+                return {
+                    "status": "rejected",
+                    "message": "Failed to build complete block",
+                    "miner": miner_address
+                }
+
+            logger.info(
+                "Блок успешно собран",
+                event="block_built_successfully",
+                miner_address=miner_address,
+                block_hash=complete_block.get('header_hash', '')[:16] + "...",
+                height=complete_block.get('height')
+            )
+
+            # Отправляем блок в BCH ноду
+            submit_result = await self.node_client.submit_block(complete_block['block_hex'])
+
+            if submit_result and submit_result.get("status") == "accepted":
+                return {
+                    "status": "accepted",
+                    "message": "Block solution accepted and submitted to node",
+                    "miner": miner_address,
+                    "block_hash": complete_block.get('header_hash'),
+                    "height": complete_block.get('height'),
+                    "node_response": submit_result
+                }
+            else:
+                error_msg = submit_result.get("message", "Unknown error") if submit_result else "Node submission failed"
+                return {
+                    "status": "rejected",
+                    "message": f"Node rejected block: {error_msg}",
+                    "miner": miner_address,
+                    "block_hash": complete_block.get('header_hash')
+                }
+
+        except Exception as e:
+            logger.error(
+                "Ошибка обработки блока",
+                event="job_manager_block_processing_error",
+                miner_address=miner_address,
+                error=str(e),
+                error_type=type(e).__name__
+            )
+
+            return {
+                "status": "rejected",
+                "message": f"Block processing error: {str(e)}",
+                "miner": miner_address
+            }
 
     def get_stats(self) -> Dict:
         """Получить статистику JobManager"""
