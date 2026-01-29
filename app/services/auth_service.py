@@ -5,7 +5,6 @@ from typing import Optional, Tuple
 from datetime import datetime, UTC
 
 from app.utils.logging_config import StructuredLogger
-#from app.dependencies import database_service
 from app.utils.config import settings
 from app.utils.protocol_helpers import (
     parse_stratum_username,

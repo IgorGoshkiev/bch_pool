@@ -115,8 +115,6 @@ class TestDifficultyService:
 
         # Должно обработаться без падения
 
-
-
     @pytest.mark.asyncio
     async def test_calculate_difficulty_insufficient_data(self, difficulty_service):
         """Расчет сложности при недостаточных данных"""
@@ -201,7 +199,6 @@ class TestDifficultyService:
 
         # Сложность должна увеличиться
         assert result > 1.0
-
 
     @pytest.mark.asyncio
     async def test_calculate_difficulty_too_few_shares(self, difficulty_service):
@@ -326,23 +323,165 @@ class TestDifficultyService:
 
     @pytest.mark.asyncio
     async def test_broadcast_difficulty_update(self, difficulty_service):
-        """Рассылка обновления сложности"""
-        # Сначала проверим, существует ли модуль
-        try:
-            import app.dependencies
-            has_dependencies = True
-        except ImportError:
-            has_dependencies = False
+        """Рассылка обновления сложности WebSocket и TCP майнерам"""
+        # Подготовка: устанавливаем тестовую сложность
+        difficulty_service.current_difficulty = 10.5
 
-        if not has_dependencies:
-            pytest.skip("Модуль app.dependencies не найден - требуется проверка кода проекта")
+        # Создаем моки для серверов
+        mock_ws_server = AsyncMock()
+        mock_ws_server.update_difficulty = AsyncMock()
+        mock_ws_server.active_connections = {"test_ws": "dummy"}  # Имитируем активные подключения
 
-        mock_stratum = AsyncMock()
-        mock_stratum.update_difficulty = AsyncMock()
+        mock_tcp_server = AsyncMock()
+        mock_tcp_server.broadcast_difficulty = AsyncMock()
+        mock_tcp_server.connections = {"test_tcp": "dummy"}  # Имитируем активные подключения
 
-        with patch('app.dependencies.stratum_server', mock_stratum):
-            await difficulty_service._broadcast_difficulty_update()
-            mock_stratum.update_difficulty.assert_called_once_with(difficulty_service.current_difficulty)
+        # Подменяем серверы в difficulty_service
+        difficulty_service.stratum_server = mock_ws_server
+        difficulty_service.tcp_stratum_server = mock_tcp_server
+
+        # Выполняем рассылку
+        result = await difficulty_service._broadcast_difficulty_update()
+
+        # Проверяем вызовы методов
+        mock_ws_server.update_difficulty.assert_called_once_with(10.5)
+        mock_tcp_server.broadcast_difficulty.assert_called_once_with(10.5)
+
+    @pytest.mark.asyncio
+    async def test_broadcast_difficulty_update_ws_only(self, difficulty_service):
+        """Рассылка только WebSocket майнерам (TCP сервер отключен)"""
+        difficulty_service.current_difficulty = 8.2
+
+        mock_ws_server = AsyncMock()
+        mock_ws_server.update_difficulty = AsyncMock()
+        mock_ws_server.active_connections = {"ws1": "dummy", "ws2": "dummy"}
+
+        # TCP сервер отключен
+        difficulty_service.stratum_server = mock_ws_server
+        difficulty_service.tcp_stratum_server = None
+
+        await difficulty_service._broadcast_difficulty_update()
+
+        # Проверяем что вызван только WS сервер
+        mock_ws_server.update_difficulty.assert_called_once_with(8.2)
+
+    @pytest.mark.asyncio
+    async def test_broadcast_difficulty_update_tcp_only(self, difficulty_service):
+        """Рассылка только TCP майнерам (WebSocket сервер отключен)"""
+        difficulty_service.current_difficulty = 12.7
+
+        mock_tcp_server = AsyncMock()
+        mock_tcp_server.broadcast_difficulty = AsyncMock()
+        mock_tcp_server.connections = {"tcp1": "dummy", "tcp2": "dummy", "tcp3": "dummy"}
+
+        # WebSocket сервер отключен
+        difficulty_service.stratum_server = None
+        difficulty_service.tcp_stratum_server = mock_tcp_server
+
+        await difficulty_service._broadcast_difficulty_update()
+
+        # Проверяем что вызван только TCP сервер
+        mock_tcp_server.broadcast_difficulty.assert_called_once_with(12.7)
+
+    @pytest.mark.asyncio
+    async def test_broadcast_difficulty_update_no_connections(self, difficulty_service):
+        """Рассылка когда нет активных подключений"""
+        difficulty_service.current_difficulty = 5.0
+
+        mock_ws_server = AsyncMock()
+        mock_ws_server.update_difficulty = AsyncMock()
+        mock_ws_server.active_connections = {}  # Нет подключений
+
+        mock_tcp_server = AsyncMock()
+        mock_tcp_server.broadcast_difficulty = AsyncMock()
+        mock_tcp_server.connections = {}  # Нет подключений
+
+        difficulty_service.stratum_server = mock_ws_server
+        difficulty_service.tcp_stratum_server = mock_tcp_server
+
+        await difficulty_service._broadcast_difficulty_update()
+
+        # Методы все равно должны быть вызваны (серверы проверят подключения внутри себя)
+        mock_ws_server.update_difficulty.assert_called_once_with(5.0)
+        mock_tcp_server.broadcast_difficulty.assert_called_once_with(5.0)
+
+    @pytest.mark.asyncio
+    async def test_broadcast_difficulty_update_ws_error(self, difficulty_service):
+        """Рассылка с ошибкой в WebSocket сервере"""
+        difficulty_service.current_difficulty = 7.3
+
+        mock_ws_server = AsyncMock()
+        mock_ws_server.update_difficulty = AsyncMock(side_effect=Exception("WebSocket error"))
+        mock_ws_server.active_connections = {"ws": "dummy"}
+
+        mock_tcp_server = AsyncMock()
+        mock_tcp_server.broadcast_difficulty = AsyncMock()
+        mock_tcp_server.connections = {"tcp": "dummy"}
+
+        difficulty_service.stratum_server = mock_ws_server
+        difficulty_service.tcp_stratum_server = mock_tcp_server
+
+        # Должно выполниться без исключения, ошибка должна быть залогирована
+        await difficulty_service._broadcast_difficulty_update()
+
+        # Проверяем что оба сервера были вызваны
+        mock_ws_server.update_difficulty.assert_called_once_with(7.3)
+        mock_tcp_server.broadcast_difficulty.assert_called_once_with(7.3)
+
+    @pytest.mark.asyncio
+    async def test_broadcast_difficulty_update_tcp_error(self, difficulty_service):
+        """Рассылка с ошибкой в TCP сервере"""
+        difficulty_service.current_difficulty = 9.1
+
+        mock_ws_server = AsyncMock()
+        mock_ws_server.update_difficulty = AsyncMock()
+        mock_ws_server.active_connections = {"ws": "dummy"}
+
+        mock_tcp_server = AsyncMock()
+        mock_tcp_server.broadcast_difficulty = AsyncMock(side_effect=Exception("TCP error"))
+        mock_tcp_server.connections = {"tcp": "dummy"}
+
+        difficulty_service.stratum_server = mock_ws_server
+        difficulty_service.tcp_stratum_server = mock_tcp_server
+
+        # Должно выполниться без исключения
+        await difficulty_service._broadcast_difficulty_update()
+
+        # Проверяем что оба сервера были вызваны
+        mock_ws_server.update_difficulty.assert_called_once_with(9.1)
+        mock_tcp_server.broadcast_difficulty.assert_called_once_with(9.1)
+
+    @pytest.mark.asyncio
+    async def test_update_difficulty_with_broadcast(self, difficulty_service):
+        """Тест обновления сложности с рассылкой"""
+        # Создаем моки серверов
+        mock_ws = AsyncMock()
+        mock_ws.update_difficulty = AsyncMock()
+        mock_ws.active_connections = {"ws": "dummy"}
+
+        mock_tcp = AsyncMock()
+        mock_tcp.broadcast_difficulty = AsyncMock()
+        mock_tcp.connections = {"tcp": "dummy"}
+
+        difficulty_service.stratum_server = mock_ws
+        difficulty_service.tcp_stratum_server = mock_tcp
+
+        # Изначальная сложность
+        initial_difficulty = difficulty_service.current_difficulty
+
+        # Мокируем расчет новой сложности
+        new_difficulty = initial_difficulty * 2.0
+        with patch.object(difficulty_service, 'calculate_difficulty', AsyncMock(return_value=new_difficulty)):
+            updated, result_difficulty, message = await difficulty_service.update_difficulty()
+
+        # Проверяем результаты
+        assert updated == True
+        assert result_difficulty == new_difficulty
+        assert "updated" in message.lower()
+
+        # Проверяем рассылку
+        mock_ws.update_difficulty.assert_called_once_with(new_difficulty)
+        mock_tcp.broadcast_difficulty.assert_called_once_with(new_difficulty)
 
     @pytest.mark.asyncio
     async def test_broadcast_difficulty_update_exception(self, difficulty_service):

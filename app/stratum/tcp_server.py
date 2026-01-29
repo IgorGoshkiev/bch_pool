@@ -535,6 +535,122 @@ class StratumTCPServer:
                 total_clients=total_clients
             )
 
+    async def broadcast_difficulty(self, difficulty: float):
+        """Рассылка обновления сложности всем TCP клиентам"""
+        if not self.connections:
+            logger.debug(
+                "Нет активных TCP подключений для рассылки сложности",
+                event="tcp_difficulty_broadcast_skipped",
+                reason="no_connections"
+            )
+            return
+
+        successful_sends = 0
+        failed_sends = 0
+        total_clients = len(self.connections)
+
+        logger.info(
+            "Начинаем рассылку обновления сложности TCP клиентам",
+            event="tcp_difficulty_broadcast_started",
+            total_clients=total_clients,
+            difficulty=difficulty
+        )
+
+        method_data = {
+            "method": "mining.set_difficulty",
+            "params": [difficulty],
+            "id": None  # Stratum протокол позволяет без ID для notification
+        }
+
+        for client_id, writer in self.connections.items():
+            miner_address = self.miners.get(client_id, "unauthorized")
+            try:
+                await self._send_json(writer, method_data)
+                successful_sends += 1
+
+                logger.debug(
+                    "Сложность отправлена TCP клиенту",
+                    event="tcp_difficulty_sent",
+                    client_id=client_id,
+                    miner_address=miner_address,
+                    difficulty=difficulty
+                )
+
+            except Exception as e:
+                failed_sends += 1
+                logger.error(
+                    "Ошибка отправки сложности TCP клиенту",
+                    event="tcp_difficulty_send_error",
+                    client_id=client_id,
+                    miner_address=miner_address,
+                    error=str(e)
+                )
+
+        if successful_sends > 0:
+            logger.info(
+                "Сложность разослана TCP клиентам",
+                event="tcp_difficulty_broadcast_completed",
+                successful_sends=successful_sends,
+                failed_sends=failed_sends,
+                total_clients=total_clients,
+                difficulty=difficulty
+            )
+        else:
+            logger.warning(
+                "Не удалось разослать сложность ни одному TCP клиенту",
+                event="tcp_difficulty_broadcast_failed",
+                total_clients=total_clients,
+                difficulty=difficulty
+            )
+
+    async def update_miner_difficulty(self, miner_address: str, difficulty: float):
+        """Обновление сложности для конкретного майнера"""
+        client_id = None
+        writer = None
+
+        # Находим клиента по адресу майнера
+        for cid, addr in self.miners.items():
+            if addr == miner_address:
+                client_id = cid
+                writer = self.connections.get(cid)
+                break
+
+        if not writer or not client_id:
+            logger.warning(
+                "Майнер не найден для обновления сложности",
+                event="tcp_miner_not_found_for_difficulty",
+                miner_address=miner_address,
+                difficulty=difficulty
+            )
+            return
+
+        try:
+            method_data = {
+                "method": "mining.set_difficulty",
+                "params": [difficulty],
+                "id": None
+            }
+
+            await self._send_json(writer, method_data)
+
+            logger.info(
+                "Персональная сложность отправлена TCP майнеру",
+                event="tcp_miner_difficulty_updated",
+                client_id=client_id,
+                miner_address=miner_address,
+                difficulty=difficulty
+            )
+
+        except Exception as e:
+            logger.error(
+                "Ошибка отправки персональной сложности TCP майнеру",
+                event="tcp_miner_difficulty_error",
+                client_id=client_id,
+                miner_address=miner_address,
+                difficulty=difficulty,
+                error=str(e)
+            )
+
     @staticmethod
     async def _send_error(writer: asyncio.StreamWriter, msg_id: Optional[int], error_msg: str):
         """Отправка ошибки"""

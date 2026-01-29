@@ -564,19 +564,105 @@ class StratumServer:
                 # Если нет валидных заданий, удаляем запись
                 self.subscriptions.pop(miner_address, None)
 
+    async def update_miner_difficulty(self, connection_id: str, difficulty: float):
+        """Обновление сложности для конкретного майнера"""
+        if connection_id not in self.active_connections:
+            logger.warning(
+                "Соединение не найдено для обновления сложности",
+                event="ws_miner_not_found_for_difficulty",
+                connection_id=connection_id,
+                difficulty=difficulty
+            )
+            return
+
+        miner_address = self.miner_addresses.get(connection_id, "unknown")
+        websocket = self.active_connections[connection_id]
+
+        try:
+            difficulty_msg = {
+                "method": "mining.set_difficulty",
+                "params": [difficulty]
+            }
+
+            await websocket.send_json(difficulty_msg)
+
+            logger.info(
+                "Персональная сложность отправлена WebSocket майнеру",
+                event="ws_miner_difficulty_updated",
+                connection_id=connection_id,
+                miner_address=miner_address,
+                difficulty=difficulty
+            )
+
+        except Exception as e:
+            logger.error(
+                "Ошибка отправки персональной сложности WebSocket майнеру",
+                event="ws_miner_difficulty_error",
+                connection_id=connection_id,
+                miner_address=miner_address,
+                difficulty=difficulty,
+                error=str(e)
+            )
+
     async def update_difficulty(self, difficulty: float):
         """Обновление сложности для всех майнеров"""
-        for connection_id, websocket in self.active_connections.items():
-            try:
-                difficulty_msg = {
-                    "method": "mining.set_difficulty",
-                    "params": [difficulty]
-                }
-                await websocket.send_json(difficulty_msg)
-            except Exception as e:
-                logger.error(f"Ошибка отправки сложности майнеру: {e}")
+        if not self.active_connections:
+            logger.debug(
+                "Нет активных WebSocket подключений для рассылки сложности",
+                event="ws_difficulty_broadcast_skipped",
+                reason="no_connections"
+            )
+            return
 
-        logger.info(f"Сложность обновлена до {difficulty}")
+        successful_sends = 0
+        failed_sends = 0
+        total_miners = len(self.active_connections)
+
+        logger.info(
+            "Начинаем рассылку обновления сложности WebSocket клиентам",
+            event="ws_difficulty_broadcast_started",
+            total_miners=total_miners,
+            difficulty=difficulty
+        )
+
+        difficulty_msg = {
+            "method": "mining.set_difficulty",
+            "params": [difficulty]
+        }
+
+        for connection_id, websocket in self.active_connections.items():
+            miner_address = self.miner_addresses.get(connection_id, "unknown")
+            try:
+                await websocket.send_json(difficulty_msg)
+                successful_sends += 1
+
+                logger.debug(
+                    "Сложность отправлена WebSocket клиенту",
+                    event="ws_difficulty_sent",
+                    connection_id=connection_id,
+                    miner_address=miner_address,
+                    difficulty=difficulty
+                )
+
+            except Exception as e:
+                failed_sends += 1
+                logger.error(
+                    "Ошибка отправки сложности WebSocket клиенту",
+                    event="ws_difficulty_send_error",
+                    connection_id=connection_id,
+                    miner_address=miner_address,
+                    error=str(e)
+                )
+
+        logger.info(
+            "Обновление сложности завершено",
+            event="ws_difficulty_broadcast_completed",
+            difficulty=difficulty,
+            successful_sends=successful_sends,
+            failed_sends=failed_sends,
+            total_miners=total_miners,
+            success_rate=f"{successful_sends / total_miners * 100:.1f}%" if total_miners > 0 else "0%"
+        )
 
     def get_stats(self) -> dict:
         """Получение статистики сервера"""

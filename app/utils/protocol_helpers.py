@@ -4,6 +4,8 @@
 import time
 from typing import Tuple
 
+from app.utils.bch_address import BCHAddress
+
 # ========== КОНСТАНТЫ STRATUM ПРОТОКОЛА ==========
 STRATUM_EXTRA_NONCE1 = "ae6812eb4cd7735a302a8a9dd95cf71f"
 EXTRA_NONCE2_SIZE = 4  # 4 байта = 8 hex символов
@@ -29,7 +31,17 @@ def create_job_id(timestamp: int = None, counter: int = 0, miner_address: str = 
 
     if miner_address:
         # Персональное задание
-        address_suffix = miner_address.replace(":", "")[:8] if miner_address else "unknown"
+        clean_address = miner_address
+
+        # Убираем префиксы
+        prefixes = ['bitcoincash:', 'bchtest:']
+        for prefix in prefixes:
+            if clean_address.lower().startswith(prefix):
+                clean_address = clean_address[len(prefix):]  # Сохраняем регистр адреса
+                break
+
+        # Берем первые 8 символов адреса (без префикса)
+        address_suffix = clean_address[:8] if clean_address else "unknown"
         return f"job_{timestamp}_{counter:08x}_{address_suffix}"
     else:
         # Общее задание
@@ -39,8 +51,8 @@ def create_job_id(timestamp: int = None, counter: int = 0, miner_address: str = 
 def parse_stratum_username(username: str) -> Tuple[str, str]:
     """Парсинг username в формате Stratum (address.worker)"""
     if '.' in username:
-        bch_address, worker_name = username.split('.', 1)
-        return bch_address.strip(), worker_name.strip()
+        address_str, worker_name = username.split('.', 1)
+        return address_str.strip(), worker_name.strip()
     else:
         return username.strip(), "default"
 
@@ -60,36 +72,35 @@ def format_hashrate(hashrate: float) -> str:
 
 
 def validate_bch_address(address: str) -> bool:
-    """Валидация BCH адреса"""
+    """Валидация BCH адреса с использованием сервиса из контейнера"""
     if not address or not isinstance(address, str):
         return False
 
-    # Убираем префикс если есть
-    clean_address = address.lower()
+    try:
+        is_valid, _ = BCHAddress.validate(address)
+        return is_valid
+    except (AttributeError, TypeError):
+        # Fallback на базовую проверку если bch_address не работает
+        import re
+        clean_address = address.lower()
 
-    # Проверяем префиксы
-    valid_prefixes = BCH_TESTNET_PREFIXES + BCH_MAINNET_PREFIXES
+        # Legacy форматы
+        if clean_address.startswith('1') or clean_address.startswith('3'):
+            return 26 <= len(clean_address) <= 35
 
-    # Если адрес начинается с префикса, проверяем формат
-    for prefix in valid_prefixes:
-        if clean_address.startswith(prefix):
-            # Убираем префикс для дальнейшей проверки
-            address_part = clean_address[len(prefix):]
+        # CashAddr форматы
+        valid_prefixes = BCH_TESTNET_PREFIXES + BCH_MAINNET_PREFIXES
 
-            # Базовые проверки длины
-            if len(address_part) < 25 or len(address_part) > 36:
-                return False
+        for prefix in valid_prefixes:
+            if clean_address.startswith(prefix):
+                address_part = clean_address[len(prefix):]
 
-            # Проверяем наличие недопустимых символов
-            import re
-            if not re.match(r'^[0-9a-z]+$', address_part):
-                return False
+                if len(address_part) < 25 or len(address_part) > 36:
+                    return False
 
-            return True
+                if not re.match(r'^[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+$', address_part):
+                    return False
 
-    # Если нет известного префикса, проверяем legacy форматы
-    if clean_address.startswith('1') or clean_address.startswith('3'):
-        # Legacy Bitcoin форматы (иногда используются в BCH)
-        return 26 <= len(clean_address) <= 35
+                return True
 
-    return False
+        return False

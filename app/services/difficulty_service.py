@@ -16,7 +16,7 @@ logger = StructuredLogger(__name__)
 class DifficultyService:
     """Сервис для расчета и управления сложностью"""
 
-    def __init__(self, network_manager=None):
+    def __init__(self, network_manager=None, stratum_server=None, tcp_stratum_server=None):
         # Используем network_manager если передан, иначе создаем временный
         if network_manager:
             self.network_manager = network_manager
@@ -24,6 +24,9 @@ class DifficultyService:
             # Временное решение для обратной совместимости
             from app.utils.network_config import NetworkManager
             self.network_manager = NetworkManager()
+
+        self.stratum_server = stratum_server
+        self.tcp_stratum_server = tcp_stratum_server
 
         # Используем конфигурацию сети
         network_config = self.network_manager.config
@@ -224,26 +227,76 @@ class DifficultyService:
 
     async def _broadcast_difficulty_update(self) -> None:
         """Рассылка обновления сложности всем майнерам"""
-        try:
-            from app.dependencies import stratum_server, tcp_stratum_server
+        difficulty = self.current_difficulty
 
-            # WebSocket майнеры
-            if stratum_server:
-                await stratum_server.update_difficulty(self.current_difficulty)
+        logger.info(
+            "Начинаем глобальную рассылку обновления сложности",
+            event="difficulty_broadcast_start",
+            difficulty=difficulty,
+            timestamp=datetime.now(UTC).isoformat()
+        )
 
-            # TCP майнеры
-            # TODO: Реализовать broadcast для TCP сервера
-            logger.info(
-                "Обновление сложности разослано майнерам",
-                event="difficulty_broadcasted",
-                difficulty=self.current_difficulty
+        # WebSocket майнеры
+        ws_success = False
+        ws_error = None
+        if self.stratum_server:
+            try:
+                await self.stratum_server.update_difficulty(difficulty)
+                ws_success = True
+            except Exception as e:
+                ws_error = str(e)
+                logger.error(
+                    "Ошибка отправки сложности WebSocket серверу",
+                    event="difficulty_broadcast_websocket_error",
+                    difficulty=difficulty,
+                    error=ws_error
+                )
+        else:
+            logger.debug(
+                "WebSocket сервер не настроен, пропускаем",
+                event="difficulty_broadcast_ws_skipped"
             )
 
-        except Exception as e:
-            logger.error(
-                "Ошибка рассылки обновления сложности",
-                event="difficulty_broadcast_error",
-                error=str(e)
+        # TCP майнеры
+        tcp_success = False
+        tcp_error = None
+        if self.tcp_stratum_server:
+            try:
+                await self.tcp_stratum_server.broadcast_difficulty(difficulty)
+                tcp_success = True
+            except Exception as e:
+                tcp_error = str(e)
+                logger.error(
+                    "Ошибка отправки сложности TCP серверу",
+                    event="difficulty_broadcast_tcp_error",
+                    difficulty=difficulty,
+                    error=tcp_error
+                )
+        else:
+            logger.debug(
+                "TCP сервер не настроен, пропускаем",
+                event="difficulty_broadcast_tcp_skipped"
+            )
+
+        # Логируем общий результат
+        results = {
+            "websocket": "success" if ws_success else f"error: {ws_error}" if ws_error else "not_configured",
+            "tcp": "success" if tcp_success else f"error: {tcp_error}" if tcp_error else "not_configured",
+            "difficulty": difficulty,
+            "timestamp": datetime.now(UTC).isoformat()
+        }
+
+        if ws_success or tcp_success:
+            logger.info(
+                "Обновление сложности разослано майнерам",
+                event="difficulty_broadcast_completed",
+                **results
+            )
+        else:
+            logger.warning(
+                "Не удалось разослать сложность ни одному серверу",
+                event="difficulty_broadcast_failed",
+                **results
             )
 
     async def get_miner_hashrate(self, miner_address: str, period_minutes: int = 5) -> float:

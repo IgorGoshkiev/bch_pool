@@ -1,6 +1,19 @@
 """Единый контейнер зависимостей для всего приложения"""
 from app.utils.logging_config import StructuredLogger
 
+from app.utils.network_config import NetworkManager
+from app.stratum.block_builder import BlockBuilder
+from app.services.difficulty_service import DifficultyService
+from app.services.auth_service import AuthService
+from app.services.database_service import DatabaseService
+from app.stratum.validator import ShareValidator
+from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE
+from app.services.job_service import JobService
+from app.jobs.manager import JobManager
+from app.stratum.websocket_server import StratumServer
+from app.stratum.tcp_server import StratumTCPServer
+
+
 logger = StructuredLogger(__name__)
 
 
@@ -29,7 +42,6 @@ class DependencyContainer:
     @property
     def network_manager(self):
         if self._network_manager is None:
-            from app.utils.network_config import NetworkManager
             self._network_manager = NetworkManager()
             logger.info(
                 "NetworkManager создан",
@@ -43,7 +55,6 @@ class DependencyContainer:
     @property
     def block_builder(self):
         if self._block_builder is None:
-            from app.stratum.block_builder import BlockBuilder
             self._block_builder = BlockBuilder(network_manager=self.network_manager)
             logger.info(
                 "BlockBuilder создан",
@@ -56,11 +67,12 @@ class DependencyContainer:
     @property
     def difficulty_service(self):
         if self._difficulty_service is None:
-            from app.services.difficulty_service import DifficultyService
-            # Передаем network_manager в конструктор
             self._difficulty_service = DifficultyService(
-                network_manager=self.network_manager
+                network_manager=self.network_manager,
+                stratum_server=self.stratum_server,
+                tcp_stratum_server=self.tcp_stratum_server
             )
+
             logger.info(
                 "DifficultyService создан",
                 event="difficulty_service_created",
@@ -73,7 +85,6 @@ class DependencyContainer:
     @property
     def auth_service(self):
         if self._auth_service is None:
-            from app.services.auth_service import AuthService
             self._auth_service = AuthService(database_service=self.database_service)
             logger.info(
                 "AuthService создан",
@@ -85,7 +96,6 @@ class DependencyContainer:
     @property
     def database_service(self):
         if self._database_service is None:
-            from app.services.database_service import DatabaseService
             self._database_service = DatabaseService()
             logger.info(
                 "DatabaseService создан",
@@ -97,9 +107,6 @@ class DependencyContainer:
     @property
     def share_validator(self):
         if self._share_validator is None:
-            from app.stratum.validator import ShareValidator
-            from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE
-
             # Используем сложность из difficulty_service
             initial_difficulty = self.difficulty_service.current_difficulty
 
@@ -121,7 +128,6 @@ class DependencyContainer:
     @property
     def job_service(self):
         if self._job_service is None:
-            from app.services.job_service import JobService
             self._job_service = JobService(validator=self.share_validator, network_manager=self.network_manager)
             logger.info(
                 "JobService создан",
@@ -134,7 +140,6 @@ class DependencyContainer:
     @property
     def job_manager(self):
         if self._job_manager is None:
-            from app.jobs.manager import JobManager
             self._job_manager = JobManager()
             logger.info(
                 "JobManager создан",
@@ -147,7 +152,6 @@ class DependencyContainer:
     @property
     def stratum_server(self):
         if self._stratum_server is None:
-            from app.stratum.websocket_server import StratumServer
             # Передаем job_manager при создании
             self._stratum_server = StratumServer(job_manager=self.job_manager)
             logger.info(
@@ -161,7 +165,6 @@ class DependencyContainer:
     @property
     def tcp_stratum_server(self):
         if self._tcp_stratum_server is None:
-            from app.stratum.tcp_server import StratumTCPServer
             self._tcp_stratum_server = StratumTCPServer()
             logger.info(
                 "TcpStratumServer создан",
@@ -182,7 +185,8 @@ class DependencyContainer:
             "stratum_server": self._stratum_server is not None,
             "tcp_stratum_server": self._tcp_stratum_server is not None,
             "difficulty_service": self._difficulty_service is not None,
-            "network_manager": self._network_manager is not None
+            "network_manager": self._network_manager is not None,
+
         }
 
         logger.debug(
