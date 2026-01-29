@@ -2,7 +2,6 @@
 Тесты для ShareValidator
 """
 import pytest
-import asyncio
 from datetime import datetime, UTC
 from unittest.mock import Mock, patch
 
