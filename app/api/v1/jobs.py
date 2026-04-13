@@ -39,6 +39,41 @@ async def get_job_stats():
         )
 
 
+@router.get("/current", response_model=ApiResponse)
+async def get_current_job():
+    """Получение текущего задания"""
+    try:
+        logger.debug("Запрос текущего задания")
+
+        # Пытаемся получить задание из job_manager
+        current_job = None
+        if hasattr(job_manager, 'get_current_job'):
+            current_job = job_manager.get_current_job()
+
+        if not current_job:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Текущее задание не найдено"
+            )
+
+        return ApiResponse(
+            status="success",
+            message="Текущее задание получено",
+            data={
+                "job": current_job,
+                "timestamp": datetime.now(UTC).isoformat()
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка получения текущего задания: {str(e)}"
+        )
+
+
+@router.post("/broadcast", response_model=ApiResponse)
 async def broadcast_new_job():
     """Принудительная рассылка нового задания"""
     try:

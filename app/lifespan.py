@@ -133,6 +133,23 @@ async def lifespan(_app):
                     error=str(e)
                 )
 
+        # 7. Запускаем периодическую проверку реорганизации
+        try:
+            reorg_task = asyncio.create_task(_periodic_reorg_checker())
+            background_tasks.append(reorg_task)
+            logger.info(
+                "Периодическая проверка реорганизации запущена",
+                event="reorg_checker_started",
+                interval_seconds=10,
+                task_id=id(reorg_task)
+            )
+        except Exception as e:
+            logger.error(
+                "Ошибка запуска проверки реорганизации",
+                event="reorg_checker_start_failed",
+                error=str(e)
+            )
+
         # Логируем успешный запуск
         startup_duration = (datetime.now(UTC) - startup_time).total_seconds()
         logger.info(
@@ -166,6 +183,52 @@ async def lifespan(_app):
     )
 
     try:
+
+        try:
+            import json
+            shutdown_notice = {
+                "method": "mining.notify",
+                "params": ["shutdown", "0" * 64, "", "", [], "00000000", "1d00ffff", "00000000", True],
+                "error": None
+            }
+
+            # Отправляем уведомление WebSocket майнерам
+            ws_count = 0
+            for conn_id, ws in stratum_server.active_connections.items():
+                try:
+                    await ws.send_json(shutdown_notice)
+                    ws_count += 1
+                except:
+                    pass
+
+            # Отправляем уведомление TCP майнерам
+            tcp_count = 0
+            for client_id, writer in tcp_stratum_server.connections.items():
+                try:
+                    writer.write((json.dumps(shutdown_notice) + "\n").encode())
+                    await writer.drain()
+                    tcp_count += 1
+                except:
+                    pass
+
+            if ws_count > 0 or tcp_count > 0:
+                logger.info(
+                    "Уведомление о остановке отправлено майнерам",
+                    event="shutdown_notification_sent",
+                    websocket_count=ws_count,
+                    tcp_count=tcp_count
+                )
+
+            # Даем время на отправку (2 секунды)
+            await asyncio.sleep(2)
+
+        except Exception as e:
+            logger.warning(
+                "Ошибка при отправке уведомления майнерам",
+                event="shutdown_notification_error",
+                error=str(e)
+            )
+
         # Останавливаем все фоновые задачи
         stopped_tasks = 0
         for task in background_tasks:
@@ -362,6 +425,48 @@ async def _periodic_difficulty_updater():
             )
             await asyncio.sleep(30)
 
+
+async def _periodic_reorg_checker():
+    """Периодическая проверка реорганизации цепочки"""
+    iteration = 0
+    task_id = id(asyncio.current_task())
+
+    logger.debug(
+        "Запуск периодической проверки реорганизации",
+        event="reorg_checker_loop_started",
+        task_id=task_id
+    )
+
+    while True:
+        iteration += 1
+        try:
+            await asyncio.sleep(10)  # Проверяем каждые 10 секунд
+
+            if job_manager and hasattr(job_manager, 'check_for_reorg'):
+                await job_manager.check_for_reorg()
+                logger.debug(
+                    "Проверка реорганизации выполнена",
+                    event="reorg_check_completed",
+                    iteration=iteration
+                )
+
+        except asyncio.CancelledError:
+            logger.info(
+                "Задача проверки реорганизации остановлена",
+                event="reorg_checker_stopped",
+                task_id=task_id,
+                total_iterations=iteration
+            )
+            break
+        except Exception as e:
+            logger.error(
+                "Ошибка в проверке реорганизации",
+                event="reorg_checker_error",
+                iteration=iteration,
+                error=str(e)
+            )
+            await asyncio.sleep(30)  # При ошибке ждем дольше
+
 async def _periodic_job_cleanup():
     """Периодическая очистка старых заданий"""
     iteration = 0
@@ -412,3 +517,4 @@ async def _periodic_job_cleanup():
                 iteration=iteration,
                 error=str(e)
             )
+

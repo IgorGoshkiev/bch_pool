@@ -2,6 +2,7 @@ from datetime import datetime, UTC
 
 from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -19,7 +20,7 @@ from app.api.v1.pool import router as pool_router
 from app.api.v1.jobs import router as jobs_router
 from app.api.v1.tcp_stratum import router as tcp_stratum_router
 
-from app.lifespan import lifespan
+from app.lifespan import lifespan, logger
 from app.dependencies import stratum_server, tcp_stratum_server, database_service, job_service, \
     job_manager, share_validator
 
@@ -180,6 +181,42 @@ async def database_health(db: AsyncSession = Depends(get_db)):
                 "timestamp": datetime.now(UTC).isoformat()
             }
         )
+
+
+@app.get("/health/live")
+async def liveness():
+    """Проверка, что приложение живо"""
+    return {"status": "alive"}
+
+
+@app.get("/health/ready")
+async def readiness(db: AsyncSession = Depends(get_db)):
+    """Проверка, что приложение готово принимать трафик"""
+
+    # Проверяем подключение к БД
+    try:
+        await db.execute(text("SELECT 1"))
+        db_ok = True
+    except SQLAlchemyError as e:  # ← Конкретное исключение
+        logger.error(f"Database connection failed: {e}")
+        db_ok = False
+
+    # Проверяем подключение к ноде
+    node_ok = False
+    if job_manager and hasattr(job_manager, 'node_client'):
+        try:
+            node_ok = await job_manager.node_client.ping()
+        except Exception as e:
+            logger.error(f"Node connection failed: {e}")
+
+    return {
+        "status": "ready" if (db_ok and node_ok) else "not_ready",
+        "checks": {
+            "database": db_ok,
+            "node": node_ok
+        },
+        "timestamp": datetime.now(UTC).isoformat()
+    }
 
 @app.get("/database/tables", response_model=ApiResponse)
 async def list_tables(db: AsyncSession = Depends(get_db)):

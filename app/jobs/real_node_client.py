@@ -295,6 +295,13 @@ class RealBCHNodeClient:
         )
         return None
 
+    async def get_best_block_hash(self) -> Optional[str]:
+        """Получение хэша лучшего блока"""
+        result = await self._make_rpc_call("getbestblockhash")
+        if isinstance(result, str) and len(result) == 64:
+            return result
+        return None
+
     async def get_block_template(self, rules: list = None) -> Optional[Dict]:
         """Получение шаблона блока для майнинга"""
         request_start = datetime.now(UTC)

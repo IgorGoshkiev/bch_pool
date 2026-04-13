@@ -122,7 +122,7 @@ async def pool_hashrate(db: AsyncSession = Depends(get_db)):
             message="Хэшрейт пула получен",
             data={
                 "hashrate": {
-                    "total": total_hashrate,
+                    "total": float(total_hashrate),
                     "unit": "H/s",
                     "formatted": f"{total_hashrate:,.2f} H/s"
                 },

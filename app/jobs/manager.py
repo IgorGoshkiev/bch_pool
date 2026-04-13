@@ -1,17 +1,18 @@
 import asyncio
-import json
 import time
 
-from typing import Optional, Dict
+from typing import Optional, Dict, TYPE_CHECKING
 from datetime import datetime, UTC
 
 from app.utils.config import settings
 from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
 from app.utils.logging_config import StructuredLogger
-
 from app.jobs.real_node_client import RealBCHNodeClient
 
-from app.dependencies import job_service, block_builder
+# ТИПОВОЙ ИМПОРТ для избежания циклических зависимостей
+if TYPE_CHECKING:
+    from app.stratum.websocket_server import StratumServer
+    from app.stratum.tcp_server import StratumTCPServer
 
 logger = StructuredLogger(__name__)
 
@@ -19,7 +20,7 @@ logger = StructuredLogger(__name__)
 class JobManager:
     """Менеджер заданий для майнинг пула - только реальная нода"""
 
-    def __init__(self):
+    def __init__(self, job_service=None, block_builder=None, stratum_server=None, tcp_stratum_server=None):
         # Используем настройки из config.py
         self.node_client = RealBCHNodeClient(
             rpc_host=settings.bch_rpc_host,
@@ -29,17 +30,28 @@ class JobManager:
             use_cookie=settings.bch_rpc_use_cookie
         )
         self.job_service = job_service
+        self.block_builder = block_builder
         self.current_job = None
         self.job_counter = 0
         self.block_height = 0
         self.difficulty = 0.0
+
+        self.stratum_server = stratum_server
+        self.tcp_stratum_server = tcp_stratum_server
+
+        self.last_best_hash: Optional[str] = None
+        self.reorg_check_interval = 10  # Проверка каждые 10 секунд
 
         logger.info(
             "JobManager инициализирован",
             event="job_manager_created",
             rpc_host=settings.bch_rpc_host,
             rpc_port=settings.bch_rpc_port,
-            use_cookie=settings.bch_rpc_use_cookie
+            use_cookie=settings.bch_rpc_use_cookie,
+            has_job_service=job_service is not None,
+            has_block_builder=block_builder is not None,
+            has_stratum_server=stratum_server is not None,
+            has_tcp_stratum_server=tcp_stratum_server is not None
         )
 
     async def initialize(self) -> bool:
@@ -213,6 +225,49 @@ class JobManager:
             )
             return None
 
+    async def _broadcast_clean_jobs(self):
+        """Отправить clean_jobs=True всем майнерам"""
+        if self.current_job:
+            clean_job = self.current_job['stratum_data'].copy()
+            # Устанавливаем clean_jobs = True (последний параметр)
+            if len(clean_job['params']) >= 9:
+                clean_job['params'][8] = True
+
+            # Рассылаем через серверы
+            if hasattr(self.stratum_server, 'broadcast_new_job'):
+                await self.stratum_server.broadcast_new_job(clean_job)
+            if hasattr(self.tcp_stratum_server, 'broadcast_new_job'):
+                await self.tcp_stratum_server.broadcast_new_job(clean_job)
+
+    async def check_for_reorg(self):
+        """Проверка реорганизации цепочки"""
+        if not self.node_client:
+            return
+
+        try:
+            current_best = await self.node_client.get_best_block_hash()
+
+            if not current_best:
+                return
+
+            if self.last_best_hash and self.last_best_hash != current_best:
+                logger.warning(
+                    "REORG DETECTED!",
+                    event="reorg_detected",
+                    old_hash=self.last_best_hash[:16] + "...",
+                    new_hash=current_best[:16] + "..."
+                )
+                # Отправляем clean_jobs=True
+                await self._broadcast_clean_jobs()
+
+                # Создаем новое задание
+                await self.broadcast_new_job_to_all()
+
+            self.last_best_hash = current_best
+
+        except Exception as e:
+            logger.error(f"Error checking for reorg: {e}")
+
     async def _create_stratum_job_from_template(self, template: Dict, job_id: str, miner_address: str = None) -> \
     Optional[Dict]:
         """Создать Stratum задание из шаблона блока"""
@@ -225,7 +280,7 @@ class JobManager:
                 address = settings.pool_wallet if settings.pool_wallet else "qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a"
 
             # Используем block_builder для создания данных задания
-            job_data = block_builder.create_stratum_job_data(
+            job_data = self.block_builder.create_stratum_job_data(
                 template=template,
                 job_id=job_id,
                 miner_address=address,
@@ -276,8 +331,6 @@ class JobManager:
             "template": template
         }
 
-
-
     async def broadcast_new_job_to_all(self):
         """Рассылать новое задание всем подключенным майнерам"""
         logger.info(
@@ -294,11 +347,16 @@ class JobManager:
             )
             return
 
-        # Задание уже сохранено в job_service через create_new_job()
-        # Рассылку делают серверы через job_service.get_job_for_miner()
+        # Рассылаем через WebSocket сервер если есть
+        if self.stratum_server:
+            await self.stratum_server.broadcast_new_job(job_data)
+
+        # Рассылаем через TCP сервер если есть
+        if self.tcp_stratum_server:
+            await self.tcp_stratum_server.broadcast_new_job(job_data)
 
         logger.info(
-            "Broadcast задание создано",
+            "Broadcast задание разослано",
             event="job_manager_broadcast_job_created",
             job_id=job_data['params'][0] if 'params' in job_data else 'unknown'
         )
@@ -405,7 +463,7 @@ class JobManager:
                 }
 
             # Создаем полный блок
-            complete_block = block_builder.create_complete_block(
+            complete_block = self.block_builder.create_complete_block(
                 template=template,
                 miner_address=miner_address,
                 extra_nonce1=STRATUM_EXTRA_NONCE1,

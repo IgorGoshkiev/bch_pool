@@ -6,7 +6,7 @@ import sys
 import os
 import asyncio
 from datetime import datetime, UTC
-from unittest.mock import Mock
+from unittest.mock import Mock, AsyncMock, MagicMock
 
 # Добавляем корень проекта в sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -138,3 +138,91 @@ def mock_validator():
     validator.remove_job = Mock()
     validator.validate_share = Mock(return_value=(True, None))
     return validator
+
+
+@pytest.fixture(autouse=True)
+def mock_database_for_api_tests():
+    """Мок для всех тестов API - подменяем get_db на мок"""
+    from app.models import database
+    from app.main import app
+
+    # Создаем мок сессии
+    mock_session = AsyncMock()
+
+    # Настраиваем мок для execute
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_result.scalar.return_value = 0
+    mock_session.execute.return_value = mock_result
+    mock_session.commit = AsyncMock()
+    mock_session.refresh = AsyncMock()
+    mock_session.close = AsyncMock()
+
+    # Функция-заглушка для get_db
+    async def mock_get_db():
+        yield mock_session
+
+    # Подменяем зависимость
+    app.dependency_overrides[database.get_db] = mock_get_db
+
+    yield mock_session
+
+    # Очищаем после тестов
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def mock_db_session():
+    """Отдельная фикстура для мока сессии БД"""
+    session = AsyncMock()
+
+    # Настраиваем базовые моки
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_result.scalar.return_value = 0
+    session.execute.return_value = mock_result
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+
+    return session
+
+
+@pytest.fixture
+def mock_miner():
+    """Создание мок-майнера для тестов"""
+    miner = Mock()
+    miner.id = 1
+    miner.bch_address = "test_address"
+    miner.worker_name = "test_worker"
+    miner.is_active = True
+    miner.total_shares = 100
+    miner.total_blocks = 2
+    miner.hashrate = 1000.0
+    miner.created_at = datetime.now(UTC)
+    return miner
+
+
+@pytest.fixture
+def mock_share():
+    """Создание мок-шара для тестов"""
+    share = Mock()
+    share.id = 1
+    share.miner_address = "test_address"
+    share.job_id = "test_job_123"
+    share.is_valid = True
+    share.difficulty = 1.0
+    share.submitted_at = datetime.now(UTC)
+    return share
+
+
+@pytest.fixture
+def mock_block():
+    """Создание мок-блока для тестов"""
+    block = Mock()
+    block.id = 1
+    block.height = 1000
+    block.hash = "a" * 64
+    block.miner_address = "test_address"
+    block.confirmed = True
+    block.found_at = datetime.now(UTC)
+    return block

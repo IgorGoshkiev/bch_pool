@@ -1,6 +1,5 @@
 """Единый контейнер зависимостей для всего приложения"""
 from app.utils.logging_config import StructuredLogger
-
 from app.utils.network_config import NetworkManager
 from app.stratum.block_builder import BlockBuilder
 from app.services.difficulty_service import DifficultyService
@@ -12,7 +11,6 @@ from app.services.job_service import JobService
 from app.jobs.manager import JobManager
 from app.stratum.websocket_server import StratumServer
 from app.stratum.tcp_server import StratumTCPServer
-
 
 logger = StructuredLogger(__name__)
 
@@ -37,8 +35,7 @@ class DependencyContainer:
             event="dependencies_container_created"
         )
 
-        # === NETWORK MANAGER ===
-
+    # === NETWORK MANAGER ===
     @property
     def network_manager(self):
         if self._network_manager is None:
@@ -50,8 +47,7 @@ class DependencyContainer:
             )
         return self._network_manager
 
-        # === BLOCK BUILDER ===
-
+    # === BLOCK BUILDER ===
     @property
     def block_builder(self):
         if self._block_builder is None:
@@ -63,36 +59,7 @@ class DependencyContainer:
             )
         return self._block_builder
 
-    # === DIFFICULTY SERVICE ===
-    @property
-    def difficulty_service(self):
-        if self._difficulty_service is None:
-            self._difficulty_service = DifficultyService(
-                network_manager=self.network_manager,
-                stratum_server=self.stratum_server,
-                tcp_stratum_server=self.tcp_stratum_server
-            )
-
-            logger.info(
-                "DifficultyService создан",
-                event="difficulty_service_created",
-                current_difficulty=self._difficulty_service.current_difficulty,
-                network=self._difficulty_service.network_manager.network
-            )
-        return self._difficulty_service
-
-    # === AUTH SERVICE ===
-    @property
-    def auth_service(self):
-        if self._auth_service is None:
-            self._auth_service = AuthService(database_service=self.database_service)
-            logger.info(
-                "AuthService создан",
-                event="auth_service_created"
-            )
-        return self._auth_service
-
-    # === DATABASE SERVICE ===
+    # === DATABASE SERVICE (не зависит от других) ===
     @property
     def database_service(self):
         if self._database_service is None:
@@ -103,23 +70,31 @@ class DependencyContainer:
             )
         return self._database_service
 
-    # === SHARE VALIDATOR ===
+    # === AUTH SERVICE (зависит только от database) ===
+    @property
+    def auth_service(self):
+        if self._auth_service is None:
+            self._auth_service = AuthService(database_service=self.database_service)
+            logger.info(
+                "AuthService создан",
+                event="auth_service_created"
+            )
+        return self._auth_service
+
+    # === SHARE VALIDATOR (временно без difficulty) ===
     @property
     def share_validator(self):
         if self._share_validator is None:
-            # Используем сложность из difficulty_service
-            initial_difficulty = self.difficulty_service.current_difficulty
-
+            # Используем временную сложность 1.0, потом обновим
             self._share_validator = ShareValidator(
-                target_difficulty=initial_difficulty,
+                target_difficulty=1.0,  # Временное значение
                 extra_nonce2_size=EXTRA_NONCE2_SIZE,
                 extra_nonce1=STRATUM_EXTRA_NONCE1
             )
-
             logger.info(
                 "ShareValidator создан",
                 event="share_validator_created",
-                target_difficulty=initial_difficulty,
+                target_difficulty=1.0,
                 extra_nonce2_size=EXTRA_NONCE2_SIZE
             )
         return self._share_validator
@@ -128,7 +103,10 @@ class DependencyContainer:
     @property
     def job_service(self):
         if self._job_service is None:
-            self._job_service = JobService(validator=self.share_validator, network_manager=self.network_manager)
+            self._job_service = JobService(
+                validator=self.share_validator,
+                network_manager=self.network_manager
+            )
             logger.info(
                 "JobService создан",
                 event="job_service_created",
@@ -140,7 +118,10 @@ class DependencyContainer:
     @property
     def job_manager(self):
         if self._job_manager is None:
-            self._job_manager = JobManager()
+            self._job_manager = JobManager(
+                job_service=self.job_service,
+                block_builder=self.block_builder
+            )
             logger.info(
                 "JobManager создан",
                 event="job_manager_created",
@@ -152,8 +133,12 @@ class DependencyContainer:
     @property
     def stratum_server(self):
         if self._stratum_server is None:
-            # Передаем job_manager при создании
-            self._stratum_server = StratumServer(job_manager=self.job_manager)
+            self._stratum_server = StratumServer(
+                job_manager=self.job_manager,
+                auth_service=self.auth_service,
+                database_service=self.database_service,
+                job_service=self.job_service
+            )
             logger.info(
                 "StratumServer создан",
                 event="stratum_server_created",
@@ -165,7 +150,11 @@ class DependencyContainer:
     @property
     def tcp_stratum_server(self):
         if self._tcp_stratum_server is None:
-            self._tcp_stratum_server = StratumTCPServer()
+            self._tcp_stratum_server = StratumTCPServer(
+                auth_service=self.auth_service,
+                database_service=self.database_service,
+                job_service=self.job_service
+            )
             logger.info(
                 "TcpStratumServer создан",
                 event="tcp_stratum_server_created",
@@ -173,6 +162,33 @@ class DependencyContainer:
                 port=self._tcp_stratum_server.port
             )
         return self._tcp_stratum_server
+
+    # === DIFFICULTY SERVICE  ===
+    @property
+    def difficulty_service(self):
+        if self._difficulty_service is None:
+            self._difficulty_service = DifficultyService(
+                network_manager=self.network_manager,
+                stratum_server=self.stratum_server,
+                tcp_stratum_server=self.tcp_stratum_server
+            )
+
+            # После создания difficulty_service, обновляем share_validator
+            if self._share_validator:
+                self._share_validator.target_difficulty = self._difficulty_service.current_difficulty
+                logger.info(
+                    "ShareValidator обновлен актуальной сложностью",
+                    event="share_validator_updated",
+                    new_difficulty=self._difficulty_service.current_difficulty
+                )
+
+            logger.info(
+                "DifficultyService создан",
+                event="difficulty_service_created",
+                current_difficulty=self._difficulty_service.current_difficulty,
+                network=self._difficulty_service.network_manager.network
+            )
+        return self._difficulty_service
 
     def get_stats(self) -> dict:
         """Получить статистику всех сервисов"""
@@ -186,7 +202,6 @@ class DependencyContainer:
             "tcp_stratum_server": self._tcp_stratum_server is not None,
             "difficulty_service": self._difficulty_service is not None,
             "network_manager": self._network_manager is not None,
-
         }
 
         logger.debug(

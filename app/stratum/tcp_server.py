@@ -4,7 +4,7 @@ from datetime import datetime, UTC
 from typing import Dict, Optional
 
 from app.utils.logging_config import StructuredLogger
-from app.dependencies import auth_service, database_service, job_service
+# from app.dependencies import auth_service, database_service, job_service
 from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE
 
 logger = StructuredLogger(__name__)
@@ -13,7 +13,12 @@ logger = StructuredLogger(__name__)
 class StratumTCPServer:
     """TCP Stratum сервер для ASIC майнеров"""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 3333):
+    def __init__(self,
+                 host: str = "0.0.0.0",
+                 port: int = 3333,
+                 auth_service=None,
+                 database_service=None,
+                 job_service=None):
         self.host = host
         self.port = port
         self.server: Optional[asyncio.Server] = None
@@ -26,6 +31,8 @@ class StratumTCPServer:
         self.start_time = datetime.now(UTC)
         self._lock = asyncio.Lock()  # Для синхронизации доступа
         self.max_connections = 1000  # Максимальное количество подключений
+        self._ip_connections: Dict[str, int] = {}
+        self.max_per_ip = 10
 
         logger.info(
             "TCP Stratum сервер инициализирован",
@@ -78,7 +85,13 @@ class StratumTCPServer:
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """Обработка подключения майнера"""
         addr = writer.get_extra_info('peername')
-        client_id = f"{addr[0]}:{addr[1]}"
+
+        if addr is None:
+            client_id = f"unknown_{id(writer)}"
+        elif isinstance(addr, tuple) and len(addr) >= 2:
+            client_id = f"{addr[0]}:{addr[1]}"
+        else:
+            client_id = f"unknown_{id(writer)}"
 
         # Проверка максимального количества подключений:
         async with self._lock:
@@ -93,7 +106,6 @@ class StratumTCPServer:
                 writer.close()
                 await writer.wait_closed()
                 return
-
 
         # Записываем время подключения
         connect_time = datetime.now(UTC)
@@ -710,4 +722,3 @@ class StratumTCPServer:
         )
 
         return stats
-

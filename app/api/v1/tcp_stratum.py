@@ -83,7 +83,7 @@ async def get_tcp_connections():
 async def check_tcp_stratum_health():
     """Проверка здоровья TCP Stratum сервера"""
     try:
-        is_running = tcp_stratum_server.server is not None and not tcp_stratum_server.server.is_serving()
+        is_running = tcp_stratum_server.server is not None and tcp_stratum_server.server.is_serving()
 
         return ApiResponse(
             status="success",

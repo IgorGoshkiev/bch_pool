@@ -3,7 +3,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: bch_pool_postgres
-    env_file: .env  # ← ЗДЕСЬ подключаем .env
+    env_file: .env  # подключаем .env
     environment:
       POSTGRES_DB: ${DB_NAME}  # Берём из .env
       POSTGRES_USER: ${DB_USER}

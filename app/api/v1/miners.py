@@ -422,7 +422,7 @@ async def get_miner_stats(
         if valid_shares and time_range != "all":
             # Примерная формула: сумма сложности / время в секундах
             total_difficulty = sum(s.difficulty for s in valid_shares)
-            # Используем time_range_str вместо time_range
+
             time_seconds_map = {
                 "1h": 3600,
                 "24h": 86400,
@@ -430,8 +430,11 @@ async def get_miner_stats(
                 "30d": 2592000
             }
 
-            #  time_range_str точно есть в словаре
+
             time_seconds = time_seconds_map.get(time_range, 86400)
+
+            if time_seconds is None:
+                time_seconds = 86400  # default fallback
 
             if valid_shares and time_seconds is not None and time_seconds > 0:
                 # Примерная формула: сумма сложности / время в секундах
