@@ -18,17 +18,18 @@ async def get_job_stats():
         logger.debug("Запрос статистики заданий")
         stats = job_manager.get_stats()
 
+        # Безопасно получаем значения
         return ApiResponse(
             status="success",
             message="Статистика заданий получена",
             data={
                 "job_manager": {
                     "status": "running",
-                    "current_job": stats["current_job"],
-                    "total_jobs_created": stats["total_jobs_created"],
-                    "job_history_size": stats["job_history_size"]
+                    "current_job": stats.get("current_job"),
+                    "total_jobs_created": stats.get("total_jobs_created", 0),
+                    "job_history_size": len(job_manager.job_history) if hasattr(job_manager, 'job_history') else 0
                 },
-                "node": stats["node_info"],
+                "node": stats.get("node_info", {}),
                 "timestamp": datetime.now(UTC).isoformat()
             }
         )

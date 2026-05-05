@@ -37,6 +37,12 @@ async def lifespan(_app):
     try:
         # 1. Инициализируем JobManager
         logger.info("Инициализация JobManager...", event="job_manager_initializing")
+
+        if not settings.bch_rpc_host:
+            logger.error("BCH RPC настройки не заданы в .env!")
+        else:
+            logger.info(f"Подключение к BCH ноде: {settings.bch_rpc_host}:{settings.bch_rpc_port}")
+
         if await job_manager.initialize():
             logger.info(
                 "JobManager готов к работе",
