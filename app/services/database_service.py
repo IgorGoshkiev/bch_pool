@@ -176,6 +176,8 @@ class DatabaseService:
             is_valid: bool = True
     ) -> Tuple[bool, Optional[int]]:
         """Сохранение шара в базу данных, возвращает (успех, ID шара)"""
+        print(f"=== SAVE_SHARE CALLED === {miner_address}")
+        logger.info(f"=== SAVE_SHARE CALLED === {miner_address}, job_id={job_id}")
         try:
             async with AsyncSessionLocal() as session:
                 # Создаем запись о шаре
@@ -193,6 +195,7 @@ class DatabaseService:
                 share_id = share.id
 
                 await session.commit()
+
 
                 # Обновляем статистику майнера
                 if is_valid:

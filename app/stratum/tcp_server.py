@@ -4,8 +4,8 @@ from datetime import datetime, UTC
 from typing import Dict, Optional
 
 from app.utils.logging_config import StructuredLogger
-# from app.dependencies import auth_service, database_service, job_service
 from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE
+from app.utils.config import settings
 
 logger = StructuredLogger(__name__)
 
@@ -84,6 +84,7 @@ class StratumTCPServer:
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """Обработка подключения майнера"""
+
         addr = writer.get_extra_info('peername')
 
         if addr is None:
@@ -93,6 +94,8 @@ class StratumTCPServer:
         else:
             client_id = f"unknown_{id(writer)}"
 
+        print("=== NEW CLIENT CONNECTED ===", flush=True)
+        logger.info("=== NEW CLIENT CONNECTED ===")
         # Проверка максимального количества подключений:
         async with self._lock:
             if len(self.connections) >= self.max_connections:
@@ -228,8 +231,7 @@ class StratumTCPServer:
                 remaining_connections=remaining  # Используем предварительно рассчитанное значение
             )
 
-    @staticmethod
-    async def _send_welcome(writer: asyncio.StreamWriter):
+    async def _send_welcome(self, writer: asyncio.StreamWriter):
         """Отправка приветственного сообщения"""
         welcome = {
             "id": 1,
@@ -243,13 +245,14 @@ class StratumTCPServer:
             "error": None
         }
 
-        await StratumTCPServer._send_json(writer, welcome)
+        await self._send_json(writer, welcome)
 
     async def handle_message(self, data: dict, writer: asyncio.StreamWriter, client_id: str):
         """Обработка Stratum сообщений"""
         method = data.get("method")
         msg_id = data.get("id")
         params = data.get("params", [])
+        logger.info(f"=== HANDLE MESSAGE: method={method}, id={msg_id} ===")
 
         # Определяем BCH адрес майнера
         miner_address = self.miners.get(client_id)
@@ -328,6 +331,16 @@ class StratumTCPServer:
                     client_id=client_id
                 )
                 await self._send_error(writer, msg_id, "Not authorized")
+        elif method == "mining.configure":
+            # WhatsMiner отправляет этот метод
+            await self._handle_configure(msg_id, writer, params)
+        elif method == "mining.extranonce.subscribe":
+            logger.info("=== EXTRANONCE SUBSCRIBE CALLBACK TRIGGERED ===")
+            await self._handle_extranonce_subscribe(msg_id, writer)
+        elif method == "mining.suggest_difficulty":
+            # Игнорируем предложение сложности от майнера
+            await self._send_result(writer, msg_id, True)
+
         else:
             logger.warning(
                 "Неизвестный метод TCP",
@@ -337,23 +350,89 @@ class StratumTCPServer:
             )
             await self._send_error(writer, msg_id, f"Unknown method: {method}")
 
-    @staticmethod
-    async def _handle_subscribe(msg_id: int, writer: asyncio.StreamWriter):
+    async def _handle_subscribe(self, msg_id: int, writer: asyncio.StreamWriter):
         """Обработка подписки"""
+        from app.utils.config import settings  # или импортировать в начале файла
+
         response = {
             "id": msg_id,
             "result": [
                 [["mining.set_difficulty", "difficulty"], ["mining.notify", "job_id"]],
-                STRATUM_EXTRA_NONCE1,  # Extra nonce 1
-                EXTRA_NONCE2_SIZE  # Extra nonce 2 size
+                STRATUM_EXTRA_NONCE1,
+                EXTRA_NONCE2_SIZE
             ],
             "error": None
         }
-        await StratumTCPServer._send_json(writer, response)
+        await self._send_json(writer, response)
+
+        # Находим client_id по writer
+        client_id = None
+        for cid, w in self.connections.items():
+            if w == writer:
+                client_id = cid
+                break
+
+        miner_address = settings.default_miner_address
+        if client_id and client_id in self.miners:
+            miner_address = self.miners[client_id]
+
+        # Отправляем задание
+        await self.send_new_job_tcp(miner_address, writer)
+        logger.info(f"=== JOB SENT FOR {miner_address} ===")
+
+    async def _handle_configure(self, msg_id: int, writer: asyncio.StreamWriter, params: list):
+        """Обработка mining.configure от WhatsMiner"""
+        logger.info(f"=== CONFIGURE REQUEST: {params} ===")
+
+        # Правильный ответ для WhatsMiner
+        response = {
+            "id": msg_id,
+            "result": {
+                "version-rolling": True,
+                "version-rolling.mask": "1fffe000",
+                "minimum-difficulty": 1
+            },
+            "error": None
+        }
+        await self._send_json(writer, response)
+        logger.info("=== CONFIGURE RESPONSE SENT ===")
+
+    async def _handle_extranonce_subscribe(self, msg_id: int, writer: asyncio.StreamWriter):
+        """Обработка extranonce.subscribe"""
+        logger.info("=== EXTRANONCE SUBSCRIBE ===")
+
+        response = {
+            "id": msg_id,
+            "result": True,
+            "error": None
+        }
+        await self._send_json(writer, response)
+
+        # Отправляем задание
+        client_id = None
+        for cid, w in self.connections.items():
+            if w == writer:
+                client_id = cid
+                break
+
+        if client_id and client_id in self.miners:
+            miner_address = self.miners[client_id]
+            logger.info(f"=== SENDING JOB TO {miner_address} ===")
+            await self.send_new_job_tcp(miner_address, writer)
+
+    async def _send_result(self, writer: asyncio.StreamWriter, msg_id: int, result):
+        """Отправка простого результата"""
+        response = {
+            "id": msg_id,
+            "result": result,
+            "error": None
+        }
+        await self._send_json(writer, response)
 
     async def handle_submit_tcp(self, msg_id: int, params: list, miner_address: str,
                                 writer: asyncio.StreamWriter, client_id: str):
         """Обработка шара от TCP клиента"""
+        logger.info(f"=== SUBMIT RECEIVED === miner: {miner_address}, params: {params}")
         if len(params) < 5:
             logger.warning(
                 "Недостаточно параметров для TCP submit",
@@ -365,7 +444,6 @@ class StratumTCPServer:
             await self._send_error(writer, msg_id, "Invalid submit parameters")
             return
 
-        # worker_name = params[0]  # Не используется, но оставляем для совместимости
         job_id = params[1]
         extra_nonce2 = params[2]
         ntime = params[3]
@@ -381,14 +459,18 @@ class StratumTCPServer:
             nonce=nonce
         )
 
-        # Используем job_service для валидации
-        is_valid, error_msg, job_data = self.job_service.validate_and_process_share(
-            job_id=job_id,
-            extra_nonce2=extra_nonce2,
-            ntime=ntime,
-            nonce=nonce,
-            miner_address=miner_address
-        )
+        if settings.enable_share_validation:
+            is_valid, error_msg, job_data = self.job_service.validate_and_process_share(
+                job_id=job_id,
+                extra_nonce2=extra_nonce2,
+                ntime=ntime,
+                nonce=nonce,
+                miner_address=miner_address
+            )
+        else:
+            # Для тестирования - всегда валидный шар
+            is_valid = True
+            error_msg = None
 
         if not is_valid:
             logger.warning(
@@ -410,7 +492,7 @@ class StratumTCPServer:
                 extra_nonce2=extra_nonce2,
                 ntime=ntime,
                 nonce=nonce,
-                difficulty=1.0,
+                difficulty=settings.default_share_difficulty,  # ✅ из настроек
                 is_valid=True
             )
 
@@ -466,7 +548,6 @@ class StratumTCPServer:
                 await self._send_error(writer, 0, "No job available")
                 return
 
-            # Отправляем задание клиенту
             await self._send_json(writer, job_data)
 
             logger.info(
@@ -663,21 +744,21 @@ class StratumTCPServer:
                 error=str(e)
             )
 
-    @staticmethod
-    async def _send_error(writer: asyncio.StreamWriter, msg_id: Optional[int], error_msg: str):
+    async def _send_error(self, writer: asyncio.StreamWriter, msg_id: Optional[int], error_msg: str):
         """Отправка ошибки"""
         response = {
             "id": msg_id if msg_id is not None else 0,
             "result": None,
             "error": [20, error_msg, None]
         }
-        await StratumTCPServer._send_json(writer, response)
+        await self._send_json(writer, response)
 
-    @staticmethod
-    async def _send_json(writer: asyncio.StreamWriter, data: dict):
+    async def _send_json(self, writer: asyncio.StreamWriter, data: dict):
         """Отправка JSON с новой строкой"""
         try:
-            writer.write((json.dumps(data) + "\n").encode())
+            msg = json.dumps(data) + "\n"
+            logger.info(f">>> SENDING: {msg.strip()}")
+            writer.write(msg.encode())
             await writer.drain()
         except Exception as e:
             logger.error(f'Ошибка отправки TCP: {e}')
