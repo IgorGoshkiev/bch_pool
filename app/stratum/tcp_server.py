@@ -266,7 +266,12 @@ class StratumTCPServer:
             print(f"🔵 PROCESSING authorize", flush=True)
 
             if len(params) >= 1:
+                # ⚠️ ИСПРАВЛЕНИЕ: Если ASIC отправил адрес как две части - склеиваем
                 username = params[0]
+                if len(params) >= 2 and params[1] and ':' not in username and params[1].startswith('q'):
+                    username = f"{params[0]}:{params[1]}"
+                    print(f"🔵 FIXED USERNAME: {username}", flush=True)
+
                 success, authorized_address, error_msg = await self.auth_service.authorize_miner(username, "")
                 if success:
                     async with self._lock:
@@ -274,7 +279,7 @@ class StratumTCPServer:
                     response = {"id": msg_id, "result": True, "error": None}
                     await self._send_json(writer, response)
                     await self.send_new_job_tcp(authorized_address, writer)
-                    logger.info(f"✅ AUTHORIZED: {params[0]}")
+                    logger.info(f"✅ AUTHORIZED: {username}")
                 else:
                     await self._send_error(writer, msg_id, error_msg or "Authorization failed")
             else:
@@ -282,14 +287,13 @@ class StratumTCPServer:
 
         elif method == "mining.submit":
             if client_id in self.miners:
-                await self.handle_submit_tcp(msg_id, params, self.miners[client_id], writer, client_id)
+                await self.handle_submit_tcp(msg_id, params, self.miners[client_id], writer)
                 logger.info(f"✅ SUBMIT RECEIVED: {params}")
             else:
                 await self._send_error(writer, msg_id, "Not authorized")
 
         elif method == "mining.configure":
             await self._handle_configure(msg_id, writer, params)
-
 
         elif method == "mining.extranonce.subscribe":
             print(f"🔵 PROCESSING extranonce.subscribe", flush=True)
@@ -302,12 +306,11 @@ class StratumTCPServer:
         else:
             await self._send_error(writer, msg_id, f"Unknown method: {method}")
 
-
-
     async def _handle_subscribe(self, msg_id: int, writer: asyncio.StreamWriter):
-        """Обработка подписки с extranonce"""
-        # Простой ответ без лишних данных
-        logger.info(" === start _handle_subscrib")
+        """Обработка подписки с отправкой фиксированной сложности"""
+        logger.info("=== START _handle_subscribe ===")
+
+        # 1. Ответ на подписку
         response = {
             "id": msg_id,
             "result": [
@@ -318,8 +321,24 @@ class StratumTCPServer:
             "error": None
         }
         await self._send_json(writer, response)
+        logger.info("=== SUBSCRIBE RESPONSE SENT ===")
 
-        logger.info("=== SUBSCRIBE RESPONSE SENT, WAITING FOR AUTHORIZE ===")
+        # 2. ⚠️ ОТПРАВЛЯЕМ ФИКСИРОВАННУЮ СЛОЖНОСТЬ (как на molepool)
+        difficulty_to_set = 1048576  # 1M - для среднего ASIC
+        difficulty_msg = {
+            "method": "mining.set_difficulty",
+            "params": [difficulty_to_set]
+        }
+        await self._send_json(writer, difficulty_msg)
+        logger.info(f"✅ Set difficulty to {difficulty_to_set}")
+
+        # 3. ОТПРАВЛЯЕМ EXTRANONCE (если нужно)
+        extranonce_msg = {
+            "method": "mining.set_extranonce",
+            "params": [STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE]
+        }
+        await self._send_json(writer, extranonce_msg)
+        logger.info("✅ Extranonce sent")
 
     async def _handle_configure(self, msg_id: int, writer: asyncio.StreamWriter, params: list):
         """Обработка mining.configure от WhatsMiner"""
@@ -374,53 +393,54 @@ class StratumTCPServer:
                                 writer: asyncio.StreamWriter):
         """Обработка шара от TCP клиента"""
 
-        # 1. ЛОГИРУЕМ ВХОДНЫЕ ДАННЫЕ
-        print(f"🔵 SUBMIT RECEIVED: msg_id={msg_id}, miner={miner_address}, params={params}", flush=True)
-        logger.info(f"🔵 SUBMIT RECEIVED: miner={miner_address}, params={params}")
+        print(f"🔵🔵🔵 HANDLE_SUBMIT_TCP CALLED 🔵🔵🔵", flush=True)
+        print(f"msg_id={msg_id}, miner={miner_address}, params={params}", flush=True)
+        print(f"params length={len(params)}", flush=True)
 
-        # 2. ПРОВЕРКА ПАРАМЕТРОВ
-        if len(params) < 5:
-            print(f"🔴 SUBMIT ERROR: not enough params (got {len(params)}, need 5)", flush=True)
-            logger.warning(f"Недостаточно параметров: {len(params)}")
-            await self._send_error(writer, msg_id, "Invalid submit parameters")
-            return
-
-        # 3. ИЗВЛЕКАЕМ ДАННЫЕ
-        job_id = params[1]
-        extra_nonce2 = params[2]
-        ntime = params[3]
-        nonce = params[4]
-
-        print(f"📊 PARAMS: job_id={job_id}, extra_nonce2={extra_nonce2}, ntime={ntime}, nonce={nonce}", flush=True)
-        logger.info(f"📊 Шар: job_id={job_id}, nonce={nonce}, ntime={ntime}")
-
-        # 4. ВАЛИДАЦИЯ
-        print(f"🔍 VALIDATING: enable_share_validation={settings.enable_share_validation}", flush=True)
-
-        if settings.enable_share_validation:
-            print(f"🔍 Calling validate_and_process_share...", flush=True)
-            is_valid, error_msg, job_data = self.job_service.validate_and_process_share(
-                job_id=job_id,
-                extra_nonce2=extra_nonce2,
-                ntime=ntime,
-                nonce=nonce,
-                miner_address=miner_address
-            )
-            print(f"🔍 VALIDATION RESULT: is_valid={is_valid}, error_msg={error_msg}", flush=True)
-        else:
-            print(f"⚠️ VALIDATION DISABLED: accepting all shares", flush=True)
-            is_valid = True
-            error_msg = None
-
-        # 5. ЕСЛИ НЕВАЛИДЕН - ОТКЛОНЯЕМ
-        if not is_valid:
-            print(f"🔴 SHARE REJECTED: {error_msg}", flush=True)
-            logger.warning(f'Невалидный шар: {error_msg}')
-            await self._send_error(writer, msg_id, f"Invalid share: {error_msg}")
-            return
-
-        # 6. СОХРАНЯЕМ В БД
         try:
+            # 1. ПРОВЕРКА ПАРАМЕТРОВ
+            if len(params) < 5:
+                print(f"🔴 SUBMIT ERROR: not enough params (got {len(params)}, need 5)", flush=True)
+                await self._send_error(writer, msg_id, "Invalid submit parameters")
+                return
+
+            # 3. ИЗВЛЕКАЕМ ДАННЫЕ
+            # NOTE: params[0] - worker name (bitcoincash), params[1] - job_id, params[2] - extra_nonce2, params[3] - ntime, params[4] - nonce
+            worker = params[0]
+            job_id = params[1]
+            extra_nonce2 = params[2]
+            ntime = params[3]
+            nonce = params[4]
+
+            print(
+                f"📊 PARAMS: job_id={job_id}, extra_nonce2={extra_nonce2}, ntime={ntime}, nonce={nonce}, worker={worker}",
+                flush=True)
+
+            # 4. ВАЛИДАЦИЯ
+            print(f"🔍 enable_share_validation={settings.enable_share_validation}", flush=True)
+
+            if settings.enable_share_validation:
+                print(f"🔍 Calling validate_and_process_share...", flush=True)
+                is_valid, error_msg, job_data = self.job_service.validate_and_process_share(
+                    job_id=job_id,
+                    extra_nonce2=extra_nonce2,
+                    ntime=ntime,
+                    nonce=nonce,
+                    miner_address=miner_address
+                )
+                print(f"🔍 VALIDATION RESULT: is_valid={is_valid}, error_msg={error_msg}", flush=True)
+            else:
+                print(f"⚠️ VALIDATION DISABLED: accepting all shares", flush=True)
+                is_valid = True
+                error_msg = None
+
+            # 5. ЕСЛИ НЕВАЛИДЕН - ОТКЛОНЯЕМ
+            if not is_valid:
+                print(f"🔴 SHARE REJECTED: {error_msg}", flush=True)
+                await self._send_error(writer, msg_id, f"Invalid share: {error_msg}")
+                return
+
+            # 6. СОХРАНЯЕМ В БД
             print(f"💾 SAVING SHARE to database...", flush=True)
             saved, share_id = await self.database_service.save_share(
                 miner_address=miner_address,
@@ -436,20 +456,18 @@ class StratumTCPServer:
 
             if not saved:
                 print(f"🔴 DATABASE SAVE FAILED", flush=True)
-                logger.error(f'Ошибка сохранения шара в БД')
                 await self._send_error(writer, msg_id, "Failed to save share to database")
                 return
 
             # 7. ОТПРАВЛЯЕМ УСПЕХ
             response = {"id": msg_id, "result": True, "error": None}
             await self._send_json(writer, response)
-
             print(f"✅ SHARE ACCEPTED: share_id={share_id}", flush=True)
-            logger.info(f'Валидный шар принят: share_id={share_id}')
 
         except Exception as e:
-            print(f"🔴 EXCEPTION: {e}", flush=True)
-            logger.error(f'Ошибка сохранения шара: {e}')
+            print(f"🔴🔴🔴 EXCEPTION IN HANDLE_SUBMIT_TCP: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
             await self._send_error(writer, msg_id, f"Database error: {e}")
 
     async def send_new_job_tcp(self, miner_address: str, writer: asyncio.StreamWriter):
