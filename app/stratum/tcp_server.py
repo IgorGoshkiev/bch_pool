@@ -1,5 +1,6 @@
 import asyncio
 import json
+import random
 from datetime import datetime, UTC
 from typing import Dict, Optional
 
@@ -386,7 +387,7 @@ class StratumTCPServer:
 
         try:
             # 1. ПРОВЕРКА ПАРАМЕТРОВ
-            if len(params) < 5:
+            if len(params) < 6:
                 print(f"🔴 SUBMIT ERROR: not enough params (got {len(params)}, need 5)", flush=True)
                 await self._send_error(writer, msg_id, "Invalid submit parameters")
                 return
@@ -397,6 +398,7 @@ class StratumTCPServer:
             extra_nonce2 = params[2]
             ntime = params[3]
             nonce = params[4]
+            version_param = params[5] if len(params) > 5 else None
 
             print(
                 f"📊 PARAMS: job_id={job_id}, extra_nonce2={extra_nonce2}, ntime={ntime}, nonce={nonce}, worker={worker}",
@@ -479,7 +481,8 @@ class StratumTCPServer:
         """Отправка задания - ТОЧНАЯ РАБОЧАЯ КОПИЯ"""
         try:
             timestamp = int(datetime.now(UTC).timestamp())
-            job_id = f"job_{timestamp}"
+            # job_id = f"job_{timestamp}"
+            job_id = f"{random.randint(0, 65535):04x}"
 
             # ЭТОТ МЕТОД ТОЧНО РАБОТАЛ!
             minimal_job = {
