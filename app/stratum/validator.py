@@ -98,6 +98,8 @@ class ShareValidator:
 
         validation_start = datetime.now(UTC)
 
+        print(f"🔍 VALIDATE_SHARE: job_id={job_id}, extra_nonce2={extra_nonce2}, ntime={ntime}, nonce={nonce}",
+              flush=True)
         # Проверяем существование задания
         if job_id not in self.jobs_cache:
             self.invalid_shares += 1
@@ -480,7 +482,15 @@ class ShareValidator:
             target = int(target_float)
 
             # Проверяем: хэш должен быть меньше или равен target
-            return hash_int <= target
+            is_valid = hash_int <= target
+
+            if not is_valid:
+                logger.debug(
+                    f"Share rejected: hash={hash_result[:16]}..., "
+                    f"target={target}, difficulty={target_difficulty}"
+                )
+
+            return is_valid
 
         except Exception as e:
             logger.error(f"Ошибка проверки сложности {target_difficulty}: {e}")

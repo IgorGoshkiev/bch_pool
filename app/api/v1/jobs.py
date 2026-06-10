@@ -46,12 +46,8 @@ async def get_current_job():
     try:
         logger.debug("Запрос текущего задания")
 
-        # Пытаемся получить задание из job_manager
-        current_job = None
-        if hasattr(job_manager, 'get_current_job'):
-            current_job = job_manager.get_current_job()
-
-        if not current_job:
+        # Используем существующий атрибут current_job
+        if not job_manager.current_job:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Текущее задание не найдено"
@@ -61,7 +57,7 @@ async def get_current_job():
             status="success",
             message="Текущее задание получено",
             data={
-                "job": current_job,
+                "job": job_manager.current_job,
                 "timestamp": datetime.now(UTC).isoformat()
             }
         )

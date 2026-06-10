@@ -164,7 +164,6 @@ class DatabaseService:
             return False
 
     # ========== ШАРЫ (SHARES) ==========
-
     @staticmethod
     async def save_share(
             miner_address: str,
@@ -175,12 +174,10 @@ class DatabaseService:
             difficulty: float = 1.0,
             is_valid: bool = True
     ) -> Tuple[bool, Optional[int]]:
-        """Сохранение шара в базу данных, возвращает (успех, ID шара)"""
+        """Сохранение шара в базу данных"""
         print(f"=== SAVE_SHARE CALLED === {miner_address}")
-        logger.info(f"=== SAVE_SHARE CALLED === {miner_address}, job_id={job_id}")
         try:
             async with AsyncSessionLocal() as session:
-                # Создаем запись о шаре
                 share = Share(
                     miner_address=miner_address,
                     job_id=job_id,
@@ -191,37 +188,18 @@ class DatabaseService:
                     nonce=nonce
                 )
                 session.add(share)
-                await session.flush()  # Получаем ID
+                await session.flush()
                 share_id = share.id
-
                 await session.commit()
 
-
-                # Обновляем статистику майнера
                 if is_valid:
                     await DatabaseService.update_miner_stats(miner_address, True)
-
-                logger.info(
-                    "Шар сохранен в БД",
-                    event="db_share_saved",
-                    miner_address=miner_address,
-                    share_id=share_id,
-                    job_id=job_id,
-                    is_valid=is_valid,
-                    difficulty=difficulty
-                )
+                print(f"✅ SHARE SAVED: id={share_id}", flush=True)
                 return True, share_id
-
         except Exception as e:
-            logger.error(
-                "Ошибка сохранения шара в БД",
-                event="db_save_share_error",
-                miner_address=miner_address,
-                job_id=job_id,
-                error=str(e),
-                error_type=type(e).__name__
-            )
+            print(f"❌ SAVE ERROR: {e}", flush=True)
             return False, None
+
 
     @staticmethod
     async def get_shares_by_miner(miner_address: str, limit: int = 100) -> List[Share]:

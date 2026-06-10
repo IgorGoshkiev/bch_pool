@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, Float
+from sqlalchemy import Column, Integer, String, Boolean, Float
 from datetime import datetime, UTC
+from sqlalchemy import TIMESTAMP
 from app.models import Base
 
 
@@ -15,7 +16,7 @@ class Share(Base):
     extra_nonce2 = Column(String(16), nullable=True)
     ntime = Column(String(16), nullable=True)
     nonce = Column(String(16), nullable=True)
-    submitted_at = Column(DateTime, default=lambda: datetime.now(UTC), index=True)
+    submitted_at = Column(TIMESTAMP(timezone=True), default=lambda: datetime.now(UTC), index=True)
 
     def __repr__(self):
         return f"<Share {self.id}:{self.miner_address[:8]}:{self.job_id}>"

@@ -48,6 +48,10 @@ def create_job_id(timestamp: int = None, counter: int = 0, miner_address: str = 
 
 def parse_stratum_username(username: str) -> Tuple[str, str]:
     """Парсинг username в формате Stratum (address.worker)"""
+    # Нормализация адреса - убираем префикс bitcoincash: если есть
+    if username.startswith('bitcoincash:'):
+        username = username[12:]  # убираем префикс
+
     if '.' in username:
         address_str, worker_name = username.split('.', 1)
         return address_str.strip(), worker_name.strip()
@@ -70,50 +74,28 @@ def format_hashrate(hashrate: float) -> str:
 
 
 def validate_bch_address(address: str) -> bool:
-    """Валидация BCH адреса"""
+    """Упрощенная валидация BCH адреса"""
     if not address or not isinstance(address, str):
         return False
 
-    # Приводим к строке для проверки
-    addr_str = str(address).strip()
+    # Убираем префикс если есть
+    clean = address
+    if clean.startswith('bitcoincash:'):
+        clean = clean[12:]
+    if clean.startswith('bchtest:'):
+        clean = clean[8:]
 
-    # Проверка на короткий testnet адрес (без префикса)
-    if addr_str.startswith('qr') and len(addr_str) >= 42:
-        # Проверяем что это hex-подобная строка
-        import re
-        if re.match(r'^qr[a-z0-9]{40,}$', addr_str):
-            return True
+    # Проверка длины (42-44 символа для mainnet)
+    if len(clean) < 40 or len(clean) > 45:
+        return False
 
-    # Проверка на testnet адрес с префиксом
-    if addr_str.startswith('bchtest:qr') and len(addr_str) >= 47:
-        return True
+    # Проверка первого символа
+    if clean[0] not in ['q', 'p']:
+        return False
 
-    # Проверка через BCHAddress если доступен
-    try:
-        from app.utils.bch_address import BCHAddress
-        is_valid, _ = BCHAddress.validate(addr_str)
-        return is_valid
-    except (ImportError, AttributeError, TypeError):
-        pass
-
-    # Базовые проверки
+    # Проверка символов (base32)
     import re
+    if not re.match(r'^[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+$', clean):
+        return False
 
-    # Legacy форматы
-    if addr_str.startswith('1') or addr_str.startswith('3'):
-        return 26 <= len(addr_str) <= 35
-
-    # CashAddr форматы
-    valid_prefixes = ['bchtest:', 'bitcoincash:', 'bchreg:']
-
-    for prefix in valid_prefixes:
-        if addr_str.lower().startswith(prefix):
-            address_part = addr_str[len(prefix):]
-            if len(address_part) >= 40 and re.match(r'^[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+$', address_part.lower()):
-                return True
-
-    # Для тестового адреса - разрешаем
-    if addr_str.startswith('qr') and len(addr_str) > 40:
-        return True
-
-    return False
+    return True

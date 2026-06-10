@@ -61,6 +61,7 @@ class AuthService:
 
         if self.database_service is None:
             logger.error("DatabaseService не инициализирован в AuthService")
+            print(f"🔵 DatabaseService не инициализирован в AuthService ")
             return False, None, "Database service not available"
 
         auth_start = datetime.now(UTC)

@@ -266,7 +266,7 @@ class StratumTCPServer:
             print(f"🔵 PROCESSING authorize", flush=True)
 
             if len(params) >= 1:
-                # ⚠️ ИСПРАВЛЕНИЕ: Если ASIC отправил адрес как две части - склеиваем
+                # ИСПРАВЛЕНИЕ: Если ASIC отправил адрес как две части - склеиваем
                 username = params[0]
                 if len(params) >= 2 and params[1] and ':' not in username and params[1].startswith('q'):
                     username = f"{params[0]}:{params[1]}"
@@ -307,10 +307,7 @@ class StratumTCPServer:
             await self._send_error(writer, msg_id, f"Unknown method: {method}")
 
     async def _handle_subscribe(self, msg_id: int, writer: asyncio.StreamWriter):
-        """Обработка подписки с отправкой фиксированной сложности"""
-        logger.info("=== START _handle_subscribe ===")
-
-        # 1. Ответ на подписку
+        """Обработка подписки - динамическая сложность"""
         response = {
             "id": msg_id,
             "result": [
@@ -321,24 +318,14 @@ class StratumTCPServer:
             "error": None
         }
         await self._send_json(writer, response)
-        logger.info("=== SUBSCRIBE RESPONSE SENT ===")
+        # Динамическая сложность сама отправит нужное значение
 
-        # 2. ⚠️ ОТПРАВЛЯЕМ ФИКСИРОВАННУЮ СЛОЖНОСТЬ (как на molepool)
-        difficulty_to_set = 1048576  # 1M - для среднего ASIC
-        difficulty_msg = {
-            "method": "mining.set_difficulty",
-            "params": [difficulty_to_set]
-        }
-        await self._send_json(writer, difficulty_msg)
-        logger.info(f"✅ Set difficulty to {difficulty_to_set}")
-
-        # 3. ОТПРАВЛЯЕМ EXTRANONCE (если нужно)
+        # Отправляем только extranonce
         extranonce_msg = {
             "method": "mining.set_extranonce",
             "params": [STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE]
         }
         await self._send_json(writer, extranonce_msg)
-        logger.info("✅ Extranonce sent")
 
     async def _handle_configure(self, msg_id: int, writer: asyncio.StreamWriter, params: list):
         """Обработка mining.configure от WhatsMiner"""
@@ -404,8 +391,7 @@ class StratumTCPServer:
                 await self._send_error(writer, msg_id, "Invalid submit parameters")
                 return
 
-            # 3. ИЗВЛЕКАЕМ ДАННЫЕ
-            # NOTE: params[0] - worker name (bitcoincash), params[1] - job_id, params[2] - extra_nonce2, params[3] - ntime, params[4] - nonce
+            # 2. ИЗВЛЕКАЕМ ДАННЫЕ
             worker = params[0]
             job_id = params[1]
             extra_nonce2 = params[2]
@@ -415,6 +401,25 @@ class StratumTCPServer:
             print(
                 f"📊 PARAMS: job_id={job_id}, extra_nonce2={extra_nonce2}, ntime={ntime}, nonce={nonce}, worker={worker}",
                 flush=True)
+
+            # 3. РАСЧЕТ ХЭША И СЛОЖНОСТИ ШАРА (для отладки)
+            try:
+                job_data = self.job_service.get_job(job_id)
+                if job_data:
+                    from app.stratum.validator import ShareValidator
+                    validator = ShareValidator()
+                    hash_result = validator.calculate_hash(job_data, extra_nonce2, ntime, nonce)
+                    print(f"🔥 SHARE HASH: {hash_result}", flush=True)
+
+                    hash_int = int(hash_result, 16)
+                    target_for_difficulty_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
+                    share_difficulty = target_for_difficulty_1 / hash_int if hash_int > 0 else 0
+                    print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
+                    print(f"🔥 POOL TARGET DIFFICULTY: {settings.default_share_difficulty}", flush=True)
+                else:
+                    print(f"🔥 JOB NOT FOUND: {job_id}", flush=True)
+            except Exception as e:
+                print(f"🔥 ERROR calculating hash: {e}", flush=True)
 
             # 4. ВАЛИДАЦИЯ
             print(f"🔍 enable_share_validation={settings.enable_share_validation}", flush=True)
@@ -471,34 +476,37 @@ class StratumTCPServer:
             await self._send_error(writer, msg_id, f"Database error: {e}")
 
     async def send_new_job_tcp(self, miner_address: str, writer: asyncio.StreamWriter):
-        """Отправка задания TCP клиенту - УПРОЩЕННЫЙ ФОРМАТ"""
+        """Отправка задания - ТОЧНАЯ РАБОЧАЯ КОПИЯ"""
         try:
-            job_data = self.job_service.get_job_for_miner(miner_address)
+            timestamp = int(datetime.now(UTC).timestamp())
+            job_id = f"job_{timestamp}"
 
-            if not job_data:
-                print(f"🔴 NO JOB DATA", flush=True)
-                await self._send_error(writer, 0, "No job available")
-                return
-
-            # Упрощаем params для ASIC
-            params = job_data.get("params", [])
-            if len(params) >= 9:
-                # Убираем последний параметр (clean_jobs)
-                simplified_params = params[:8]
-            else:
-                simplified_params = params
-
-            simplified_job = {
+            # ЭТОТ МЕТОД ТОЧНО РАБОТАЛ!
+            minimal_job = {
                 "method": "mining.notify",
-                "params": simplified_params
+                "params": [
+                    job_id,
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                    "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff",
+                    "ffffffff0100f2052a010000001976a9147c154ed1dc59609e3d26abb2df2ea3d587cd8c4188ac00000000",
+                    [],
+                    "20000000",
+                    "1d00ffff",
+                    format(timestamp, '08x'),
+                    True
+                ]
             }
 
-            print(f"📦 SIMPLIFIED JOB: {str(simplified_job)[:200]}", flush=True)
-            await self._send_json(writer, simplified_job)
-            print(f"✅ SIMPLIFIED JOB SENT", flush=True)
+            # Добавляем задание в job_service (как в рабочей версии)
+            self.job_service.add_job(job_id, minimal_job, miner_address)
+
+            await self._send_json(writer, minimal_job)
+            print(f"✅ ORIGINAL WORKING JOB SENT: {job_id}", flush=True)
+            logger.info(f"Working job sent to {miner_address}")
 
         except Exception as e:
             print(f"🔴 ERROR: {e}", flush=True)
+            await self._send_error(writer, 0, f"Job error: {str(e)}")
 
     async def broadcast_new_job(self, job_data: dict):
         """Рассылка нового задания всем TCP клиентам"""

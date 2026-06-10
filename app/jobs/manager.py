@@ -1,7 +1,7 @@
 import asyncio
 import time
 
-from typing import Optional, Dict, TYPE_CHECKING
+from typing import Optional, Dict
 from datetime import datetime, UTC
 
 from app.utils.config import settings
@@ -10,9 +10,9 @@ from app.utils.logging_config import StructuredLogger
 from app.jobs.real_node_client import RealBCHNodeClient
 
 # ТИПОВОЙ ИМПОРТ для избежания циклических зависимостей
-if TYPE_CHECKING:
-    from app.stratum.websocket_server import StratumServer
-    from app.stratum.tcp_server import StratumTCPServer
+# if TYPE_CHECKING:
+#     from app.stratum.websocket_server import StratumServer
+#     from app.stratum.tcp_server import StratumTCPServer
 
 logger = StructuredLogger(__name__)
 
@@ -134,6 +134,7 @@ class JobManager:
 
     async def create_new_job(self, miner_address: str = None) -> Optional[Dict]:
         """Создать новое задание для майнера"""
+        print(f"🔵 create_new_job called for {miner_address}", flush=True)
         try:
             logger.debug(
                 "Создание нового задания",
@@ -143,6 +144,7 @@ class JobManager:
 
             # Получаем шаблон блока от реальной ноды
             template = await self.node_client.get_block_template()
+            print(f"🔵 template received: {template is not None}", flush=True)
             if not template:
                 logger.warning(
                     "Не удалось получить шаблон блока от ноды",
