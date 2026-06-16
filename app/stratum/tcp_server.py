@@ -1,6 +1,5 @@
 import asyncio
 import json
-import random
 from datetime import datetime, UTC
 from typing import Dict, Optional
 
@@ -19,7 +18,10 @@ class StratumTCPServer:
                  port: int = 3333,
                  auth_service=None,
                  database_service=None,
-                 job_service=None):
+                 job_manager=None,
+                 job_service=None,
+                 difficulty_service=None,
+                 share_validator=None):
         self.host = host
         self.port = port
         self.server: Optional[asyncio.Server] = None
@@ -29,6 +31,10 @@ class StratumTCPServer:
         self.auth_service = auth_service
         self.database_service = database_service
         self.job_service = job_service
+        self.job_manager = job_manager
+        self.difficulty_service = difficulty_service
+        self.share_validator = share_validator
+        self.miner_difficulties: Dict[str, float] = {}  # Хранилище сложности
         self.start_time = datetime.now(UTC)
         self._lock = asyncio.Lock()  # Для синхронизации доступа
         self.max_connections = 1000  # Максимальное количество подключений
@@ -250,65 +256,81 @@ class StratumTCPServer:
         await self._send_json(writer, welcome)
 
     async def handle_message(self, data: dict, writer: asyncio.StreamWriter, client_id: str):
-        """Обработка Stratum сообщений - ПОЛНАЯ ВЕРСИЯ"""
+        """Обработка Stratum сообщений - ДОБАВЛЯЕМ suggest_difficulty"""
         method = data.get("method")
-        print(f"🔵 ENTER handle_message: method={method}", flush=True)
         msg_id = data.get("id")
         params = data.get("params", [])
 
-        print(f"✅ RECEIVED: method={method}, id={msg_id}, params={params}", flush=True)
-        logger.info(f"✅ RECEIVED: method={method}, id={msg_id}, params={params}")
+        print(f"✅ RECEIVED: method={method}, id={msg_id}", flush=True)
 
         if method == "mining.subscribe":
-            print(f"🔵 PROCESSING subscribe", flush=True)
             await self._handle_subscribe(msg_id, writer)
 
-        elif method == "mining.authorize":
-            print(f"🔵 PROCESSING authorize", flush=True)
+        elif method == "mining.configure":
+            await self._handle_configure(msg_id, writer, params)
 
+        elif method == "mining.authorize":
             if len(params) >= 1:
-                # ИСПРАВЛЕНИЕ: Если ASIC отправил адрес как две части - склеиваем
                 username = params[0]
                 if len(params) >= 2 and params[1] and ':' not in username and params[1].startswith('q'):
                     username = f"{params[0]}:{params[1]}"
-                    print(f"🔵 FIXED USERNAME: {username}", flush=True)
 
                 success, authorized_address, error_msg = await self.auth_service.authorize_miner(username, "")
                 if success:
                     async with self._lock:
                         self.miners[client_id] = authorized_address
+                        self.miner_difficulties[authorized_address] = 1.0
+
+                    # 1. Ответ на авторизацию
                     response = {"id": msg_id, "result": True, "error": None}
                     await self._send_json(writer, response)
+                    print(f"✅ AUTHORIZED: {username} -> {authorized_address}", flush=True)
+
+                    # 2. ОТПРАВЛЯЕМ СЛОЖНОСТЬ (как в рабочем пуле)
+                    initial_diff = getattr(settings, 'default_share_difficulty', 0.001)
+                    difficulty_msg = {
+                        "method": "mining.set_difficulty",
+                        "params": [initial_diff],
+                        "id": None  # ← ВАЖНО: id = null
+                    }
+                    await self._send_json(writer, difficulty_msg)
+                    print(f"📊 SENT INITIAL DIFFICULTY: {initial_diff}", flush=True)
+
+                    # 3. ОТПРАВЛЯЕМ ЗАДАНИЕ
                     await self.send_new_job_tcp(authorized_address, writer)
-                    logger.info(f"✅ AUTHORIZED: {username}")
+                    print(f"📤 SENT INITIAL JOB TO: {authorized_address}", flush=True)
+
                 else:
                     await self._send_error(writer, msg_id, error_msg or "Authorization failed")
             else:
                 await self._send_error(writer, msg_id, "Invalid authorize parameters")
 
+        elif method == "mining.suggest_difficulty":
+            if params and len(params) >= 1:
+                suggested = float(params[0])
+                print(f"📊 ASIC suggested difficulty: {suggested}", flush=True)
+
+                # ТОЛЬКО ПОДТВЕРЖДАЕМ ЗАПРОС ASIC
+                response = {"id": msg_id, "result": True, "error": None}
+                await self._send_json(writer, response)
+                print(f"📊 Confirmed suggest_difficulty: {suggested}", flush=True)
+            else:
+                await self._send_error(writer, msg_id, "Invalid suggest_difficulty parameters")
+
+        elif method == "mining.extranonce.subscribe":
+            await self._handle_extranonce_subscribe(msg_id, writer)
+
         elif method == "mining.submit":
             if client_id in self.miners:
                 await self.handle_submit_tcp(msg_id, params, self.miners[client_id], writer)
-                logger.info(f"✅ SUBMIT RECEIVED: {params}")
             else:
                 await self._send_error(writer, msg_id, "Not authorized")
-
-        elif method == "mining.configure":
-            await self._handle_configure(msg_id, writer, params)
-
-        elif method == "mining.extranonce.subscribe":
-            print(f"🔵 PROCESSING extranonce.subscribe", flush=True)
-            await self._handle_extranonce_subscribe(msg_id, writer)
-
-        elif method == "mining.suggest_difficulty":
-            response = {"id": msg_id, "result": True, "error": None}
-            await self._send_json(writer, response)
 
         else:
             await self._send_error(writer, msg_id, f"Unknown method: {method}")
 
     async def _handle_subscribe(self, msg_id: int, writer: asyncio.StreamWriter):
-        """Обработка подписки - динамическая сложность"""
+        """Обработка подписки"""
         response = {
             "id": msg_id,
             "result": [
@@ -319,14 +341,14 @@ class StratumTCPServer:
             "error": None
         }
         await self._send_json(writer, response)
-        # Динамическая сложность сама отправит нужное значение
 
-        # Отправляем только extranonce
+        # Отправляем extranonce
         extranonce_msg = {
             "method": "mining.set_extranonce",
             "params": [STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE]
         }
         await self._send_json(writer, extranonce_msg)
+        print(f"📤 SENT EXTRANONCE: {STRATUM_EXTRA_NONCE1}", flush=True)
 
     async def _handle_configure(self, msg_id: int, writer: asyncio.StreamWriter, params: list):
         """Обработка mining.configure от WhatsMiner"""
@@ -359,14 +381,26 @@ class StratumTCPServer:
             if w == writer:
                 client_id = cid
                 break
+
         print(f"🔵 client_id={client_id}, miners={list(self.miners.keys())}", flush=True)
 
-        miner_address = "qr5zfhsh0cad3nhtc97d3zr29l9afhnl4shdj6dp34"
+        miner_address = None
         if client_id and client_id in self.miners:
             miner_address = self.miners[client_id]
 
+        if miner_address is None:
+            print(f"⚠️ No authorized miner for client {client_id}, skipping job", flush=True)
+            return
+
         print(f"📤 SENDING JOB TO: {miner_address}", flush=True)
+
+        # 1. Отправляем задание этому майнеру
         await self.send_new_job_tcp(miner_address, writer)
+
+        # 2. Дополнительный broadcast для всех майнеров
+        if self.job_manager:
+            await self.job_manager.broadcast_new_job_to_all()
+            print(f"📤 BROADCAST NEW JOB TO ALL MINERS", flush=True)
 
     async def _send_result(self, writer: asyncio.StreamWriter, msg_id: int, result):
         """Отправка простого результата"""
@@ -404,22 +438,25 @@ class StratumTCPServer:
                 f"📊 PARAMS: job_id={job_id}, extra_nonce2={extra_nonce2}, ntime={ntime}, nonce={nonce}, worker={worker}",
                 flush=True)
 
-            # 3. РАСЧЕТ ХЭША И СЛОЖНОСТИ ШАРА (для отладки)
+            # 3. РАСЧЕТ ХЭША И СЛОЖНОСТИ ШАРА
+            share_difficulty = None  # неизвестна, пока не вычислим
             try:
                 job_data = self.job_service.get_job(job_id)
-                if job_data:
-                    from app.stratum.validator import ShareValidator
-                    validator = ShareValidator()
-                    hash_result = validator.calculate_hash(job_data, extra_nonce2, ntime, nonce)
+                if job_data and self.share_validator:
+                    hash_result = self.share_validator.calculate_hash(
+                        job_data, extra_nonce2, ntime, nonce
+                    )
                     print(f"🔥 SHARE HASH: {hash_result}", flush=True)
 
                     hash_int = int(hash_result, 16)
-                    target_for_difficulty_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
-                    share_difficulty = target_for_difficulty_1 / hash_int if hash_int > 0 else 0
-                    print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
-                    print(f"🔥 POOL TARGET DIFFICULTY: {settings.default_share_difficulty}", flush=True)
+                    if hash_int > 0:
+                        target_for_difficulty_1 = 0x0000000000000000024cb3000000000000000000000000000000000000000000
+                        share_difficulty = target_for_difficulty_1 / hash_int
+                        print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
+                    else:
+                        print(f"🔥 WARNING: hash_int is 0, cannot calculate difficulty", flush=True)
                 else:
-                    print(f"🔥 JOB NOT FOUND: {job_id}", flush=True)
+                    print(f"🔥 JOB NOT FOUND or no validator: {job_id}", flush=True)
             except Exception as e:
                 print(f"🔥 ERROR calculating hash: {e}", flush=True)
 
@@ -448,14 +485,16 @@ class StratumTCPServer:
                 return
 
             # 6. СОХРАНЯЕМ В БД
-            print(f"💾 SAVING SHARE to database...", flush=True)
+            final_difficulty = share_difficulty if share_difficulty is not None else settings.default_share_difficulty
+            print(f"💾 SAVING SHARE to database with difficulty: {final_difficulty}", flush=True)
+
             saved, share_id = await self.database_service.save_share(
                 miner_address=miner_address,
                 job_id=job_id,
                 extra_nonce2=extra_nonce2,
                 ntime=ntime,
                 nonce=nonce,
-                difficulty=settings.default_share_difficulty,
+                difficulty=final_difficulty,
                 is_valid=True
             )
 
@@ -471,6 +510,24 @@ class StratumTCPServer:
             await self._send_json(writer, response)
             print(f"✅ SHARE ACCEPTED: share_id={share_id}", flush=True)
 
+            # 8. АДАПТИВНАЯ СЛОЖНОСТЬ
+            if self.difficulty_service and is_valid:
+                # Используем ту же логику
+                diff_for_service = share_difficulty if share_difficulty is not None else settings.default_share_difficulty
+
+                # Добавляем шар
+                await self.difficulty_service.add_share(miner_address, diff_for_service)
+
+                # Рассчитываем новую сложность
+                new_diff = await self.difficulty_service.calculate_difficulty_for_miner(miner_address)
+
+                # Обновляем
+                current_diff = self.miner_difficulties.get(miner_address, 1.0)
+                if abs(new_diff - current_diff) > 0.1:
+                    await self.update_miner_difficulty(miner_address, new_diff)
+                    self.miner_difficulties[miner_address] = new_diff
+                    print(f"📊 DIFFICULTY UPDATED: {current_diff} -> {new_diff}", flush=True)
+
         except Exception as e:
             print(f"🔴🔴🔴 EXCEPTION IN HANDLE_SUBMIT_TCP: {e}", flush=True)
             import traceback
@@ -478,38 +535,47 @@ class StratumTCPServer:
             await self._send_error(writer, msg_id, f"Database error: {e}")
 
     async def send_new_job_tcp(self, miner_address: str, writer: asyncio.StreamWriter):
-        """Отправка задания - ТОЧНАЯ РАБОЧАЯ КОПИЯ"""
+        """Отправка РЕАЛЬНОГО задания - СИНХРОННО И БЫСТРО"""
         try:
-            timestamp = int(datetime.now(UTC).timestamp())
-            # job_id = f"job_{timestamp}"
-            job_id = f"{random.randint(0, 65535):04x}"
+            if self.job_manager is None:
+                print("🔴 JOB_MANAGER IS NONE!", flush=True)
+                return
 
-            # ЭТОТ МЕТОД ТОЧНО РАБОТАЛ!
-            minimal_job = {
-                "method": "mining.notify",
-                "params": [
-                    job_id,
-                    "0000000000000000000000000000000000000000000000000000000000000000",
-                    "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff",
-                    "ffffffff0100f2052a010000001976a9147c154ed1dc59609e3d26abb2df2ea3d587cd8c4188ac00000000",
-                    [],
-                    "20000000",
-                    "1d00ffff",
-                    format(timestamp, '08x'),
-                    True
-                ]
-            }
+            # Устанавливаем таймаут на создание задания (5 секунд)
+            try:
+                job_data = await asyncio.wait_for(
+                    self.job_manager.create_new_job(miner_address),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                print("🔴 TIMEOUT: create_new_job took too long!", flush=True)
+                return
 
-            # Добавляем задание в job_service (как в рабочей версии)
-            self.job_service.add_job(job_id, minimal_job, miner_address)
+            if not job_data:
+                print("🔴 Failed to create real job from node", flush=True)
+                return
 
-            await self._send_json(writer, minimal_job)
-            print(f"✅ ORIGINAL WORKING JOB SENT: {job_id}", flush=True)
-            logger.info(f"Working job sent to {miner_address}")
+            # Генерируем короткий ID
+            import time
+            job_id = f"{int(time.time()) & 0xFFFF:04x}"
+
+            # Обновляем job_id
+            if 'params' in job_data and len(job_data['params']) > 0:
+                job_data['params'][0] = job_id
+
+            # Сохраняем в job_service
+            self.job_service.add_job(job_id, job_data, miner_address)
+
+            # НЕМЕДЛЕННО отправляем майнеру
+            await self._send_json(writer, job_data)
+
+            prevhash = job_data['params'][1][:32] if len(job_data['params']) > 1 else 'unknown'
+            print(f"✅ REAL JOB SENT: id={job_id}, prevhash={prevhash}...", flush=True)
 
         except Exception as e:
-            print(f"🔴 ERROR: {e}", flush=True)
-            await self._send_error(writer, 0, f"Job error: {str(e)}")
+            print(f"🔴 ERROR in send_new_job_tcp: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
 
     async def broadcast_new_job(self, job_data: dict):
         """Рассылка нового задания всем TCP клиентам"""

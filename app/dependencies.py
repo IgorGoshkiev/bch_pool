@@ -1,4 +1,5 @@
 """Единый контейнер зависимостей для всего приложения"""
+from app.utils.config import settings
 from app.utils.logging_config import StructuredLogger
 from app.utils.network_config import NetworkManager
 from app.stratum.block_builder import BlockBuilder
@@ -81,20 +82,20 @@ class DependencyContainer:
             )
         return self._auth_service
 
-    # === SHARE VALIDATOR (временно без difficulty) ===
+    # === SHARE VALIDATOR ===
     @property
     def share_validator(self):
         if self._share_validator is None:
             # Используем временную сложность 1.0, потом обновим
             self._share_validator = ShareValidator(
-                target_difficulty=1.0,  # Временное значение
+                target_difficulty=settings.default_share_difficulty,  #TODO Временное значение
                 extra_nonce2_size=EXTRA_NONCE2_SIZE,
                 extra_nonce1=STRATUM_EXTRA_NONCE1
             )
             logger.info(
                 "ShareValidator создан",
                 event="share_validator_created",
-                target_difficulty=1.0,
+                target_difficulty=settings.default_share_difficulty,
                 extra_nonce2_size=EXTRA_NONCE2_SIZE
             )
         return self._share_validator
@@ -153,13 +154,18 @@ class DependencyContainer:
             self._tcp_stratum_server = StratumTCPServer(
                 auth_service=self.auth_service,
                 database_service=self.database_service,
-                job_service=self.job_service
+                job_service=self.job_service,
+                job_manager=self.job_manager,
+                difficulty_service=self.difficulty_service,
+                share_validator=self.share_validator
             )
             logger.info(
                 "TcpStratumServer создан",
                 event="tcp_stratum_server_created",
                 host=self._tcp_stratum_server.host,
-                port=self._tcp_stratum_server.port
+                port=self._tcp_stratum_server.port,
+                has_job_manager=self.job_manager is not None,
+                has_share_validator=self.share_validator is not None
             )
         return self._tcp_stratum_server
 
@@ -170,7 +176,7 @@ class DependencyContainer:
             self._difficulty_service = DifficultyService(
                 network_manager=self.network_manager,
                 stratum_server=self.stratum_server,
-                tcp_stratum_server=self.tcp_stratum_server
+                tcp_stratum_server=None
             )
 
             # После создания difficulty_service, обновляем share_validator

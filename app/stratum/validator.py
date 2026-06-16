@@ -1,6 +1,7 @@
 import hashlib
 from typing import Optional, Tuple, Dict
 from datetime import datetime, UTC
+from app.utils.config import settings
 
 from app.utils.logging_config import StructuredLogger
 from app.utils.protocol_helpers import (
@@ -8,8 +9,13 @@ from app.utils.protocol_helpers import (
     EXTRA_NONCE2_SIZE,
 )
 
-# ========== КОНСТАНТЫ ВАЛИДАЦИИ ==========
-TARGET_FOR_DIFFICULTY_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
+# ========== ЕДИНЫЕ КОНСТАНТЫ ДЛЯ MAINNET ==========
+# Target для difficulty 1.0 (BCH mainnet)
+# Из документации: 0x0000000000000000024cb3000000000000000000000000000000000000000000
+MAINNET_TARGET_DIFFICULTY_1 = 0x0000000000000000024cb3000000000000000000000000000000000000000000
+
+# Target для testnet4
+TESTNET_TARGET_DIFFICULTY_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
 
 logger = StructuredLogger(__name__)
 
@@ -30,7 +36,13 @@ class ShareValidator:
         self.invalid_shares = 0
         self.start_time = datetime.now(UTC)
 
-        # Сетевые параметры (для проверки сетевой сложности)
+        # Определяем target для текущей сети
+        network = getattr(settings, 'bch_network', 'mainnet')
+        if network in ['testnet', 'testnet4', 'regtest']:
+            self.target_for_difficulty_1 = TESTNET_TARGET_DIFFICULTY_1
+        else:
+            self.target_for_difficulty_1 = MAINNET_TARGET_DIFFICULTY_1
+
         self.network_difficulty = target_difficulty
         self.last_network_update = None
 
@@ -45,7 +57,14 @@ class ShareValidator:
 
     def add_job(self, job_id: str, job_data: dict):
         """Добавить задание в кэш для валидации"""
+        print(f"🟢 VALIDATOR.add_job: job_id={job_id}, exists? {job_id in self.jobs_cache}", flush=True)
+        print(f"🟢 VALIDATOR.add_job: cache before size={len(self.jobs_cache)}", flush=True)
+
+        # ВСЕГДА перезаписываем
         self.jobs_cache[job_id] = job_data
+
+        print(f"✅ VALIDATOR.add_job: cache after size={len(self.jobs_cache)}", flush=True)
+        print(f"✅ VALIDATOR.add_job: now in cache? {job_id in self.jobs_cache}", flush=True)
 
         logger.debug(
             "Добавлено задание в кэш",
@@ -98,10 +117,12 @@ class ShareValidator:
 
         validation_start = datetime.now(UTC)
 
-        print(f"🔍 VALIDATE_SHARE: job_id={job_id}, extra_nonce2={extra_nonce2}, ntime={ntime}, nonce={nonce}",
-              flush=True)
+        print(f"🔍 VALIDATE_SHARE: looking for {job_id}", flush=True)
+        print(f"🔍 VALIDATE_SHARE: cache keys = {list(self.jobs_cache.keys())}", flush=True)
         # Проверяем существование задания
         if job_id not in self.jobs_cache:
+            if job_id not in self.jobs_cache:
+                print(f"🔴 VALIDATOR: job {job_id} NOT FOUND in cache!", flush=True)
             self.invalid_shares += 1
             logger.warning(
                 "Задание не найдено при валидации шара",
@@ -388,16 +409,19 @@ class ShareValidator:
 
             # Собираем coinbase транзакцию
             coinbase = coinb1 + extra_nonce1 + extra_nonce2 + coinb2
+            print(f"🔍 COINBASE: {coinbase[:100]}...", flush=True)
 
             # Хэшируем coinbase транзакцию (двойной SHA256)
             coinbase_hash_obj = hashlib.sha256(bytes.fromhex(coinbase))
             coinbase_hash = hashlib.sha256(coinbase_hash_obj.digest()).digest()
+            print(f"🔍 COINBASE HASH: {coinbase_hash.hex()}", flush=True)
 
             # Вычисляем Merkle root с использованием merkle_branch
             merkle_root = self._calculate_merkle_root_with_branch(
                 coinbase_hash.hex(),
                 merkle_branch
             )
+            print(f"🔍 MERKLE ROOT: {merkle_root}", flush=True)
 
             # Собираем заголовок блока
             header = (
@@ -409,6 +433,8 @@ class ShareValidator:
                     bytes.fromhex(nonce)[::-1]  # nonce
             )
 
+            print(f"🔍 HEADER LENGTH: {len(header)} (должно быть 80)", flush=True)
+            print(f"🔍 HEADER HEX: {header.hex()[:100]}...", flush=True)
             # Двойной SHA256
             first_hash_obj = hashlib.sha256(header)
             first_hash = first_hash_obj.digest()
@@ -416,7 +442,10 @@ class ShareValidator:
             block_hash = block_hash_obj.digest()
 
             # Переворачиваем (little-endian -> big-endian для отображения)
-            return block_hash[::-1].hex()
+            result = block_hash[::-1].hex()
+            print(f"🔍 BLOCK HASH: {result}", flush=True)
+
+            return result
 
         except Exception as e:
             logger.error(f"Ошибка расчета хэша: {e}")
@@ -448,141 +477,116 @@ class ShareValidator:
             # Fallback: используем только coinbase hash
             return coinbase_hash
 
-    @staticmethod
-    def check_difficulty(hash_result: str, target_difficulty: float) -> bool:
-        """Проверка соответствия сложности"""
+    def check_difficulty(self, hash_result: str, target_difficulty: float) -> bool:
+        """
+        Проверка сложности пула (минимальный порог для принятия шара)
+        """
         try:
-            # Преобразуем хэш в число
-            hash_int = int(hash_result, 16)
-
-            # Максимальный возможный хэш (2^256 - 1)
-            max_hash = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-
-            # Если хэш равен максимальному, он никогда не пройдет
-            if hash_int == max_hash:
-                return False
-
-            # Целевое значение для сложности 1.0 (стандарт Bitcoin/BCH)
-            # Это максимальный target (самая простая сложность)
-            target_for_difficulty_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
-
-            # Для теста: при сложности 0.001 target должен быть БОЛЬШЕ
-            # Сложность = target_for_difficulty_1 / target
-            # Значит target = target_for_difficulty_1 / difficulty
-
             if target_difficulty <= 0:
-                logger.warning(f"Некорректная сложность: {target_difficulty}")
                 return False
 
-            # Вычисляем target
-            # Используем float для деления, затем округляем
-            target_float = float(target_for_difficulty_1) / target_difficulty
-
-            # Преобразуем обратно в int (округление вниз)
-            target = int(target_float)
-
-            # Проверяем: хэш должен быть меньше или равен target
-            is_valid = hash_int <= target
-
-            if not is_valid:
-                logger.debug(
-                    f"Share rejected: hash={hash_result[:16]}..., "
-                    f"target={target}, difficulty={target_difficulty}"
-                )
-
-            return is_valid
-
-        except Exception as e:
-            logger.error(f"Ошибка проверки сложности {target_difficulty}: {e}")
-            return False
-
-    def check_network_difficulty(self, hash_result: str) -> bool:
-        """Проверка соответствия сетевой сложности"""
-        try:
-            # Преобразуем хэш в число
             hash_int = int(hash_result, 16)
 
-            # Целевое значение для сложности 1.0
-            target_for_difficulty_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
+            # Используем единый target_for_difficulty_1 из __init__
+            target = self.target_for_difficulty_1 // int(target_difficulty)
 
-            # Вычисляем target для сетевой сложности
-            # network_difficulty должна обновляться извне (из JobManager)
-            target = target_for_difficulty_1 // int(self.network_difficulty)
+            print(f"🔍 POOL CHECK: hash={hash_int:#064x}", flush=True)
+            print(f"🔍 POOL CHECK: target(diff={target_difficulty})={target:#064x}", flush=True)
+            print(f"🔍 POOL CHECK: result={hash_int <= target}", flush=True)
 
-            # Проверяем: хэш должен быть меньше или равен сетевому target
             return hash_int <= target
 
         except Exception as e:
-            logger.error(f"Ошибка проверки сетевой сложности: {e}")
-            # В случае ошибки считаем что шар проходит проверку
-            return True
+            logger.error(f"check_difficulty error: {e}")
+            return False
+
+    def check_network_difficulty(self, hash_result: str) -> bool:
+        """
+        Проверка сетевой сложности (является ли шар БЛОКОМ)
+        Для SOLO пула: если True - это блок, нужно отправить в ноду!
+        """
+        try:
+            if self.network_difficulty <= 0:
+                logger.debug("Network difficulty unknown, cannot check block")
+                return False
+
+            hash_int = int(hash_result, 16)
+
+            # Используем единый target_for_difficulty_1 из __init__
+            network_target = self.target_for_difficulty_1 // int(self.network_difficulty)
+
+            is_block = hash_int <= network_target
+
+            if is_block:
+                print(f"🎉🎉🎉 BLOCK CANDIDATE! hash={hash_result[:16]}...", flush=True)
+                logger.warning(
+                    f"BLOCK CANDIDATE! Network difficulty: {self.network_difficulty}",
+                    event="block_candidate",
+                    hash_prefix=hash_result[:16]
+                )
+
+            return is_block
+
+        except Exception as e:
+            logger.error(f"check_network_difficulty error: {e}")
+            return False
 
     def check_if_valid_block(self, hash_result: str) -> bool:
         """Проверяем, является ли шар действительным блоком (выше сетевой сложности)"""
         try:
-            # Для блока хэш должен быть МЕНЬШЕ сетевого target
-            hash_int = int(hash_result, 16)
-            target_for_difficulty_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
-            target = target_for_difficulty_1 // int(self.network_difficulty)
-
-            return hash_int <= target
-
+            return self.check_network_difficulty(hash_result)
         except Exception as e:
             logger.error(f"Ошибка проверки валидности блока: {e}")
             return False
 
     def update_network_difficulty(self, new_difficulty: float):
-        """Обновление сетевой сложности"""
-        old_difficulty = self.network_difficulty
+        """Обновление сетевой сложности (вызывается из job_manager)"""
+        if new_difficulty <= 0:
+            logger.warning(f"Invalid network difficulty: {new_difficulty}")
+            return
+
+        old = self.network_difficulty
         self.network_difficulty = new_difficulty
         self.last_network_update = datetime.now(UTC)
 
+        print(f"📊 NETWORK DIFFICULTY UPDATED: {old} -> {new_difficulty}", flush=True)
         logger.info(
-            "Обновлена сетевая сложность",
-            event="validator_network_difficulty_updated",
-            old_difficulty=old_difficulty,
-            new_difficulty=new_difficulty,
-            update_time=self.last_network_update.isoformat()
+            "Network difficulty updated",
+            event="network_difficulty_updated",
+            old=old,
+            new=new_difficulty
         )
 
     def cleanup_old_jobs(self, max_age_seconds: int = 300):
-        """Очистка старых заданий"""
+        """Очистка старых заданий - НЕ УДАЛЯЕМ КОРОТКИЕ ID"""
         current_time = datetime.now(UTC)
         jobs_to_remove = []
 
-        for job_id in list(self.jobs_cache.keys()):  # Используем list() чтобы избежать изменения во время итерации
-            try:
-                # Извлекаем timestamp из job_id
-                # Формат: job_{timestamp}_{counter}_{address}
-                if job_id.startswith("job_"):
-                    parts = job_id.split('_')
-                    if len(parts) >= 2:
-                        timestamp_str = parts[1]
-                        try:
-                            # Парсим timestamp
-                            job_time = datetime.fromtimestamp(int(timestamp_str), UTC)
-                            age = (current_time - job_time).total_seconds()
+        for job_id in list(self.jobs_cache.keys()):
+            # Пропускаем короткие ID (4 hex символа) - их не чистим
+            if len(job_id) <= 8 and all(c in '0123456789abcdef' for c in job_id.lower()):
+                continue  # ← НЕ УДАЛЯЕМ КОРОТКИЕ ID
 
-                            if age > max_age_seconds:
-                                jobs_to_remove.append(job_id)
-                        except (ValueError, OSError, OverflowError) as e:
-                            # Если не можем распарсить timestamp, удаляем
-                            logger.debug(f"Не удалось распарсить timestamp из job_id {job_id}: {e}")
+            # Только для длинных ID с timestamp
+            if job_id.startswith("job_"):
+                parts = job_id.split('_')
+                if len(parts) >= 2:
+                    timestamp_str = parts[1]
+                    try:
+                        job_time = datetime.fromtimestamp(int(timestamp_str), UTC)
+                        age = (current_time - job_time).total_seconds()
+                        if age > max_age_seconds:
                             jobs_to_remove.append(job_id)
-                    else:
-                        # Неправильный формат, удаляем
+                    except (ValueError, OSError, OverflowError):
                         jobs_to_remove.append(job_id)
                 else:
-                    # Не начинается с "job_", удаляем
                     jobs_to_remove.append(job_id)
+            else:
+                # Для других форматов - не удаляем автоматически
+                continue
 
-            except Exception as e:
-                logger.debug(f"Ошибка обработки job_id {job_id}: {e}")
-                jobs_to_remove.append(job_id)
-
-        # Удаляем старые задания
         for job_id in jobs_to_remove:
             self.remove_job(job_id)
 
         if jobs_to_remove:
-            logger.info(f"Валидатор: очищено {len(jobs_to_remove)} старых заданий")
+            logger.info(f"Validator: cleaned {len(jobs_to_remove)} old jobs")
