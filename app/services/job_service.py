@@ -82,11 +82,16 @@ class JobService:
             if 'extra_nonce1' not in job_data:
                 job_data['extra_nonce1'] = STRATUM_EXTRA_NONCE1
 
+            print(f"🔵 JOB_SERVICE.add_job: job_id={job_id}, calling validator.add_job", flush=True)
             # Сохраняем задание
             self.active_jobs[job_id] = job_data
 
             # Сохраняем в валидаторе
-            self.validator.add_job(job_id, job_data)  # noqa
+            if self.validator:
+                self.validator.add_job(job_id, job_data)
+                print(f"✅ JOB_SERVICE: added job {job_id} to validator", flush=True)
+            else:
+                print(f"⚠️ JOB_SERVICE: no validator to add job {job_id}", flush=True)
 
             # Если это персональное задание, добавляем в подписки майнера
             if miner_address:
@@ -157,14 +162,24 @@ class JobService:
 
     def get_job(self, job_id: str) -> Optional[dict]:
         """Получить задание по ID"""
+        import traceback
         job = self.active_jobs.get(job_id)
 
+        print(f"\n{'=' * 60}", flush=True)
+        print(f"🔍 JOB_SERVICE.get_job({job_id})", flush=True)
+        print(f"   job = {job}", flush=True)
+        print(f"   job is None = {job is None}", flush=True)
+        print(f"   type(job) = {type(job)}", flush=True)
+        print(f"   available keys = {list(self.active_jobs.keys())}", flush=True)
+        print(f"   stack trace: {traceback.format_stack()[-2]}", flush=True)
+        print(f"{'=' * 60}\n", flush=True)
+
         logger.debug(
-            "Получение задания по ID",
-            event="job_service_get_job",
-            job_id=job_id,
-            found=job is not None
-        )
+                "Получение задания по ID",
+                event="job_service_get_job",
+                job_id=job_id,
+                found=job is not None
+            )
 
         return job
 
@@ -389,6 +404,11 @@ class JobService:
             # Получаем задание
             job_data = self.get_job(job_id)
 
+            print(f"🔍 JOB_SERVICE: looking for job_id={job_id}, available jobs={list(self.active_jobs.keys())}",
+                  flush=True)
+            print(f"🔍 JOB_SERVICE: job_data returned = {job_data}", flush=True)  # ← ДОБАВИТЬ
+            print(f"🔍 JOB_SERVICE: job_data type = {type(job_data)}", flush=True)  # ← ДОБАВИТЬ
+
             if not job_data:
                 return False, f"Задание {job_id} не найдено", None
 
@@ -410,7 +430,7 @@ class JobService:
 
             # Если шар валиден, можно обновить статистику задания
             # (например, счетчик принятых шаров для этого задания)
-
+            print(f"job_data {job_data}")
             return True, None, job_data
 
         except Exception as e:

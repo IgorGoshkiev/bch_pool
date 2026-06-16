@@ -74,28 +74,32 @@ def format_hashrate(hashrate: float) -> str:
 
 
 def validate_bch_address(address: str) -> bool:
-    """Упрощенная валидация BCH адреса"""
+    """Валидация BCH адреса (поддерживает CashAddr без префикса)"""
     if not address or not isinstance(address, str):
         return False
 
-    # Убираем префикс если есть
-    clean = address
-    if clean.startswith('bitcoincash:'):
-        clean = clean[12:]
-    if clean.startswith('bchtest:'):
-        clean = clean[8:]
+    addr = address.strip()
 
-    # Проверка длины (42-44 символа для mainnet)
-    if len(clean) < 40 or len(clean) > 45:
-        return False
+    # CashAddr с префиксом
+    if addr.startswith('bitcoincash:') or addr.startswith('bchtest:'):
+        clean = addr.split(':', 1)[1]
+    else:
+        clean = addr
 
-    # Проверка первого символа
-    if clean[0] not in ['q', 'p']:
-        return False
+    # CashAddr без префикса (начинается с q или p)
+    if clean[0] in ['q', 'p']:
+        # Базовые проверки длины
+        if len(clean) < 40 or len(clean) > 45:
+            return False
 
-    # Проверка символов (base32)
-    import re
-    if not re.match(r'^[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+$', clean):
-        return False
+        # Проверка символов base32
+        import re
+        if not re.match(r'^[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+$', clean):
+            return False
+        return True
 
-    return True
+    # Legacy формат
+    elif clean[0] in ['1', '3']:
+        return True
+
+    return False

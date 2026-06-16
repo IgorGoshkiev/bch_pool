@@ -356,6 +356,35 @@ class DifficultyService:
             )
             return 0.0
 
+    async def calculate_difficulty_for_miner(self, miner_address: str) -> float:
+        """Расчет оптимальной сложности для конкретного майнера"""
+        if miner_address not in self.share_timestamps:
+            return self.min_difficulty
+
+        timestamps = list(self.share_timestamps[miner_address])
+        if len(timestamps) < 3:
+            return self.min_difficulty
+
+        # Считаем частоту шаров за последние 60 секунд
+        now = datetime.now(UTC)
+        recent = [ts for ts in timestamps if (now - ts).total_seconds() < 60]
+
+        if len(recent) < 2:
+            return self.min_difficulty
+
+        # Среднее время между шарами
+        avg_time = (recent[-1] - recent[0]).total_seconds() / (len(recent) - 1)
+
+        # Целевое время между шарами: 10 секунд
+        if avg_time < 2:
+            # Слишком часто - повышаем сложность
+            return min(self.max_difficulty, self.current_difficulty * 2)
+        elif avg_time > 30:
+            # Слишком редко - понижаем
+            return max(self.min_difficulty, self.current_difficulty / 2)
+        else:
+            return self.current_difficulty
+
     async def get_pool_hashrate(self, period_minutes: int = 5) -> float:
         """Расчет общего хэшрейта пула"""
         try:

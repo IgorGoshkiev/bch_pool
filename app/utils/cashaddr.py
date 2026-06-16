@@ -151,9 +151,19 @@ class CashAddr:
 
     @staticmethod
     def decode_address(address: str) -> Tuple[str, str, bytes]:
-        """Полное декодирование CashAddr адреса"""
+        """Полное декодирование CashAddr адреса (поддерживает адреса без префикса)"""
         try:
-            prefix, payload = CashAddr.decode(address)
+            addr = address.strip()
+
+            # Если нет префикса, добавляем bitcoincash: для mainnet
+            if ':' not in addr:
+                if addr[0] in ['q', 'p']:
+                    addr = f"bitcoincash:{addr}"
+                    print(f"   Added prefix: {addr}", flush=True)
+                else:
+                    raise ValueError(f"Invalid CashAddr format: {address}")
+
+            prefix, payload = CashAddr.decode(addr)
 
             # Конвертируем из 5-битного в 8-битное представление
             decoded = CashAddr.convert_bits(payload, 5, 8, False)
@@ -178,7 +188,7 @@ class CashAddr:
             hash_bytes = bytes(decoded[1:])
             address_type_name = 'P2KH' if address_type == ADDRESS_TYPES['P2KH'] else 'P2SH'
 
-            return prefix, address_type_name, hash_bytes  # <-- Теперь типы совпадают
+            return prefix, address_type_name, hash_bytes
 
         except Exception as e:
             logger.error(f"Error decoding address {address}: {e}")
@@ -376,28 +386,52 @@ class BCHAddressUtils:
             logger.error(f"Error normalizing address {address}: {e}")
             return None
 
-
     @staticmethod
     def extract_pubkey_hash(address: str) -> Optional[bytes]:
-        """Извлечение pubkey hash из любого формата адреса"""
+        """Извлечение pubkey hash из любого формата BCH адреса"""
         try:
-            if ':' in address.lower():
-                # CashAddr формат
-                _, address_type, hash_bytes = CashAddr.decode_address(address)
+            addr = address.strip()
+
+            print(f"🔍 EXTRACT: processing address '{addr}'", flush=True)
+
+            # 1. CashAddr с префиксом
+            if ':' in addr:
+                prefix, address_type, hash_bytes = CashAddr.decode_address(addr)
+                print(f"   CashAddr with prefix: type={address_type}, hash={hash_bytes.hex()[:16]}...", flush=True)
                 if address_type == 'P2KH':
                     return hash_bytes
-            else:
-                # Legacy формат
-                decoded = base58.b58decode_check(address)
+                return None
+
+            # 2. CashAddr БЕЗ префикса (начинается с q или p для mainnet)
+            elif addr[0] in ['q', 'p']:
+                # Добавляем префикс bitcoincash: для mainnet
+                full_addr = f"bitcoincash:{addr}"
+                print(f"   CashAddr without prefix, trying: {full_addr}", flush=True)
+                prefix, address_type, hash_bytes = CashAddr.decode_address(full_addr)
+                print(f"   Result: type={address_type}, hash={hash_bytes.hex()[:16]}...", flush=True)
+                if address_type == 'P2KH':
+                    return hash_bytes
+                return None
+
+            # 3. Legacy формат (начинается с 1 или 3)
+            elif addr[0] in ['1', '3', 'm', 'n']:
+                import base58
+                decoded = base58.b58decode_check(addr)
                 version = decoded[0]
-
-                # Только P2KH адреса
-                if version in [0x00, 0x6f]:  # Mainnet и testnet P2KH
+                # Mainnet P2KH (0x00) или Testnet P2KH (0x6f)
+                if version in [0x00, 0x6f]:
+                    print(f"   Legacy P2KH address, hash={decoded[1:].hex()[:16]}...", flush=True)
                     return decoded[1:]
+                else:
+                    print(f"   Legacy address but not P2KH (version={hex(version)})", flush=True)
+                    return None
 
-            return None
+            else:
+                print(f"   Unknown address format: starts with '{addr[0]}'", flush=True)
+                return None
 
         except Exception as e:
+            print(f"❌ EXTRACT ERROR: {e}", flush=True)
             logger.error(f"Error extracting pubkey hash from {address}: {e}")
             return None
 

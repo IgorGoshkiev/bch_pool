@@ -29,11 +29,12 @@ NETWORK_CONFIGS = {
         'wif_prefix': 0x80,
         'bip32_public': 0x0488b21e,
         'bip32_private': 0x0488ade4,
-        'block_reward': 6.25,  # BCH
+        'block_reward': 3.125,  # BCH
         'halving_interval': 210000,
         'magic_bytes': bytes.fromhex('e3e1f3e8'),
         'genesis_hash': '000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f',
         'default_difficulty': 1.0,
+        'target_for_difficulty_1': 0x0000000000000000024cb3000000000000000000000000000000000000000000,
         'testnet': False
     },
     'testnet': {

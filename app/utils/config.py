@@ -49,9 +49,9 @@ class Settings(BaseSettings):
     coinbase_prefix: str = "/BCHPool/"
 
     # Fallback значения
-    fallback_coinbase_value: int = 3125000000
-    fallback_prev_block_hash: str = "000000000000000007cbc708a5e00de8fd5e4b5b3e2a4f61c5aec6d6b7a9b8c9"
-    fallback_difficulty: float = 0.001
+    fallback_coinbase_value: int = 312500000  # 3.125 BCH в сатоши
+    fallback_prev_block_hash: str = "0000000000000000000000000000000000000000000000000000000000000000"
+    fallback_difficulty: float = 1.0
 
     # Авторегистрация майнеров
     auto_register_miners: bool = True
