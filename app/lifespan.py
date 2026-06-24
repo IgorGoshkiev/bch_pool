@@ -51,6 +51,26 @@ async def lifespan(_app):
                 node_connection=f"{settings.bch_rpc_host}:{settings.bch_rpc_port}"
             )
 
+            #  ПОЛУЧАЕМ TARGET ИЗ НОДЫ И ОБНОВЛЯЕМ ВАЛИДАТОР
+            try:
+                template = await job_manager.node_client.get_block_template()
+                if template and 'target' in template:
+                    target_hex = template['target']
+                    target_int = int(target_hex, 16)
+
+                    # ← ВЫЗЫВАЕМ МЕТОД ВАЛИДАТОРА
+                    share_validator.update_target_from_node(target_int)
+
+                    print(f"🎯 TARGET FROM NODE UPDATED: {target_hex}", flush=True)
+
+                    logger.info(
+                        "Validator target обновлен из ноды",
+                        event="validator_target_updated_from_node",
+                        target=target_hex
+                    )
+            except Exception as e:
+                logger.warning(f"Не удалось обновить target валидатора: {e}")
+
             # 2. Создаем первое задание
             await job_manager.broadcast_new_job_to_all()
             logger.info(
@@ -334,6 +354,10 @@ async def _periodic_job_broadcaster():
             tcp_miners = len(tcp_stratum_server.connections)
             active_miners = ws_miners + tcp_miners
 
+            print(
+                f"🔄 BROADCAST CHECK: iteration={iteration}, active_miners={active_miners}, time={datetime.now(UTC).strftime('%H:%M:%S')}",
+                flush=True)
+
             if active_miners > 0:
                 await job_manager.broadcast_new_job_to_all()
                 logger.debug(
@@ -393,7 +417,7 @@ async def _periodic_difficulty_updater():
 
             if updated:
                 # Обновляем валидатор
-                share_validator.target_difficulty = new_difficulty
+                share_validator.pool_difficulty = new_difficulty
 
                 logger.info(
                     "Сложность обновлена периодической задачей",

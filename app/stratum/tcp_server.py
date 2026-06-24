@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from datetime import datetime, UTC
 from typing import Dict, Optional
 
@@ -272,8 +273,11 @@ class StratumTCPServer:
         elif method == "mining.authorize":
             if len(params) >= 1:
                 username = params[0]
+
+                # Собираем полный username если он разделен на две части
                 if len(params) >= 2 and params[1] and ':' not in username and params[1].startswith('q'):
                     username = f"{params[0]}:{params[1]}"
+                print(f"✅ *************  username (combined): {username}", flush=True)
 
                 success, authorized_address, error_msg = await self.auth_service.authorize_miner(username, "")
                 if success:
@@ -286,12 +290,15 @@ class StratumTCPServer:
                     await self._send_json(writer, response)
                     print(f"✅ AUTHORIZED: {username} -> {authorized_address}", flush=True)
 
-                    # 2. ОТПРАВЛЯЕМ СЛОЖНОСТЬ (как в рабочем пуле)
-                    initial_diff = getattr(settings, 'default_share_difficulty', 0.001)
+                    # 2. ОТПРАВЛЯЕМ СЛОЖНОСТЬ
+                    initial_diff = int(getattr(settings, 'default_share_difficulty', 65536))
+                    print(f"✅ ОТПРАВЛЯЕМ СЛОЖНОСТЬ initial_diff:  -> {initial_diff}", flush=True)
+                    self.share_validator.pool_difficulty = initial_diff
+
                     difficulty_msg = {
                         "method": "mining.set_difficulty",
                         "params": [initial_diff],
-                        "id": None  # ← ВАЖНО: id = null
+                        "id": None
                     }
                     await self._send_json(writer, difficulty_msg)
                     print(f"📊 SENT INITIAL DIFFICULTY: {initial_diff}", flush=True)
@@ -331,6 +338,8 @@ class StratumTCPServer:
 
     async def _handle_subscribe(self, msg_id: int, writer: asyncio.StreamWriter):
         """Обработка подписки"""
+        logger.info("=== START _handle_subscribe ===")
+
         response = {
             "id": msg_id,
             "result": [
@@ -341,6 +350,7 @@ class StratumTCPServer:
             "error": None
         }
         await self._send_json(writer, response)
+        logger.info("=== SUBSCRIBE RESPONSE SENT ===")
 
         # Отправляем extranonce
         extranonce_msg = {
@@ -348,6 +358,7 @@ class StratumTCPServer:
             "params": [STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE]
         }
         await self._send_json(writer, extranonce_msg)
+        logger.info("✅ Extranonce sent")
         print(f"📤 SENT EXTRANONCE: {STRATUM_EXTRA_NONCE1}", flush=True)
 
     async def _handle_configure(self, msg_id: int, writer: asyncio.StreamWriter, params: list):
@@ -450,8 +461,8 @@ class StratumTCPServer:
 
                     hash_int = int(hash_result, 16)
                     if hash_int > 0:
-                        target_for_difficulty_1 = 0x0000000000000000024cb3000000000000000000000000000000000000000000
-                        share_difficulty = target_for_difficulty_1 / hash_int
+                        target_for_diff_1 = self.share_validator.TARGET_FOR_DIFFICULTY_1
+                        share_difficulty = target_for_diff_1 // hash_int
                         print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
                     else:
                         print(f"🔥 WARNING: hash_int is 0, cannot calculate difficulty", flush=True)
@@ -485,8 +496,9 @@ class StratumTCPServer:
                 return
 
             # 6. СОХРАНЯЕМ В БД
-            final_difficulty = share_difficulty if share_difficulty is not None else settings.default_share_difficulty
-            print(f"💾 SAVING SHARE to database with difficulty: {final_difficulty}", flush=True)
+            # Используем сложность пула (65536), а не сложность шара
+            pool_difficulty = int(getattr(settings, 'default_share_difficulty', 65536))
+            print(f"💾 SAVING SHARE to database with pool difficulty: {pool_difficulty}", flush=True)
 
             saved, share_id = await self.database_service.save_share(
                 miner_address=miner_address,
@@ -494,7 +506,7 @@ class StratumTCPServer:
                 extra_nonce2=extra_nonce2,
                 ntime=ntime,
                 nonce=nonce,
-                difficulty=final_difficulty,
+                difficulty=pool_difficulty,  # сложность пула
                 is_valid=True
             )
 
@@ -535,45 +547,72 @@ class StratumTCPServer:
             await self._send_error(writer, msg_id, f"Database error: {e}")
 
     async def send_new_job_tcp(self, miner_address: str, writer: asyncio.StreamWriter):
-        """Отправка РЕАЛЬНОГО задания - СИНХРОННО И БЫСТРО"""
         try:
             if self.job_manager is None:
                 print("🔴 JOB_MANAGER IS NONE!", flush=True)
                 return
 
-            # Устанавливаем таймаут на создание задания (5 секунд)
-            try:
-                job_data = await asyncio.wait_for(
-                    self.job_manager.create_new_job(miner_address),
-                    timeout=5.0
-                )
-            except asyncio.TimeoutError:
-                print("🔴 TIMEOUT: create_new_job took too long!", flush=True)
-                return
+            print(f"🔍 SEND_JOB: getting job for {miner_address}", flush=True)
+            job_data = await self.job_manager.create_new_job(miner_address)
 
             if not job_data:
                 print("🔴 Failed to create real job from node", flush=True)
                 return
 
-            # Генерируем короткий ID
-            import time
+            print(f"🔍 SEND_JOB: job_data keys = {job_data.keys()}", flush=True)
+            print(f"🔍 SEND_JOB: params length = {len(job_data['params'])}", flush=True)
+
+            def reverse_hash(hash_str: str) -> str:
+                if len(hash_str) != 64:
+                    return hash_str
+                return ''.join(reversed([hash_str[i:i + 2] for i in range(0, 64, 2)]))
+
+            real_prevhash = job_data['params'][1]
+            real_prevhash_le = reverse_hash(real_prevhash)
+            print(f"🔍 SEND_JOB: real_prevhash (original) = {real_prevhash[:32]}...", flush=True)
+            print(f"🔍 SEND_JOB: real_prevhash_le = {real_prevhash_le[:32]}...", flush=True)
+
+            real_coinb1 = job_data['params'][2]
+            real_coinb2 = job_data['params'][3]
+            real_merkle_branch = job_data['params'][4]
+            real_version = job_data['params'][5]
+            real_bits = job_data['params'][6]
+            real_ntime = job_data['params'][7]
+
+            print(f"🔍 SEND_JOB: coinb1 length = {len(real_coinb1)}", flush=True)
+            print(f"🔍 SEND_JOB: coinb2 length = {len(real_coinb2)}", flush=True)
+            print(f"🔍 SEND_JOB: merkle_branch length = {len(real_merkle_branch)}", flush=True)
+            print(f"🔍 SEND_JOB: bits = {real_bits}, ntime = {real_ntime}", flush=True)
+
             job_id = f"{int(time.time()) & 0xFFFF:04x}"
 
-            # Обновляем job_id
-            if 'params' in job_data and len(job_data['params']) > 0:
-                job_data['params'][0] = job_id
+            real_job = {
+                "method": "mining.notify",
+                "params": [
+                    job_id,
+                    real_prevhash_le,
+                    real_coinb1,
+                    real_coinb2,
+                    real_merkle_branch,
+                    real_version,
+                    real_bits,
+                    real_ntime,
+                    True
+                ]
+            }
 
-            # Сохраняем в job_service
-            self.job_service.add_job(job_id, job_data, miner_address)
+            self.job_service.add_job(job_id, real_job, miner_address)
 
-            # НЕМЕДЛЕННО отправляем майнеру
-            await self._send_json(writer, job_data)
+            job_data_for_send = {
+                "method": real_job["method"],
+                "params": real_job["params"]
+            }
+            await self._send_json(writer, job_data_for_send)
 
-            prevhash = job_data['params'][1][:32] if len(job_data['params']) > 1 else 'unknown'
-            print(f"✅ REAL JOB SENT: id={job_id}, prevhash={prevhash}...", flush=True)
+            print(f"✅ REAL JOB SENT: id={job_id}, merkle_len={len(real_merkle_branch)}", flush=True)
 
         except Exception as e:
-            print(f"🔴 ERROR in send_new_job_tcp: {e}", flush=True)
+            print(f"🔴 ERROR: {e}", flush=True)
             import traceback
             traceback.print_exc()
 

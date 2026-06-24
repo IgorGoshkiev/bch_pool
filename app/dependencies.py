@@ -1,4 +1,6 @@
 """Единый контейнер зависимостей для всего приложения"""
+import asyncio
+
 from app.utils.config import settings
 from app.utils.logging_config import StructuredLogger
 from app.utils.network_config import NetworkManager
@@ -86,9 +88,8 @@ class DependencyContainer:
     @property
     def share_validator(self):
         if self._share_validator is None:
-            # Используем временную сложность 1.0, потом обновим
             self._share_validator = ShareValidator(
-                target_difficulty=settings.default_share_difficulty,  #TODO Временное значение
+                pool_difficulty=settings.default_share_difficulty,
                 extra_nonce2_size=EXTRA_NONCE2_SIZE,
                 extra_nonce1=STRATUM_EXTRA_NONCE1
             )
@@ -129,6 +130,7 @@ class DependencyContainer:
                 has_node_client=self._job_manager.node_client is not None
             )
         return self._job_manager
+
 
     # === STRATUM SERVER ===
     @property
@@ -181,7 +183,7 @@ class DependencyContainer:
 
             # После создания difficulty_service, обновляем share_validator
             if self._share_validator:
-                self._share_validator.target_difficulty = self._difficulty_service.current_difficulty
+                self._share_validator.pool_difficulty = self._difficulty_service.current_difficulty
                 logger.info(
                     "ShareValidator обновлен актуальной сложностью",
                     event="share_validator_updated",

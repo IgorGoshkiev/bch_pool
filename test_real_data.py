@@ -60,19 +60,19 @@ async def test_node_connection():
     print("\n4. ВАЛИДАТОР:")
     pool_diff = settings.default_share_difficulty
     validator = ShareValidator(
-        target_difficulty=pool_diff,
+        pool_difficulty=pool_diff,
         extra_nonce2_size=4,
         extra_nonce1=STRATUM_EXTRA_NONCE1
     )
 
     print(f"   Pool difficulty: {pool_diff}")
-    print(f"   Target for difficulty 1: {hex(validator.target_for_difficulty_1)}")
+    print(f"   Target for difficulty 1: {hex(validator.TARGET_FOR_DIFFICULTY_1)}")
 
     # 5. Анализ сложности
     print("\n5. АНАЛИЗ СЛОЖНОСТИ:")
 
     # Target для difficulty 1
-    target_1 = validator.target_for_difficulty_1
+    target_1 = validator.TARGET_FOR_DIFFICULTY_1
 
     # Target для пула
     if pool_diff > 0:

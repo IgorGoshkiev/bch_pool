@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 def validator():
     """Создание валидатора для тестов"""
     from app.stratum.validator import ShareValidator
-    return ShareValidator(target_difficulty=1.0)
+    return ShareValidator(pool_difficulty=1.0)
 
 
 @pytest.fixture
@@ -38,7 +38,7 @@ class TestShareValidator:
 
     def test_initialization(self, validator):
         """Тест инициализации валидатора"""
-        assert validator.target_difficulty == 1.0
+        assert validator.pool_difficulty == 1.0
         assert validator.extra_nonce2_size == 4  # По умолчанию
         assert len(validator.jobs_cache) == 0
         assert validator.validated_shares == 0

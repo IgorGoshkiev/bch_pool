@@ -751,7 +751,7 @@ class BlockBuilder:
 
             # Создаем coinbase транзакцию с placeholder для extra_nonce2
             coinbase_hex, coinbase_txid, merkle_branch_json = self.build_coinbase_transaction(
-                template, miner_address, extra_nonce1, "00000000"  # placeholder
+                template, miner_address, extra_nonce1, "00000000"
             )
 
             if not coinbase_hex:
@@ -761,16 +761,33 @@ class BlockBuilder:
             coinbase_bytes = bytes.fromhex(coinbase_hex)
             extra_nonce1_bytes = bytes.fromhex(extra_nonce1)
 
-            # Ищем extra_nonce1 в coinbase
             try:
+                # Находим позицию extra_nonce1
                 pos = coinbase_bytes.index(extra_nonce1_bytes)
-                coinb1 = coinbase_bytes[:pos].hex()
-                # extra_nonce2 placeholder занимает 4 байта (8 hex символов)
-                coinb2 = coinbase_bytes[pos + len(extra_nonce1_bytes) + 8:].hex()
+
+                # coinb1 = все ДО extra_nonce1 (включая sequence ffffffff)
+                # Находим sequence (ffffffff) перед extra_nonce1
+                seq_pos = coinbase_bytes.rfind(b'\xff\xff\xff\xff', 0, pos)
+
+                if seq_pos != -1:
+                    # coinb1 заканчивается на ffffffff (sequence)
+                    coinb1 = coinbase_bytes[:seq_pos + 4].hex()
+                    # coinb2 = все после extra_nonce1 + extra_nonce2 (оставшаяся часть)
+                    extra_nonce2_size = 4
+                    coinb2 = coinbase_bytes[pos + len(extra_nonce1_bytes) + extra_nonce2_size:].hex()
+                    print(f"🔍 COINB1 (до extra_nonce1): {coinb1[:100]}...", flush=True)
+                    print(f"🔍 COINB2 (после extra_nonce1): {coinb2[:100]}...", flush=True)
+                else:
+                    # fallback
+                    coinb1 = coinbase_bytes[:pos].hex()
+                    coinb2 = coinbase_bytes[pos + len(extra_nonce1_bytes) + 4:].hex()
+
             except ValueError:
-                # Если не нашли, используем упрощенное разделение
-                coinb1 = coinbase_hex[:100]  # Первая часть
-                coinb2 = coinbase_hex[100:]  # Вторая часть
+                coinb1 = coinbase_hex[:100]
+                coinb2 = coinbase_hex[100:]
+
+            print(f"🔍 COINB1 length: {len(coinb1)}, COINB2 length: {len(coinb2)}", flush=True)
+            print(f"🔍 COINB1 ends with: {coinb1[-20:]}", flush=True)
 
             # Получаем Merkle branch из JSON
             try:
@@ -786,19 +803,25 @@ class BlockBuilder:
             job_data = {
                 "method": "mining.notify",
                 "params": [
-                    job_id,  # Job ID
-                    template.get('previousblockhash', ''),  # prevhash
-                    coinb1,  # coinb1
-                    coinb2,  # coinb2
-                    merkle_branch,  # merkle_branch
-                    format(template.get('version', 0x20000000), '08x'),  # version
-                    template.get('bits', '1d00ffff'),  # nbits
-                    ntime_hex,  # ntime
-                    True  # clean_jobs
+                    job_id,
+                    template.get('previousblockhash', ''),
+                    coinb1,
+                    coinb2,
+                    merkle_branch,
+                    format(template.get('version', 0x20000000), '08x'),
+                    template.get('bits', '1d00ffff'),
+                    ntime_hex,
+                    True
                 ],
                 "extra_nonce1": extra_nonce1,
-                "template": template  # Сохраняем шаблон для сборки блока
+                "template": template
             }
+
+            print(f"🔍 JOB PARAMS: job_id={job_id}, prevhash={template.get('previousblockhash', '')[:32]}...",
+                  flush=True)
+            print(f"🔍 JOB COINB1: {coinb1[:50]}...", flush=True)
+            print(f"🔍 JOB COINB2: {coinb2[:50]}...", flush=True)
+            print(f"🔍 JOB BITS: {template.get('bits', '1d00ffff')}", flush=True)
 
             logger.info(
                 "Созданы данные задания Stratum",

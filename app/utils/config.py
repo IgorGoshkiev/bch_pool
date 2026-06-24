@@ -27,8 +27,8 @@ class Settings(BaseSettings):
     # Динамическая сложность
     enable_dynamic_difficulty: bool = True
     difficulty_update_interval: int = 300
-    min_difficulty: float = 0.001
-    max_difficulty: float = 1000.0
+    min_difficulty: float = 0.000000001
+    max_difficulty: float = 10000000
     target_shares_per_minute: int = 60
 
     # Stratum серверы
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     stratum_tcp_enabled: bool = True
 
     # Настройки заданий
-    job_broadcast_interval: int = 30
+    job_broadcast_interval: int = 300
     job_cleanup_age: int = 300
     job_max_history_size: int = 100
 
@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     auto_register_miners: bool = True
     auto_worker_name: str = "default"
 
-    default_share_difficulty: float = 1.0
+    default_share_difficulty: float = 0.000000001
     default_miner_address: str = "qr5zfhsh0cad3nhtc97d3zr29l9afhnl4shdj6dp34"
     enable_share_validation: bool = True
 
