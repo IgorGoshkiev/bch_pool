@@ -230,7 +230,7 @@ class NetworkManager:
     @staticmethod
     def get_fallback_difficulty() -> float:
         """Получение fallback сложности"""
-        return getattr(settings, 'fallback_difficulty', 0.001)
+        return getattr(settings, 'fallback_difficulty', 1)
 
     def format_satoshis(self, satoshis: int) -> str:
         """Форматирование сатоши в читаемый вид"""

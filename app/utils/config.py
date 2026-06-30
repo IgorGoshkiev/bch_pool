@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 
     # BCH нода
     bch_rpc_host: str = "127.0.0.1"
-    bch_rpc_port: int = 28332
+    bch_rpc_port: int = 8332
     bch_rpc_user: Optional[str] = None
     bch_rpc_password: Optional[str] = None
     bch_rpc_use_cookie: bool = True
@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # Динамическая сложность
     enable_dynamic_difficulty: bool = True
     difficulty_update_interval: int = 300
-    min_difficulty: float = 0.000000001
+    min_difficulty: float = 0.001
     max_difficulty: float = 10000000
     target_shares_per_minute: int = 60
 
@@ -57,8 +57,8 @@ class Settings(BaseSettings):
     auto_register_miners: bool = True
     auto_worker_name: str = "default"
 
-    default_share_difficulty: float = 0.000000001
-    default_miner_address: str = "qr5zfhsh0cad3nhtc97d3zr29l9afhnl4shdj6dp34"
+    default_share_difficulty: float = 1
+    default_miner_address: str = "qqxsgzrcxvwh3emhrzmgedttm3ju6ks4ec6072chl0"
     enable_share_validation: bool = True
 
     # Разработка

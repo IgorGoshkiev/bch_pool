@@ -1,6 +1,4 @@
 """Единый контейнер зависимостей для всего приложения"""
-import asyncio
-
 from app.utils.config import settings
 from app.utils.logging_config import StructuredLogger
 from app.utils.network_config import NetworkManager
