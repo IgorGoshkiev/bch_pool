@@ -9,10 +9,6 @@ from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
 from app.utils.logging_config import StructuredLogger
 from app.jobs.real_node_client import RealBCHNodeClient
 
-# ТИПОВОЙ ИМПОРТ для избежания циклических зависимостей
-# if TYPE_CHECKING:
-#     from app.stratum.websocket_server import StratumServer
-#     from app.stratum.tcp_server import StratumTCPServer
 
 logger = StructuredLogger(__name__)
 
@@ -381,7 +377,6 @@ class JobManager:
             )
             return False
 
-        # Задание уже сохранено в job_service через create_new_job()
         logger.info(
             "Персональное задание создано",
             event="job_manager_personal_job_created",

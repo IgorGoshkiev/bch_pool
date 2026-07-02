@@ -1,14 +1,22 @@
+"""
+API endpoints for miners management
+"""
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
-from typing import Optional
-from datetime import datetime, timedelta, UTC
+from typing import Optional, List
 
 from app.utils.logging_config import StructuredLogger
 from app.utils.helpers import humanize_time_ago
 from app.utils.protocol_helpers import DEFAULT_PAGINATION_LIMIT, MAX_PAGINATION_LIMIT
+from app.utils.db_utils import (
+    get_shares,
+    get_blocks,
+    get_miner_stats_universal,
+    TimeRangeParams
+)
 from app.schemas.models import (
     ApiResponse,
     MinerResponse,
@@ -27,15 +35,68 @@ router = APIRouter(prefix="/miners", tags=["miners"])
 
 class ListMinersParams:
     """Параметры для списка майнеров"""
+
     def __init__(
-        self,
-        skip: int = Query(0, ge=0, description="Сколько записей пропустить"),
-        limit: int = Query(DEFAULT_PAGINATION_LIMIT, ge=1, le=MAX_PAGINATION_LIMIT, description="Максимальное количество записей"),
-        active_only: bool = Query(False, description="Только активные майнеры")
+            self,
+            skip: int = Query(0, ge=0, description="Сколько записей пропустить"),
+            limit: int = Query(DEFAULT_PAGINATION_LIMIT, ge=1, le=MAX_PAGINATION_LIMIT,
+                               description="Максимальное количество записей"),
+            active_only: bool = Query(False, description="Только активные майнеры")
     ):
         self.skip = skip
         self.limit = limit
         self.active_only = active_only
+
+
+async def get_miner_or_404(bch_address: str, db: AsyncSession) -> Miner:
+    """Найти майнера по адресу или вернуть 404"""
+    result = await db.execute(
+        select(Miner).where(Miner.bch_address == bch_address)
+    )
+    miner = result.scalar_one_or_none()
+    if not miner:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Майнер с адресом {bch_address} не найден"
+        )
+    return miner
+
+
+async def get_miner_shares_data(
+        bch_address: str,
+        db: AsyncSession,
+        skip: int = 0,
+        limit: int = 50,
+        valid_only: bool = False
+) -> List[Share]:
+    """Получить шары майнера с пагинацией"""
+    return await get_shares(db, bch_address, skip, limit, valid_only)
+
+
+async def get_miner_blocks_data(
+        bch_address: str,
+        db: AsyncSession,
+        skip: int = 0,
+        limit: int = 20,
+        confirmed_only: bool = False
+) -> List[Block]:
+    """Получить блоки майнера с пагинацией"""
+    return await get_blocks(db, bch_address, skip, limit, confirmed_only)
+
+
+async def get_miner_stats_data(
+        bch_address: str,
+        db: AsyncSession,
+        time_range: str = "24h"
+) -> dict:
+    """Получить статистику майнера"""
+    time_params = TimeRangeParams(time_range)
+    return await get_miner_stats_universal(
+        db=db,
+        bch_address=bch_address,
+        time_filter=time_params.time_filter
+    )
+
 
 @router.get(
     "/",
@@ -44,8 +105,8 @@ class ListMinersParams:
     response_model=ApiResponse
 )
 async def list_miners(
-    params: ListMinersParams = Depends(),
-    db: AsyncSession = Depends(get_db)
+        params: ListMinersParams = Depends(),
+        db: AsyncSession = Depends(get_db)
 ):
     """
     Получение списка майнеров с пагинацией.
@@ -60,7 +121,6 @@ async def list_miners(
     result = await db.execute(query)
     miners = result.scalars().all()
 
-    # Преобразуем SQLAlchemy модели в Pydantic схемы
     miner_responses = [
         MinerResponse(
             id=m.id,
@@ -97,20 +157,15 @@ async def list_miners(
     response_model=ApiResponse
 )
 async def register_miner(
-    miner_data: MinerCreate,  # ИСПОЛЬЗУЕМ PYDANTIC СХЕМУ
-    db: AsyncSession = Depends(get_db)
+        miner_data: MinerCreate,
+        db: AsyncSession = Depends(get_db)
 ):
     """
     Регистрация майнера в соло-пуле.
-
-    - **bch_address**: Адрес Bitcoin Cash для выплат (обязательно)
-    - **worker_name**: Имя воркера (опционально, по умолчанию "default")
     """
-    # Данные уже валидированы через MinerCreate
     bch_address = miner_data.bch_address
     worker_name = miner_data.worker_name
 
-    # Проверяем, существует ли уже майнер
     result = await db.execute(
         select(Miner).where(Miner.bch_address == bch_address)
     )
@@ -122,7 +177,6 @@ async def register_miner(
             detail=f"Майнер с адресом {bch_address} уже зарегистрирован"
         )
 
-    # Создаём нового майнера
     new_miner = Miner(
         bch_address=bch_address,
         worker_name=worker_name
@@ -133,7 +187,6 @@ async def register_miner(
         await db.commit()
         await db.refresh(new_miner)
 
-        # Создаем ответ через Pydantic
         miner_response = MinerResponse(
             id=new_miner.id,
             bch_address=new_miner.bch_address,
@@ -158,28 +211,18 @@ async def register_miner(
             detail="Ошибка при сохранении майнера"
         )
 
+
 @router.get(
     "/{bch_address}",
     summary="Информация о майнере",
     response_description="Детальная информация о майнере"
-)  # Будет /api/v1/miners/{bch_address}
+)
 async def get_miner(
         bch_address: str,
         db: AsyncSession = Depends(get_db)
 ):
-    """
-    Получение информации о конкретном майнере по BCH адресу.
-    """
-    result = await db.execute(
-        select(Miner).where(Miner.bch_address == bch_address)
-    )
-    miner = result.scalar_one_or_none()
-
-    if not miner:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Майнер с адресом {bch_address} не найден"
-        )
+    """Получение информации о конкретном майнере по BCH адресу."""
+    miner = await get_miner_or_404(bch_address, db)
 
     return {
         "miner": {
@@ -205,25 +248,10 @@ async def delete_miner(
         bch_address: str,
         db: AsyncSession = Depends(get_db)
 ):
-    """
-    Удаление майнера из системы.
-
-    - **bch_address**: Адрес Bitcoin Cash майнера
-    - **hard_delete**: Полное удаление (false - деактивация, true - удаление из БД)
-    """
-    result = await db.execute(
-        select(Miner).where(Miner.bch_address == bch_address)
-    )
-    miner = result.scalar_one_or_none()
-
-    if not miner:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Майнер с адресом {bch_address} не найден"
-        )
+    """Удаление майнера из системы."""
+    miner = await get_miner_or_404(bch_address, db)
 
     try:
-        # Мягкое удаление (деактивация) вместо физического удаления
         miner.is_active = False
         await db.commit()
 
@@ -254,25 +282,9 @@ async def update_miner(
         is_active: Optional[bool] = Query(None, description="Статус активности"),
         db: AsyncSession = Depends(get_db)
 ):
-    """
-    Обновление данных майнера.
+    """Обновление данных майнера."""
+    miner = await get_miner_or_404(bch_address, db)
 
-    - **bch_address**: Адрес Bitcoin Cash майнера
-    - **worker_name**: Новое имя воркера (опционально)
-    - **is_active**: Новый статус активности (опционально)
-    """
-    result = await db.execute(
-        select(Miner).where(Miner.bch_address == bch_address)
-    )
-    miner = result.scalar_one_or_none()
-
-    if not miner:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Майнер с адресом {bch_address} не найден"
-        )
-
-    # Обновляем только переданные поля
     update_data = {}
 
     if worker_name is not None:
@@ -333,117 +345,46 @@ async def get_miner_stats(
         time_range: Optional[str] = Query("24h", description="Временной диапазон: 1h, 24h, 7d, 30d, all"),
         db: AsyncSession = Depends(get_db)
 ):
-    """
-    Получение детальной статистики по майнеру.
-
-    - **bch_address**: Адрес Bitcoin Cash майнера
-    - **time_range**: Временной диапазон для статистики:
-        - 1h: Последний час
-        - 24h: Последние 24 часа
-        - 7d: Последние 7 дней
-        - 30d: Последние 30 дней
-        - all: Вся история
-    """
-
+    """Получение детальной статистики по майнеру."""
     try:
-        # Сначала находим майнера
-        result = await db.execute(
-            select(Miner).where(Miner.bch_address == bch_address)
-        )
+        miner = await get_miner_or_404(bch_address, db)
 
-        miner = result.scalar_one_or_none()
-
-        if not miner:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Майнер с адресом {bch_address} не найден"
-            )
-
-        # Допустимые значения
         valid_time_ranges = {"1h", "24h", "7d", "30d", "all"}
-
-        # Если time_range не задан или некорректен, используем по умолчанию
-        if not time_range or time_range not in  valid_time_ranges:
+        if not time_range or time_range not in valid_time_ranges:
             time_range = "24h"
 
-        # Определяем временной диапазон
-        now = datetime.now(UTC)
-        time_filters = {
-            "1h": now - timedelta(hours=1),
-            "24h": now - timedelta(days=1),
-            "7d": now - timedelta(days=7),
-            "30d": now - timedelta(days=30),
-            "all": None
-        }
+        time_params = TimeRangeParams(time_range)
 
-        time_filter = time_filters.get(time_range, time_filters["24h"])
+        stats_data = await get_miner_stats_universal(
+            db=db,
+            bch_address=bch_address,
+            time_filter=time_params.time_filter
+        )
 
-        # Словарь для человекочитаемого формата
-        human_readable_map = {
-            "1h": "последний час",
-            "24h": "последние 24 часа",
-            "7d": "последние 7 дней",
-            "30d": "последние 30 дней",
-            "all": "вся история"
-        }
+        shares = stats_data["shares"]
+        blocks = stats_data["blocks"]
 
-        human_readable = human_readable_map.get(time_range, "последние 24 часа")
-
-        # ========================== Статистика по шарам
-        shares_query = select(Share).where(Share.miner_address == bch_address)
-        if time_filter:
-            shares_query = shares_query.where(Share.submitted_at >= time_filter)
-
-        result = await db.execute(shares_query)
-        shares = result.scalars().all()
-
-        # Валидные и невалидные шары
+        # Рассчеты
         valid_shares = [s for s in shares if s.is_valid]
         invalid_shares = [s for s in shares if not s.is_valid]
 
-        # Средняя сложность
         avg_difficulty = 0
         if valid_shares:
             avg_difficulty = sum(s.difficulty for s in valid_shares) / len(valid_shares)
 
-        #==========================================Статистика по блокам
-        blocks_query = select(Block).where(Block.miner_address == bch_address)
-        if time_filter:
-            blocks_query = blocks_query.where(Block.found_at >= time_filter)
-
-        result = await db.execute(blocks_query)
-        blocks = result.scalars().all()
-
-        # Подтверждённые блоки
         confirmed_blocks = [b for b in blocks if b.confirmed]
 
-        #================================ Рассчитываем хэшрейт (упрощённо)
+        human_readable = time_params.get_human_readable()
+
+        # Расчет хэшрейта
         hashrate_calc = 0.0
-        if valid_shares and time_range != "all":
-            # Примерная формула: сумма сложности / время в секундах
-            total_difficulty = sum(s.difficulty for s in valid_shares)
+        time_seconds = time_params.get_seconds()
 
-            time_seconds_map = {
-                "1h": 3600,
-                "24h": 86400,
-                "7d": 604800,
-                "30d": 2592000
-            }
+        if valid_shares and time_seconds and time_seconds > 0:
+            hashes_per_share = 2 ** 32
+            total_hashes = sum(s.difficulty * hashes_per_share for s in valid_shares)
+            hashrate_calc = total_hashes / time_seconds
 
-
-            time_seconds = time_seconds_map.get(time_range, 86400)
-
-            if time_seconds is None:
-                time_seconds = 86400  # default fallback
-
-            if valid_shares and time_seconds is not None and time_seconds > 0:
-                # Примерная формула: сумма сложности / время в секундах
-                # Каждый шар с difficulty 1.0 соответствует 2^32 хэшей
-                hashes_per_share = 2 ** 32  # 4,294,967,296
-                total_hashes = sum(s.difficulty * hashes_per_share for s in valid_shares)
-                hashrate_calc = total_hashes / time_seconds
-
-                # Форматируем ответ через ApiResponse
         return ApiResponse(
             status="success",
             message=f"Статистика майнера {bch_address} получена",
@@ -475,8 +416,8 @@ async def get_miner_stats(
                     "performance": {
                         "total_shares": miner.total_shares,
                         "total_blocks": miner.total_blocks,
-                        "current_hashrate": miner.hashrate,  # Из БД
-                        "calculated_hashrate": hashrate_calc,  # Рассчитанный для периода
+                        "current_hashrate": miner.hashrate,
+                        "calculated_hashrate": hashrate_calc,
                         "unit": "H/s"
                     }
                 },
@@ -509,36 +450,9 @@ async def get_miner_shares(
         valid_only: bool = False,
         db: AsyncSession = Depends(get_db)
 ):
-    """
-    Получение списка шаров майнера.
-
-    - **bch_address**: Адрес Bitcoin Cash майнера
-    - **skip**: Пропустить первых N записей
-    - **limit**: Максимальное количество записей
-    - **valid_only**: Только валидные шары
-    """
-    # Проверяем существование майнера
-    result = await db.execute(
-        select(Miner).where(Miner.bch_address == bch_address)
-    )
-    miner = result.scalar_one_or_none()
-
-    if not miner:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Майнер с адресом {bch_address} не найден"
-        )
-
-    # Получаем шары
-    query = select(Share).where(Share.miner_address == bch_address)
-
-    if valid_only:
-        query = query.where(Share.is_valid == True)
-
-    query = query.order_by(Share.submitted_at.desc()).offset(skip).limit(limit)
-
-    result = await db.execute(query)
-    shares = result.scalars().all()
+    """Получение списка шаров майнера."""
+    miner = await get_miner_or_404(bch_address, db)
+    shares = await get_miner_shares_data(bch_address, db, skip, limit, valid_only)
 
     return {
         "miner": bch_address,
@@ -573,36 +487,9 @@ async def get_miner_blocks(
         confirmed_only: bool = False,
         db: AsyncSession = Depends(get_db)
 ):
-    """
-    Получение списка блоков, найденных майнером.
-
-    - **bch_address**: Адрес Bitcoin Cash майнера
-    - **skip**: Пропустить первых N записей
-    - **limit**: Максимальное количество записей
-    - **confirmed_only**: Только подтверждённые блоки
-    """
-    # Проверяем существование майнера
-    result = await db.execute(
-        select(Miner).where(Miner.bch_address == bch_address)
-    )
-    miner = result.scalar_one_or_none()
-
-    if not miner:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Майнер с адресом {bch_address} не найден"
-        )
-
-    # Получаем блоки
-    query = select(Block).where(Block.miner_address == bch_address)
-
-    if confirmed_only:
-        query = query.where(Block.confirmed == True)
-
-    query = query.order_by(Block.found_at.desc()).offset(skip).limit(limit)
-
-    result = await db.execute(query)
-    blocks = result.scalars().all()
+    """Получение списка блоков, найденных майнером."""
+    miner = await get_miner_or_404(bch_address, db)
+    blocks = await get_miner_blocks_data(bch_address, db, skip, limit, confirmed_only)
 
     return {
         "miner": bch_address,

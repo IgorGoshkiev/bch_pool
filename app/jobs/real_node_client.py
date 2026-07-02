@@ -24,7 +24,7 @@ class RealBCHNodeClient:
         self.rpc_user = rpc_user
         self.rpc_password = rpc_password
         self.use_cookie = use_cookie
-        self.rpc_url = f"http://{rpc_host}:{rpc_port}/"
+        self.rpc_url = f"https://{rpc_host}:{rpc_port}/"
         self.session: Optional[aiohttp.ClientSession] = None
         self.request_id = 0
         self.block_height = 0
@@ -352,7 +352,7 @@ class RealBCHNodeClient:
         result = await self._make_rpc_call("submitblock", [hex_data])
 
         # Bitcoin RPC возвращает None при успехе, строку при ошибке
-        if result is None:
+        if result is None or result == "" or result == "null":
             logger.info(
                 "Блок принят BCH нодой",
                 event="bch_node_block_accepted"

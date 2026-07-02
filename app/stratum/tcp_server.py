@@ -438,6 +438,7 @@ class StratumTCPServer:
                 return
 
             # 2. ИЗВЛЕКАЕМ ДАННЫЕ
+            # TODO Сколько должно быть ппараметров ?
             worker = params[0]
             job_id = params[1]
             extra_nonce2 = params[2]
@@ -450,6 +451,7 @@ class StratumTCPServer:
                 flush=True)
 
             # 3. РАСЧЕТ ХЭША И СЛОЖНОСТИ ШАРА
+            #TODO Правильность вычисления сложности шара ?
             share_difficulty = None  # неизвестна, пока не вычислим
             try:
                 job_data = self.job_service.get_job(job_id)
@@ -496,8 +498,9 @@ class StratumTCPServer:
                 return
 
             # 6. СОХРАНЯЕМ В БД
-            # Используем сложность пула (65536), а не сложность шара
-            pool_difficulty = int(getattr(settings, 'default_share_difficulty', 65536))
+            # сложность меняется динамически
+            # TODO Используем сложность пула или сложность шара ?
+            pool_difficulty = int(self.share_validator.pool_difficulty)
             print(f"💾 SAVING SHARE to database with pool difficulty: {pool_difficulty}", flush=True)
 
             saved, share_id = await self.database_service.save_share(
@@ -582,7 +585,8 @@ class StratumTCPServer:
             print(f"🔍 SEND_JOB: coinb1 length = {len(real_coinb1)}", flush=True)
             print(f"🔍 SEND_JOB: coinb2 length = {len(real_coinb2)}", flush=True)
             print(f"🔍 SEND_JOB: merkle_branch length = {len(real_merkle_branch)}", flush=True)
-            print(f"🔍 SEND_JOB: bits = {real_bits}, ntime = {real_ntime}", flush=True)
+            print(f"🔍 SEND_JOB: bits = {real_bits}, ntime = {real_bits}", flush=True)
+            print(f"🔍 SEND_JOB: ntime = {real_ntime}, ntime = {real_ntime}", flush=True)
 
             job_id = f"{int(time.time()) & 0xFFFF:04x}"
 
@@ -803,6 +807,7 @@ class StratumTCPServer:
         }
         await self._send_json(writer, response)
 
+    # TODO правильно ли делать _send_json( статическим ?
     async def _send_json(self, writer: asyncio.StreamWriter, data: dict):
         """Отправка JSON с новой строкой"""
         try:

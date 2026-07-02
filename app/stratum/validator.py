@@ -28,11 +28,7 @@ class ShareValidator:
         self.validated_shares = 0
         self.invalid_shares = 0
         self.start_time = datetime.now(UTC)
-
-        # Target из ноды (для проверки блоков)
         self.network_target = None
-
-        # Target для сложности 1.0 (fallback)
         network = getattr(settings, 'bch_network', 'mainnet')
         network_config = NETWORK_CONFIGS.get(network, NETWORK_CONFIGS['mainnet'])
         self.TARGET_FOR_DIFFICULTY_1 = network_config.get(
@@ -293,7 +289,7 @@ class ShareValidator:
                 flush=True)
             print(f"🔍 DEBUG: target_difficulty = {target_difficulty} (type: {type(target_difficulty)})", flush=True)
 
-            target = self.TARGET_FOR_DIFFICULTY_1 // target_difficulty
+            target = self.TARGET_FOR_DIFFICULTY_1 // int(target_difficulty)
 
             print(f"🔍 ========================================", flush=True)
             print(f"🔍 POOL CHECK DETAILS:", flush=True)
@@ -338,7 +334,7 @@ class ShareValidator:
                     bytes.fromhex(prevhash)[::-1] +
                     bytes.fromhex(merkle_root)[::-1] +
                     bytes.fromhex(ntime)[::-1] +
-                    bytes.fromhex(nbits)[::-1] +
+                    bytes.fromhex(nbits)[::-1] + #  nbits в little-endian
                     bytes.fromhex(nonce)[::-1]
             )
 

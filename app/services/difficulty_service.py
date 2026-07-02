@@ -18,6 +18,7 @@ class DifficultyService:
 
     def __init__(self, network_manager=None, stratum_server=None, tcp_stratum_server=None):
         # Используем network_manager если передан, иначе создаем временный
+        self.miner_difficulties: Dict[str, float] = {}
         if network_manager:
             self.network_manager = network_manager
         else:
@@ -361,6 +362,8 @@ class DifficultyService:
         if miner_address not in self.share_timestamps:
             return self.min_difficulty
 
+        current_diff = self.miner_difficulties.get(miner_address, self.min_difficulty)
+
         timestamps = list(self.share_timestamps[miner_address])
         if len(timestamps) < 3:
             return self.min_difficulty
@@ -375,15 +378,16 @@ class DifficultyService:
         # Среднее время между шарами
         avg_time = (recent[-1] - recent[0]).total_seconds() / (len(recent) - 1)
 
-        # Целевое время между шарами: 10 секунд
         if avg_time < 2:
-            # Слишком часто - повышаем сложность
-            return min(self.max_difficulty, self.current_difficulty * 2)
+            new_diff = min(self.max_difficulty, current_diff * 2)
+            self.miner_difficulties[miner_address] = new_diff
+            return new_diff
         elif avg_time > 30:
-            # Слишком редко - понижаем
-            return max(self.min_difficulty, self.current_difficulty / 2)
+            new_diff = max(self.min_difficulty, current_diff / 2)
+            self.miner_difficulties[miner_address] = new_diff
+            return new_diff
         else:
-            return self.current_difficulty
+            return current_diff
 
     async def get_pool_hashrate(self, period_minutes: int = 5) -> float:
         """Расчет общего хэшрейта пула"""

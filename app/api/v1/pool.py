@@ -33,41 +33,31 @@ async def pool_root():
 @router.get("/stats", response_model=ApiResponse)
 async def pool_stats(db: AsyncSession = Depends(get_db)):
     """
-    Получение общей статистики пула:
-    - Количество майнеров
-    - Количество шаров (shares)
-    - Количество найденных блоков
-    - Общий хэшрейт
+    Получение общей статистики пула
     """
     try:
         logger.debug("Запрос статистики пула")
-        # Количество майнеров
-        result = await db.execute(select(func.count(Miner.id)))
-        total_miners = result.scalar() or 0
 
-        # Активные майнеры
-        result = await db.execute(select(func.count(Miner.id)).where(Miner.is_active.is_(true())))
-        active_miners = result.scalar() or 0
+        # Майнеры
+        total_miners = await db.scalar(select(func.count(Miner.id))) or 0
+        active_miners = await db.scalar(
+            select(func.count(Miner.id)).where(Miner.is_active.is_(true()))
+        ) or 0
 
-        # Общее количество шаров
-        result = await db.execute(select(func.count(Share.id)))
-        total_shares = result.scalar() or 0
+        # Шары
+        total_shares = await db.scalar(select(func.count(Share.id))) or 0
+        valid_shares = await db.scalar(
+            select(func.count(Share.id)).where(Share.is_valid.is_(true()))
+        ) or 0
 
-        # Валидные шары
-        result = await db.execute(select(func.count(Share.id)).where(Share.is_valid.is_(true())))
-        valid_shares = result.scalar() or 0
+        # Блоки
+        total_blocks = await db.scalar(select(func.count(Block.id))) or 0
+        confirmed_blocks = await db.scalar(
+            select(func.count(Block.id)).where(Block.confirmed.is_(true()))
+        ) or 0
 
-        # Количество блоков
-        result = await db.execute(select(func.count(Block.id)))
-        total_blocks = result.scalar() or 0
-
-        # Подтверждённые блоки
-        result = await db.execute(select(func.count(Block.id)).where(Block.confirmed.is_(true())))
-        confirmed_blocks = result.scalar() or 0
-
-        # Общий хэшрейт
-        result = await db.execute(select(func.sum(Miner.hashrate)))
-        total_hashrate = float(result.scalar() or 0.0)
+        # Хэшрейт
+        total_hashrate = float(await db.scalar(select(func.sum(Miner.hashrate))) or 0.0)
 
         return ApiResponse(
             status="success",
@@ -101,6 +91,7 @@ async def pool_stats(db: AsyncSession = Depends(get_db)):
         )
 
     except Exception as e:
+        logger.error(f"Ошибка получения статистики: {e}")
         return ApiResponse(
             status="error",
             message=f"Ошибка получения статистики: {str(e)}",
