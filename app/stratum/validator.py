@@ -337,6 +337,13 @@ class ShareValidator:
             coinb2 = params[3]
             merkle_branch = params[4]
 
+            # ===== ДОБАВЬ ЭТОТ БЛОК ТУТ =====
+            if len(prevhash) == 64 and prevhash[:2] != "00" and prevhash[-2:] == "00":
+                print(f"🔍 PREVHASH LOOKS LIKE LITTLE-ENDIAN, CONVERTING...", flush=True)
+                prevhash = prevhash[::-1]
+                print(f"🔍 PREVHASH CONVERTED: {prevhash[:32]}...", flush=True)
+            # =================================
+
             # Используем version из параметра или из job_data
             if version:
                 version_hex = version
@@ -348,14 +355,21 @@ class ShareValidator:
             nbits = params[6]
 
             # ===== ОТЛАДКА =====
-            print(f"\n🔍🔍🔍 ДАННЫЕ В VALIDATOR 🔍🔍🔍", flush=True)
-            print(f"version (используемый): {version_hex}", flush=True)
-            print(f"prevhash: {prevhash[:32]}...", flush=True)
-            print(f"nbits: {nbits}", flush=True)
+            # ===== ДОБАВЬ ЭТОТ БЛОК =====
+            print(f"\n🔍🔍🔍 ПОЛНЫЕ ДАННЫЕ В VALIDATOR 🔍🔍🔍", flush=True)
+            print(f"prevhash (оригинал): {prevhash}", flush=True)
+            print(f"coinb1: {coinb1}", flush=True)
+            print(f"coinb2: {coinb2}", flush=True)
+            print(f"merkle_branch: {len(merkle_branch)} элементов", flush=True)
+            for i, branch in enumerate(merkle_branch):
+                print(f"  branch[{i}]: {branch[:32]}...", flush=True)
+            print(f"version: {version if version else params[5]}", flush=True)
+            print(f"nbits: {params[6]}", flush=True)
             print(f"ntime: {ntime}", flush=True)
             print(f"nonce: {nonce}", flush=True)
             print(f"extra_nonce2: {extra_nonce2}", flush=True)
-            print(f"================================\n", flush=True)
+            print(f"==========================================\n", flush=True)
+            # =============================
 
             extra_nonce1 = self.extra_nonce1
 
@@ -372,9 +386,17 @@ class ShareValidator:
             print(f"🔍 MERKLE ROOT: {merkle_root}", flush=True)
 
             # Собираем заголовок (все в little-endian)
+            # header = (
+            #         bytes.fromhex(version_hex)[::-1] +
+            #         bytes.fromhex(prevhash)[::-1] +
+            #         bytes.fromhex(merkle_root)[::-1] +
+            #         bytes.fromhex(ntime)[::-1] +
+            #         bytes.fromhex(nbits)[::-1] +
+            #         bytes.fromhex(nonce)[::-1]
+            # )
             header = (
                     bytes.fromhex(version_hex)[::-1] +
-                    bytes.fromhex(prevhash)[::-1] +
+                    bytes.fromhex(prevhash) +  # ← УБРАЛ [::-1]
                     bytes.fromhex(merkle_root)[::-1] +
                     bytes.fromhex(ntime)[::-1] +
                     bytes.fromhex(nbits)[::-1] +

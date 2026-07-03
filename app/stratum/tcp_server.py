@@ -580,13 +580,16 @@ class StratumTCPServer:
             print(f"🔍 SEND_JOB: job_data keys = {job_data.keys()}", flush=True)
             print(f"🔍 SEND_JOB: params length = {len(job_data['params'])}", flush=True)
 
-            def reverse_hash(hash_str: str) -> str:
-                if len(hash_str) != 64:
-                    return hash_str
-                return ''.join(reversed([hash_str[i:i + 2] for i in range(0, 64, 2)]))
+            # def reverse_hash(hash_str: str) -> str:
+            #     if len(hash_str) != 64:
+            #         return hash_str
+            #     return ''.join(reversed([hash_str[i:i + 2] for i in range(0, 64, 2)]))
 
-            real_prevhash = job_data['params'][1]
-            real_prevhash_le = reverse_hash(real_prevhash)
+            real_prevhash = job_data['params'][1][::-1]  # reverse в big-endian
+
+            # real_prevhash_le = reverse_hash(real_prevhash)
+
+            real_prevhash_le = real_prevhash  # ← НЕ ДЕЛАЕМ REVERSE!
             print(f"🔍 SEND_JOB: real_prevhash (original) = {real_prevhash[:32]}...", flush=True)
             print(f"🔍 SEND_JOB: real_prevhash_le = {real_prevhash_le[:32]}...", flush=True)
 
