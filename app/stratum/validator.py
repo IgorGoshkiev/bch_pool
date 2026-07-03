@@ -113,7 +113,8 @@ class ShareValidator:
                        extra_nonce2: str,
                        ntime: str,
                        nonce: str,
-                       miner_address: str) -> Tuple[bool, Optional[str], Optional[dict]]:
+                       miner_address: str,
+                       version: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[dict]]:
         """
         Проверка валидности шара
 
@@ -209,7 +210,7 @@ class ShareValidator:
                 return False, f"Nonce {nonce} уже использовался для задания {job_id}", None
 
             # 4. Расчет хэша
-            hash_result = self.calculate_hash(job, extra_nonce2, ntime, nonce)
+            hash_result = self.calculate_hash(job, extra_nonce2, ntime, nonce, version)
 
             if hash_result == "0" * 64:
                 self.invalid_shares += 1
@@ -327,7 +328,7 @@ class ShareValidator:
             logger.error(f"check_difficulty error: {e}")
             return False
 
-    def calculate_hash(self, job_data: dict, extra_nonce2: str, ntime: str, nonce: str) -> str:
+    def calculate_hash(self, job_data: dict, extra_nonce2: str, ntime: str, nonce: str, version: Optional[str] = None) -> str:
         """Расчет хэша заголовка блока"""
         try:
             params = job_data["params"]
@@ -335,33 +336,61 @@ class ShareValidator:
             coinb1 = params[2]
             coinb2 = params[3]
             merkle_branch = params[4]
-            version = params[5]
+
+            # Используем version из параметра или из job_data
+            if version:
+                version_hex = version
+                print(f"🔍 USING VERSION FROM ASIC: {version_hex}", flush=True)
+            else:
+                version_hex = params[5]
+                print(f"🔍 USING VERSION FROM JOB: {version_hex}", flush=True)
+
             nbits = params[6]
+
+            # ===== ОТЛАДКА =====
+            print(f"\n🔍🔍🔍 ДАННЫЕ В VALIDATOR 🔍🔍🔍", flush=True)
+            print(f"version (используемый): {version_hex}", flush=True)
+            print(f"prevhash: {prevhash[:32]}...", flush=True)
+            print(f"nbits: {nbits}", flush=True)
+            print(f"ntime: {ntime}", flush=True)
+            print(f"nonce: {nonce}", flush=True)
+            print(f"extra_nonce2: {extra_nonce2}", flush=True)
+            print(f"================================\n", flush=True)
 
             extra_nonce1 = self.extra_nonce1
 
+            # Собираем coinbase
             coinbase = coinb1 + extra_nonce1 + extra_nonce2 + coinb2
             print(f"🔍 COINBASE: {coinbase[:100]}...", flush=True)
 
-            coinbase_hash = hashlib.sha256(hashlib.sha256(bytes.fromhex(coinbase)).digest()).digest()
+            coinbase_hash_obj = hashlib.sha256(bytes.fromhex(coinbase))
+            coinbase_hash = hashlib.sha256(coinbase_hash_obj.digest()).digest()
             print(f"🔍 COINBASE HASH: {coinbase_hash.hex()}", flush=True)
 
+            # Merkle root
             merkle_root = self._calculate_merkle_root_with_branch(coinbase_hash.hex(), merkle_branch)
             print(f"🔍 MERKLE ROOT: {merkle_root}", flush=True)
 
+            # Собираем заголовок (все в little-endian)
             header = (
-                    bytes.fromhex(version)[::-1] +
+                    bytes.fromhex(version_hex)[::-1] +
                     bytes.fromhex(prevhash)[::-1] +
                     bytes.fromhex(merkle_root)[::-1] +
                     bytes.fromhex(ntime)[::-1] +
-                    bytes.fromhex(nbits)[::-1] + #  nbits в little-endian
+                    bytes.fromhex(nbits)[::-1] +
                     bytes.fromhex(nonce)[::-1]
             )
+
+            if len(header) != 80:
+                print(f"🔴 ОШИБКА: длина header {len(header)}, должно быть 80", flush=True)
+                return "0" * 64
 
             print(f"🔍 HEADER LENGTH: {len(header)} (должно быть 80)", flush=True)
             print(f"🔍 HEADER HEX: {header.hex()[:100]}...", flush=True)
 
-            block_hash = hashlib.sha256(hashlib.sha256(header).digest()).digest()
+            # Двойной SHA256
+            first_hash = hashlib.sha256(header).digest()
+            block_hash = hashlib.sha256(first_hash).digest()
             result = block_hash[::-1].hex()
             print(f"🔍 BLOCK HASH: {result}", flush=True)
 

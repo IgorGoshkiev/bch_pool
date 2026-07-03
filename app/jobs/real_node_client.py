@@ -24,7 +24,7 @@ class RealBCHNodeClient:
         self.rpc_user = rpc_user
         self.rpc_password = rpc_password
         self.use_cookie = use_cookie
-        self.rpc_url = f"https://{rpc_host}:{rpc_port}/"
+        self.rpc_url = f"http://{rpc_host}:{rpc_port}/"
         self.session: Optional[aiohttp.ClientSession] = None
         self.request_id = 0
         self.block_height = 0
@@ -87,6 +87,9 @@ class RealBCHNodeClient:
             logger.debug(f"Использую user/pass (fallback): {self.rpc_user}")
             return aiohttp.BasicAuth(self.rpc_user, self.rpc_password)
 
+        """Получение объекта аутентификации"""
+        print(f"🔍 _get_auth: use_cookie={self.use_cookie}")  #
+        print(f"🔍 _get_auth: rpc_user={self.rpc_user}")  #
         logger.warning("Не найдены данные для аутентификации RPC")
         return None
 
@@ -95,6 +98,9 @@ class RealBCHNodeClient:
         """Выполнение RPC вызова к ноде"""
         if params is None:
             params = []
+
+        print(f"🔍 _make_rpc_call: method={method}")  
+        print(f"🔍 _make_rpc_call: url={self.rpc_url}")
 
         self.request_id += 1
         self.total_requests += 1
@@ -192,6 +198,8 @@ class RealBCHNodeClient:
     async def connect(self) -> bool:
         """Подключение к ноде"""
         connect_start = datetime.now(UTC)
+        print(f"🔍 connect: rpc_url={self.rpc_url}")
+        print(f"🔍 connect: use_cookie={self.use_cookie}")
 
         try:
             logger.info(

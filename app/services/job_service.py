@@ -7,8 +7,6 @@ from datetime import datetime, UTC
 
 from app.utils.logging_config import StructuredLogger
 from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, create_job_id
-from app.dependencies import block_builder
-from app.dependencies import job_manager
 
 logger = StructuredLogger(__name__)
 
@@ -16,7 +14,7 @@ logger = StructuredLogger(__name__)
 class JobService:
     """Сервис для управления заданиями майнинг-пула"""
 
-    def __init__(self, validator=None, network_manager=None):
+    def __init__(self, validator=None, network_manager=None, block_builder=None, job_manager=None):
 
         # Активные задания: job_id -> job_data
         self.active_jobs: Dict[str, dict] = {}
@@ -37,14 +35,22 @@ class JobService:
         # Валидатор - создаем ЭКЗЕМПЛЯР класса
         self.validator = validator  # Может быть None, если не передан
 
+        # Network Manager
         self.network_manager = network_manager
+
+        # Block Builder (для сборки блоков)
+        self.block_builder = block_builder
+
+        # Job Manager (для отправки в ноду)
+        self.job_manager = job_manager
 
         logger.info(
             "JobService инициализирован",
             event="job_service_initialized",
-            has_validator=validator is not None
+            has_validator=validator is not None,
+            has_block_builder=block_builder is not None,
+            has_job_manager=job_manager is not None
         )
-
 
     # ========== УПРАВЛЕНИЕ ЗАДАНИЯМИ ==========
 
@@ -177,11 +183,11 @@ class JobService:
         print(f"{'=' * 60}\n", flush=True)
 
         logger.debug(
-                "Получение задания по ID",
-                event="job_service_get_job",
-                job_id=job_id,
-                found=job is not None
-            )
+            "Получение задания по ID",
+            event="job_service_get_job",
+            job_id=job_id,
+            found=job is not None
+        )
 
         return job
 
@@ -262,7 +268,6 @@ class JobService:
 
     def create_fallback_job(self, miner_address: str = None) -> dict:
         """Создать fallback задание с реалистичными тестовыми данными"""
-
 
         job_id = create_job_id(timestamp=int(time.time()),
                                counter=self.job_counter,
@@ -395,7 +400,8 @@ class JobService:
                                    extra_nonce2: str,
                                    ntime: str,
                                    nonce: str,
-                                   miner_address: str) -> Tuple[bool, Optional[str], Optional[dict]]:
+                                   miner_address: str,
+                                   version: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[dict]]:
         """
         Валидация и обработка шара
 
@@ -423,7 +429,8 @@ class JobService:
                 extra_nonce2=extra_nonce2,
                 ntime=ntime,
                 nonce=nonce,
-                miner_address=miner_address
+                miner_address=miner_address,
+                version=version
             )
 
             if not is_valid:
@@ -451,35 +458,22 @@ class JobService:
         """
         Обработка найденного блока
 
-        Args:
-            miner_address: Адрес майнера
-            job_id: ID задания
-            extra_nonce2: Extra nonce 2
-            ntime: Время
-            nonce: Nonce
-            hash_result: Хэш блока
-
         Returns:
             Dict: Результат отправки блока
         """
         try:
-            # Получаем шаблон задания
             job_data = self.get_job(job_id)
             if not job_data:
-                return {
-                    "status": "rejected",
-                    "message": f"Job {job_id} not found"
-                }
+                return {"status": "rejected", "message": f"Job {job_id} not found"}
 
             template = job_data.get('template')
             if not template:
-                return {
-                    "status": "rejected",
-                    "message": "Template not found in job data"
-                }
+                return {"status": "rejected", "message": "Template not found in job data"}
 
-            # Создаем полный блок
-            complete_block = block_builder.create_complete_block(
+            if self.block_builder is None:
+                return {"status": "rejected", "message": "BlockBuilder not initialized"}
+
+            complete_block = self.block_builder.create_complete_block(
                 template=template,
                 miner_address=miner_address,
                 extra_nonce1=STRATUM_EXTRA_NONCE1,
@@ -489,21 +483,19 @@ class JobService:
             )
 
             if not complete_block:
-                return {
-                    "status": "rejected",
-                    "message": "Failed to build complete block"
-                }
+                return {"status": "rejected", "message": "Failed to build complete block"}
 
-            # Отправляем блок в ноду через JobManager
-            result = await job_manager.node_client.submit_block(complete_block['block_hex'])
+            if self.job_manager is None:
+                return {"status": "rejected", "message": "JobManager not initialized"}
+
+            result = await self.job_manager.node_client.submit_block(complete_block['block_hex'])
 
             if result and result.get("status") == "accepted":
                 logger.info(
                     "Блок успешно отправлен в ноду!",
                     event="block_submitted_to_node",
                     miner_address=miner_address,
-                    block_hash=complete_block.get('header_hash'),
-                    height=complete_block.get('height')
+                    block_hash=complete_block.get('header_hash')
                 )
                 return {
                     "status": "accepted",
@@ -513,25 +505,8 @@ class JobService:
                 }
             else:
                 error_msg = result.get("message", "Unknown error") if result else "Node submission failed"
-                logger.error(
-                    "Блок отклонен нодой",
-                    event="block_rejected_by_node",
-                    miner_address=miner_address,
-                    error=error_msg
-                )
-                return {
-                    "status": "rejected",
-                    "message": f"Block rejected: {error_msg}"
-                }
+                return {"status": "rejected", "message": f"Block rejected: {error_msg}"}
 
         except Exception as e:
-            logger.error(
-                "Ошибка обработки найденного блока",
-                event="block_processing_error",
-                miner_address=miner_address,
-                error=str(e)
-            )
-            return {
-                "status": "rejected",
-                "message": f"Error: {str(e)}"
-            }
+            logger.error(f"Ошибка обработки найденного блока: {e}")
+            return {"status": "rejected", "message": f"Error: {str(e)}"}

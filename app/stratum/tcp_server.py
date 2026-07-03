@@ -443,10 +443,12 @@ class StratumTCPServer:
             extra_nonce2 = params[2]
             ntime = params[3]
             nonce = params[4]
+            version_from_asic = params[5] if len(params) > 5 else None
 
             print(
                 f"📊 PARAMS: job_id={job_id}, extra_nonce2={extra_nonce2}, ntime={ntime}, nonce={nonce}, worker={worker}",
                 flush=True)
+            print(f"📊 VERSION FROM ASIC: {version_from_asic}", flush=True)
 
             # 3. РАСЧЕТ ХЭША И СЛОЖНОСТИ ШАРА
             share_difficulty = None
@@ -454,7 +456,7 @@ class StratumTCPServer:
                 job_data = self.job_service.get_job(job_id)
                 if job_data and self.share_validator:
                     hash_result = self.share_validator.calculate_hash(
-                        job_data, extra_nonce2, ntime, nonce
+                        job_data, extra_nonce2, ntime, nonce, version_from_asic
                     )
                     print(f"🔥 SHARE HASH: {hash_result}", flush=True)
 
