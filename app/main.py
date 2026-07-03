@@ -11,7 +11,7 @@ import asyncio
 import json
 import time
 
-from app.utils.logging_config import  StructuredLogger
+from app.utils.logging_config import StructuredLogger
 
 from app.schemas.models import ApiResponse
 from app.models.database import get_db
@@ -100,6 +100,7 @@ async def log_requests(request: Request, call_next):
             process_time=f"{process_time:.3f}s"
         )
         raise
+
 
 @app.get("/", response_model=ApiResponse)  # ← ДОБАВЛЯЕМ response_model
 async def root():
@@ -218,84 +219,6 @@ async def readiness(db: AsyncSession = Depends(get_db)):
         "timestamp": datetime.now(UTC).isoformat()
     }
 
-# @app.get("/database/tables", response_model=ApiResponse)
-# async def list_tables(db: AsyncSession = Depends(get_db)):
-#     """Список всех таблиц в базе данных"""
-#     try:
-#         result = await db.execute(text("""
-#             SELECT
-#                 table_name,
-#                 (SELECT COUNT(*) FROM information_schema.columns
-#                  WHERE table_schema = 'public' AND table_name = t.table_name) as columns_count
-#             FROM information_schema.tables t
-#             WHERE table_schema = 'public'
-#             ORDER BY table_name
-#         """))
-#
-#         tables = []
-#         for row in result.fetchall():
-#             tables.append({
-#                 "name": row[0],
-#                 "columns": row[1]
-#             })
-#
-#         return ApiResponse(
-#             status="success",
-#             message="Список таблиц получен",
-#             data={
-#                 "tables_count": len(tables),
-#                 "tables": tables,
-#                 "timestamp": datetime.now(UTC).isoformat()
-#             }
-#         )
-#     except Exception as e:
-#         return ApiResponse(
-#             status="error",
-#             message="Ошибка получения списка таблиц",
-#             data={
-#                 "error": str(e),
-#                 "timestamp": datetime.now(UTC).isoformat()
-#             }
-#         )
-#
-
-# @app.get("/database/stats", response_model=ApiResponse)
-# async def database_stats(db: AsyncSession = Depends(get_db)):
-#     """Статистика по таблицам"""
-#     try:
-#         stats = {}
-#         tables = ["miners", "shares", "blocks"]
-#
-#         for table in tables:
-#             try:
-#                 result = await db.execute(text(f"SELECT COUNT(*) FROM {table}"))
-#                 count = result.scalar()
-#                 stats[table] = {
-#                     "records": count,
-#                     "empty": count == 0
-#                 }
-#             except Exception as e:
-#                 api_logger.debug(f"Ошибка получения статистики для таблицы {table}: {e}")
-#                 stats[table] = {"error": f"table error: {type(e).__name__}"}
-#
-#         return ApiResponse(
-#             status="success",
-#             message="Статистика базы данных получена",
-#             data={
-#                 "database": "pool_db",
-#                 "statistics": stats,
-#                 "timestamp": datetime.now(UTC).isoformat()
-#             }
-#         )
-#     except Exception as e:
-#         return ApiResponse(
-#             status="error",
-#             message="Ошибка получения статистики базы данных",
-#             data={
-#                 "error": str(e),
-#                 "timestamp": datetime.now(UTC).isoformat()
-#             }
-#         )
 
 # ========== Stratum WebSocket ==========
 @app.websocket("/stratum/ws/{miner_address}")
@@ -436,7 +359,8 @@ async def get_services_health():
             "job_service": "healthy",
             "stratum_server": "healthy" if hasattr(stratum_server, 'active_connections') else "degraded",
             "tcp_server": "healthy" if hasattr(tcp_stratum_server, 'connections') else "degraded",
-            "job_manager": "connected" if hasattr(job_manager, 'block_height') and job_manager.block_height > 0 else "disconnected",
+            "job_manager": "connected" if hasattr(job_manager,
+                                                  'block_height') and job_manager.block_height > 0 else "disconnected",
         }
 
         all_healthy = all(

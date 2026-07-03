@@ -432,27 +432,24 @@ class StratumTCPServer:
 
         try:
             # 1. ПРОВЕРКА ПАРАМЕТРОВ
-            if len(params) < 6:
+            if len(params) < 5:
                 print(f"🔴 SUBMIT ERROR: not enough params (got {len(params)}, need 5)", flush=True)
                 await self._send_error(writer, msg_id, "Invalid submit parameters")
                 return
 
             # 2. ИЗВЛЕКАЕМ ДАННЫЕ
-            # TODO Сколько должно быть ппараметров ?
             worker = params[0]
             job_id = params[1]
             extra_nonce2 = params[2]
             ntime = params[3]
             nonce = params[4]
-            version_param = params[5] if len(params) > 5 else None
 
             print(
                 f"📊 PARAMS: job_id={job_id}, extra_nonce2={extra_nonce2}, ntime={ntime}, nonce={nonce}, worker={worker}",
                 flush=True)
 
             # 3. РАСЧЕТ ХЭША И СЛОЖНОСТИ ШАРА
-            #TODO Правильность вычисления сложности шара ?
-            share_difficulty = None  # неизвестна, пока не вычислим
+            share_difficulty = None
             try:
                 job_data = self.job_service.get_job(job_id)
                 if job_data and self.share_validator:
@@ -463,10 +460,12 @@ class StratumTCPServer:
 
                     hash_int = int(hash_result, 16)
                     if hash_int > 0:
+                        # Берем TARGET из валидатора (динамический)
                         target_for_diff_1 = self.share_validator.TARGET_FOR_DIFFICULTY_1
                         share_difficulty = target_for_diff_1 // hash_int
                         print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
                     else:
+                        share_difficulty = 0
                         print(f"🔥 WARNING: hash_int is 0, cannot calculate difficulty", flush=True)
                 else:
                     print(f"🔥 JOB NOT FOUND or no validator: {job_id}", flush=True)
@@ -478,7 +477,7 @@ class StratumTCPServer:
 
             if settings.enable_share_validation:
                 print(f"🔍 Calling validate_and_process_share...", flush=True)
-                is_valid, error_msg, job_data = self.job_service.validate_and_process_share(
+                is_valid, error_msg, extra_data = self.job_service.validate_and_process_share(
                     job_id=job_id,
                     extra_nonce2=extra_nonce2,
                     ntime=ntime,
@@ -490,6 +489,7 @@ class StratumTCPServer:
                 print(f"⚠️ VALIDATION DISABLED: accepting all shares", flush=True)
                 is_valid = True
                 error_msg = None
+                extra_data = None
 
             # 5. ЕСЛИ НЕВАЛИДЕН - ОТКЛОНЯЕМ
             if not is_valid:
@@ -497,11 +497,10 @@ class StratumTCPServer:
                 await self._send_error(writer, msg_id, f"Invalid share: {error_msg}")
                 return
 
-            # 6. СОХРАНЯЕМ В БД
-            # сложность меняется динамически
-            # TODO Используем сложность пула или сложность шара ?
-            pool_difficulty = int(self.share_validator.pool_difficulty)
-            print(f"💾 SAVING SHARE to database with pool difficulty: {pool_difficulty}", flush=True)
+            # 6. ОПРЕДЕЛЯЕМ СЛОЖНОСТЬ ДЛЯ СОХРАНЕНИЯ
+            # Используем сложность шара, если она рассчитана, иначе fallback
+            difficulty_to_save = share_difficulty if share_difficulty is not None else settings.default_share_difficulty
+            print(f"💾 SAVING SHARE with difficulty: {difficulty_to_save}", flush=True)
 
             saved, share_id = await self.database_service.save_share(
                 miner_address=miner_address,
@@ -509,7 +508,7 @@ class StratumTCPServer:
                 extra_nonce2=extra_nonce2,
                 ntime=ntime,
                 nonce=nonce,
-                difficulty=pool_difficulty,  # сложность пула
+                difficulty=difficulty_to_save,
                 is_valid=True
             )
 
@@ -520,34 +519,48 @@ class StratumTCPServer:
                 await self._send_error(writer, msg_id, "Failed to save share to database")
                 return
 
-            # 7. ОТПРАВЛЯЕМ УСПЕХ
+            # 7. ПРОВЕРЯЕМ, НЕ НАЙДЕН ЛИ БЛОК (ИСПОЛЬЗУЕМ extra_data)
+            if extra_data and extra_data.get('is_valid_block', False):
+                print(f"🎉🎉🎉 BLOCK FOUND! Отправляем в ноду...", flush=True)
+
+                # Отправляем блок через job_service
+                block_result = await self.job_service.process_found_block(
+                    miner_address=miner_address,
+                    job_id=job_id,
+                    extra_nonce2=extra_nonce2,
+                    ntime=ntime,
+                    nonce=nonce,
+                    hash_result=extra_data.get('hash_result', '')
+                )
+
+                if block_result.get("status") == "accepted":
+                    print(f"✅ BLOCK ACCEPTED BY NODE! hash={block_result.get('block_hash', '')[:16]}...",
+                          flush=True)
+                else:
+                    print(f"🔴 BLOCK REJECTED: {block_result.get('message')}", flush=True)
+
+            # 8. ОТПРАВЛЯЕМ УСПЕХ
             response = {"id": msg_id, "result": True, "error": None}
             await self._send_json(writer, response)
             print(f"✅ SHARE ACCEPTED: share_id={share_id}", flush=True)
 
-            # 8. АДАПТИВНАЯ СЛОЖНОСТЬ
+            # 9. АДАПТИВНАЯ СЛОЖНОСТЬ
             if self.difficulty_service and is_valid:
-                # Используем ту же логику
-                diff_for_service = share_difficulty if share_difficulty is not None else settings.default_share_difficulty
+                # Используем ту же сложность для расчета динамической сложности
+                await self.difficulty_service.add_share(miner_address, difficulty_to_save)
+                new_difficulty = await self.difficulty_service.calculate_difficulty_for_miner(miner_address)
 
-                # Добавляем шар
-                await self.difficulty_service.add_share(miner_address, diff_for_service)
-
-                # Рассчитываем новую сложность
-                new_diff = await self.difficulty_service.calculate_difficulty_for_miner(miner_address)
-
-                # Обновляем
-                current_diff = self.miner_difficulties.get(miner_address, 1.0)
-                if abs(new_diff - current_diff) > 0.1:
-                    await self.update_miner_difficulty(miner_address, new_diff)
-                    self.miner_difficulties[miner_address] = new_diff
-                    print(f"📊 DIFFICULTY UPDATED: {current_diff} -> {new_diff}", flush=True)
+                current_difficulty = self.miner_difficulties.get(miner_address, 1.0)
+                if abs(new_difficulty - current_difficulty) > 0.1:
+                    await self.update_miner_difficulty(miner_address, new_difficulty)
+                    self.miner_difficulties[miner_address] = new_difficulty
+                    print(f"📊 DIFFICULTY UPDATED: {current_difficulty} -> {new_difficulty}", flush=True)
 
         except Exception as e:
             print(f"🔴🔴🔴 EXCEPTION IN HANDLE_SUBMIT_TCP: {e}", flush=True)
             import traceback
             traceback.print_exc()
-            await self._send_error(writer, msg_id, f"Database error: {e}")
+            await self._send_error(writer, msg_id, f"Error processing share: {e}")
 
     async def send_new_job_tcp(self, miner_address: str, writer: asyncio.StreamWriter):
         try:
@@ -807,7 +820,6 @@ class StratumTCPServer:
         }
         await self._send_json(writer, response)
 
-    # TODO правильно ли делать _send_json( статическим ?
     async def _send_json(self, writer: asyncio.StreamWriter, data: dict):
         """Отправка JSON с новой строкой"""
         try:

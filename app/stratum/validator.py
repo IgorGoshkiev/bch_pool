@@ -28,9 +28,10 @@ class ShareValidator:
         self.validated_shares = 0
         self.invalid_shares = 0
         self.start_time = datetime.now(UTC)
-        self.network_target = None
+        self.network_target = None  # текущий target сети (меняется каждые 2 недели, берется из ноды)
         network = getattr(settings, 'bch_network', 'mainnet')
         network_config = NETWORK_CONFIGS.get(network, NETWORK_CONFIGS['mainnet'])
+        # константа для расчета сложности (никогда не меняется)
         self.TARGET_FOR_DIFFICULTY_1 = network_config.get(
             'target_for_difficulty_1',
             0x0000000000000000024cb3000000000000000000000000000000000000000000
@@ -53,8 +54,15 @@ class ShareValidator:
         )
 
     def update_target_from_node(self, target: int):
-        """Обновить target из ноды (для проверки блоков)"""
+        """
+        Обновить target из ноды для проверки блоков
+
+        Args:
+            target: Текущий target сети из getblocktemplate
+                   (меняется при каждом изменении сложности)
+        """
         self.network_target = target
+        self.last_network_update = datetime.now(UTC)
         print(f"🎯 VALIDATOR TARGET UPDATED: {target:#066x}", flush=True)
         logger.info(
             "Validator target обновлен из ноды",
@@ -105,7 +113,14 @@ class ShareValidator:
                        extra_nonce2: str,
                        ntime: str,
                        nonce: str,
-                       miner_address: str) -> Tuple[bool, Optional[str]]:
+                       miner_address: str) -> Tuple[bool, Optional[str], Optional[dict]]:
+        """
+        Проверка валидности шара
+
+        Returns:
+            Tuple[is_valid, error_message, extra_data]
+            extra_data содержит информацию о найденном блоке
+        """
         """Проверка валидности шара"""
         validation_start = datetime.now(UTC)
 
@@ -120,9 +135,8 @@ class ShareValidator:
                 miner_address=miner_address,
                 job_id=job_id,
                 reason="job_not_found",
-                validation_time_ms=(datetime.now(UTC) - validation_start).total_seconds() * 1000
             )
-            return False, f"Задание {job_id} не найдено"
+            return False, f"Задание {job_id} не найдено", None
 
         job = self.jobs_cache[job_id]
 
@@ -142,7 +156,7 @@ class ShareValidator:
                     expected_length=expected_extra_nonce2_len,
                     actual_length=len(extra_nonce2)
                 )
-                return False, f"Неверный формат extra_nonce2: {extra_nonce2}"
+                return False, f"Неверный формат extra_nonce2: {extra_nonce2}", None
 
             if not self._validate_hex_format(ntime, 8):
                 self.invalid_shares += 1
@@ -154,7 +168,7 @@ class ShareValidator:
                     reason="invalid_ntime_format",
                     ntime=ntime
                 )
-                return False, f"Неверный формат ntime: {ntime}"
+                return False, f"Неверный формат ntime: {ntime}", None
 
             if not self._validate_hex_format(nonce, 8):
                 self.invalid_shares += 1
@@ -166,7 +180,7 @@ class ShareValidator:
                     reason="invalid_nonce_format",
                     nonce=nonce
                 )
-                return False, f"Неверный формат nonce: {nonce}"
+                return False, f"Неверный формат nonce: {nonce}", None
 
             # 2. Проверка времени
             if not self._validate_ntime(ntime):
@@ -179,7 +193,7 @@ class ShareValidator:
                     reason="invalid_ntime_value",
                     ntime=ntime
                 )
-                return False, f"Некорректное время ntime: {ntime}"
+                return False, f"Некорректное время ntime: {ntime}", None
 
             # 3. Проверка уникальности nonce
             if not self._check_nonce_uniqueness(job_id, nonce):
@@ -192,7 +206,7 @@ class ShareValidator:
                     reason="duplicate_nonce",
                     nonce=nonce
                 )
-                return False, f"Nonce {nonce} уже использовался для задания {job_id}"
+                return False, f"Nonce {nonce} уже использовался для задания {job_id}", None
 
             # 4. Расчет хэша
             hash_result = self.calculate_hash(job, extra_nonce2, ntime, nonce)
@@ -206,14 +220,15 @@ class ShareValidator:
                     job_id=job_id,
                     reason="hash_calculation_error"
                 )
-                return False, "Ошибка расчета хэша"
+                return False, "Ошибка расчета хэша", None
 
             # 5. Проверка сложности пула
             print(f"🔍 VALIDATE: BEFORE check_difficulty", flush=True)
             print(f"🔍 hash_result: {hash_result}", flush=True)
             print(f"🔍 target_difficulty: {self.pool_difficulty}", flush=True)
 
-            is_pool_difficulty_ok = self._check_pool_difficulty(hash_result, int(self.pool_difficulty))
+            # 5. Проверка сложности пула
+            is_pool_difficulty_ok = self._check_pool_difficulty(hash_result, self.pool_difficulty)
 
             if not is_pool_difficulty_ok:
                 self.invalid_shares += 1
@@ -222,11 +237,9 @@ class ShareValidator:
                     event="share_validation_failed",
                     miner_address=miner_address,
                     job_id=job_id,
-                    reason="pool_difficulty_not_met",
-                    hash_prefix=hash_result[:16],
-                    pool_difficulty=self.pool_difficulty
+                    reason="pool_difficulty_not_met"
                 )
-                return False, "Hash doesn't meet pool target difficulty"
+                return False, "Hash doesn't meet pool target difficulty", None
 
             # 6. Проверка, является ли шар БЛОКОМ
             is_valid_block = False
@@ -244,7 +257,6 @@ class ShareValidator:
                         hash=hash_result[:16],
                         network_target=hex(self.network_target)
                     )
-                    # TODO: Отправить блок в ноду
 
             # Шар валиден
             self.validated_shares += 1
@@ -261,7 +273,16 @@ class ShareValidator:
                 total_invalid=self.invalid_shares,
                 is_valid_block=is_valid_block
             )
-            return True, None
+            # Возвращаем дополнительную информацию
+            extra_data = {
+                "is_valid_block": is_valid_block,
+                "hash_result": hash_result,
+                "ntime": ntime,
+                "nonce": nonce,
+                "extra_nonce2": extra_nonce2
+            }
+
+            return True, None, extra_data
 
         except Exception as e:
             self.invalid_shares += 1
@@ -274,22 +295,21 @@ class ShareValidator:
                 error_type=type(e).__name__,
                 validation_time_ms=(datetime.now(UTC) - validation_start).total_seconds() * 1000
             )
-            return False, f"Ошибка валидации: {str(e)}"
+            return False, f"Ошибка валидации: {str(e)}", None
 
-    def _check_pool_difficulty(self, hash_result: str, target_difficulty: int) -> bool:
-        """Проверка сложности пула (внутренний метод)"""
+    def _check_pool_difficulty(self, hash_result: str, pool_difficulty: float) -> bool:
+        """Проверка сложности пула"""
         try:
-            if target_difficulty <= 0:
+            if pool_difficulty <= 0:
                 return False
 
             hash_int = int(hash_result, 16)
 
-            print(
-                f"🔍 DEBUG: target_for_difficulty_1 = {self.TARGET_FOR_DIFFICULTY_1} (type: {type(self.TARGET_FOR_DIFFICULTY_1)})",
-                flush=True)
-            print(f"🔍 DEBUG: target_difficulty = {target_difficulty} (type: {type(target_difficulty)})", flush=True)
-
-            target = self.TARGET_FOR_DIFFICULTY_1 // int(target_difficulty)
+            # Для сложности < 1 используем обратную логику
+            if pool_difficulty < 1.0:
+                target = int(self.TARGET_FOR_DIFFICULTY_1 * (1.0 / pool_difficulty))
+            else:
+                target = self.TARGET_FOR_DIFFICULTY_1 // int(pool_difficulty)
 
             print(f"🔍 ========================================", flush=True)
             print(f"🔍 POOL CHECK DETAILS:", flush=True)
@@ -428,6 +448,7 @@ class ShareValidator:
         jobs_to_remove = []
 
         for job_id in list(self.jobs_cache.keys()):
+            # Не удаляем короткие ID (для совместимости)
             if len(job_id) <= 8 and all(c in '0123456789abcdef' for c in job_id.lower()):
                 continue
 

@@ -7,6 +7,8 @@ from datetime import datetime, UTC
 
 from app.utils.logging_config import StructuredLogger
 from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, create_job_id
+from app.dependencies import block_builder
+from app.dependencies import job_manager
 
 logger = StructuredLogger(__name__)
 
@@ -398,7 +400,8 @@ class JobService:
         Валидация и обработка шара
 
         Returns:
-            Tuple[bool, error_message, job_data]
+            Tuple[is_valid, error_message, extra_data]
+            extra_data содержит информацию о найденном блоке
         """
         try:
             # Получаем задание
@@ -406,8 +409,6 @@ class JobService:
 
             print(f"🔍 JOB_SERVICE: looking for job_id={job_id}, available jobs={list(self.active_jobs.keys())}",
                   flush=True)
-            print(f"🔍 JOB_SERVICE: job_data returned = {job_data}", flush=True)  # ← ДОБАВИТЬ
-            print(f"🔍 JOB_SERVICE: job_data type = {type(job_data)}", flush=True)  # ← ДОБАВИТЬ
 
             if not job_data:
                 return False, f"Задание {job_id} не найдено", None
@@ -416,8 +417,8 @@ class JobService:
                 logger.error("Валидатор не инициализирован в JobService")
                 return False, "Validator not initialized", None
 
-            # Валидируем
-            is_valid, error_msg = self.validator.validate_share(
+            # Валидируем шар - validator теперь возвращает 3 значения
+            is_valid, error_msg, extra_data = self.validator.validate_share(
                 job_id=job_id,
                 extra_nonce2=extra_nonce2,
                 ntime=ntime,
@@ -428,11 +429,109 @@ class JobService:
             if not is_valid:
                 return False, error_msg, None
 
-            # Если шар валиден, можно обновить статистику задания
-            # (например, счетчик принятых шаров для этого задания)
-            print(f"job_data {job_data}")
-            return True, None, job_data
+                # TODO Если шар валиден, можно обновить статистику задания
+                # (например, счетчик принятых шаров для этого задания)
+
+            # Если шар валиден и это блок - возвращаем extra_data
+            return True, None, extra_data
 
         except Exception as e:
             logger.error(f"Ошибка валидации шара {job_id}: {e}")
             return False, f"Validation error: {str(e)}", None
+
+    async def process_found_block(
+            self,
+            miner_address: str,
+            job_id: str,
+            extra_nonce2: str,
+            ntime: str,
+            nonce: str,
+            hash_result: str
+    ) -> Dict:
+        """
+        Обработка найденного блока
+
+        Args:
+            miner_address: Адрес майнера
+            job_id: ID задания
+            extra_nonce2: Extra nonce 2
+            ntime: Время
+            nonce: Nonce
+            hash_result: Хэш блока
+
+        Returns:
+            Dict: Результат отправки блока
+        """
+        try:
+            # Получаем шаблон задания
+            job_data = self.get_job(job_id)
+            if not job_data:
+                return {
+                    "status": "rejected",
+                    "message": f"Job {job_id} not found"
+                }
+
+            template = job_data.get('template')
+            if not template:
+                return {
+                    "status": "rejected",
+                    "message": "Template not found in job data"
+                }
+
+            # Создаем полный блок
+            complete_block = block_builder.create_complete_block(
+                template=template,
+                miner_address=miner_address,
+                extra_nonce1=STRATUM_EXTRA_NONCE1,
+                extra_nonce2=extra_nonce2,
+                ntime=ntime,
+                nonce=nonce
+            )
+
+            if not complete_block:
+                return {
+                    "status": "rejected",
+                    "message": "Failed to build complete block"
+                }
+
+            # Отправляем блок в ноду через JobManager
+            result = await job_manager.node_client.submit_block(complete_block['block_hex'])
+
+            if result and result.get("status") == "accepted":
+                logger.info(
+                    "Блок успешно отправлен в ноду!",
+                    event="block_submitted_to_node",
+                    miner_address=miner_address,
+                    block_hash=complete_block.get('header_hash'),
+                    height=complete_block.get('height')
+                )
+                return {
+                    "status": "accepted",
+                    "message": "Block accepted by node",
+                    "block_hash": complete_block.get('header_hash'),
+                    "height": complete_block.get('height')
+                }
+            else:
+                error_msg = result.get("message", "Unknown error") if result else "Node submission failed"
+                logger.error(
+                    "Блок отклонен нодой",
+                    event="block_rejected_by_node",
+                    miner_address=miner_address,
+                    error=error_msg
+                )
+                return {
+                    "status": "rejected",
+                    "message": f"Block rejected: {error_msg}"
+                }
+
+        except Exception as e:
+            logger.error(
+                "Ошибка обработки найденного блока",
+                event="block_processing_error",
+                miner_address=miner_address,
+                error=str(e)
+            )
+            return {
+                "status": "rejected",
+                "message": f"Error: {str(e)}"
+            }

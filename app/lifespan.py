@@ -224,8 +224,13 @@ async def lifespan(_app):
                 try:
                     await ws.send_json(shutdown_notice)
                     ws_count += 1
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(
+                        f"Не удалось отправить уведомление WebSocket {conn_id}: {e}",
+                        event="websocket_shutdown_notification_failed",
+                        connection_id=conn_id,
+                        error=str(e)
+                    )
 
             # Отправляем уведомление TCP майнерам
             tcp_count = 0
@@ -234,9 +239,13 @@ async def lifespan(_app):
                     writer.write((json.dumps(shutdown_notice) + "\n").encode())
                     await writer.drain()
                     tcp_count += 1
-                except:
-                    pass
-
+                except Exception as e:
+                    logger.debug(
+                        f"Не удалось отправить уведомление TCP {client_id}: {e}",
+                        event="tcp_shutdown_notification_failed",
+                        client_id=client_id,
+                        error=str(e)
+                    )
             if ws_count > 0 or tcp_count > 0:
                 logger.info(
                     "Уведомление о остановке отправлено майнерам",
