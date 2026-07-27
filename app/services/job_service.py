@@ -6,7 +6,7 @@ from typing import Dict, Optional, Set, List, Tuple
 from datetime import datetime, UTC
 
 from app.utils.logging_config import StructuredLogger
-from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, create_job_id
+from app.utils.protocol_helpers import  create_job_id
 
 logger = StructuredLogger(__name__)
 
@@ -88,7 +88,12 @@ class JobService:
         try:
             # Добавляем extra_nonce1 в данные задания для валидатора
             if 'extra_nonce1' not in job_data:
-                job_data['extra_nonce1'] = STRATUM_EXTRA_NONCE1
+                # Если нет - пробуем взять из job_data или использовать fallback
+                extra_nonce1 = job_data.get('extra_nonce1')
+                if not extra_nonce1:
+                    extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
+                    print(f"⚠️ JOB_SERVICE: extra_nonce1 не найден, используем fallback", flush=True)
+                job_data['extra_nonce1'] = extra_nonce1
 
             print(f"🔵 JOB_SERVICE.add_job: job_id={job_id}, calling validator.add_job", flush=True)
             # Сохраняем задание
@@ -290,7 +295,7 @@ class JobService:
                 format(timestamp, '08x'),
                 True
             ],
-            "extra_nonce1": STRATUM_EXTRA_NONCE1,
+            "extra_nonce1": "0e2f4a434243482fc0874feb93e7e6920005c159", # fallback
             "coinbase_value": self.network_manager.get_fallback_coinbase_value()
         }
 
@@ -466,6 +471,12 @@ class JobService:
             if not job_data:
                 return {"status": "rejected", "message": f"Job {job_id} not found"}
 
+            # Получаем extra_nonce1 из job_data
+            extra_nonce1 = job_data.get('extra_nonce1')
+            if not extra_nonce1:
+                extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
+                print(f"⚠️ extra_nonce1 не найден в job_data, используем fallback", flush=True)
+
             template = job_data.get('template')
             if not template:
                 return {"status": "rejected", "message": "Template not found in job data"}
@@ -476,7 +487,7 @@ class JobService:
             complete_block = self.block_builder.create_complete_block(
                 template=template,
                 miner_address=miner_address,
-                extra_nonce1=STRATUM_EXTRA_NONCE1,
+                extra_nonce1=extra_nonce1,
                 extra_nonce2=extra_nonce2,
                 ntime=ntime,
                 nonce=nonce

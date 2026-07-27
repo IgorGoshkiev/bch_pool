@@ -5,7 +5,7 @@ from datetime import datetime, UTC
 from typing import Dict, Optional
 
 from app.utils.logging_config import StructuredLogger
-from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE
+from app.utils.protocol_helpers import EXTRA_NONCE2_SIZE
 from app.utils.config import settings
 
 logger = StructuredLogger(__name__)
@@ -340,11 +340,26 @@ class StratumTCPServer:
         """Обработка подписки"""
         logger.info("=== START _handle_subscribe ===")
 
+        # Получаем extra_nonce1 с fallback
+        extra_nonce1 = None
+
+        if self.job_manager and self.job_manager.node_client:
+            try:
+                extra_nonce1 = await self.job_manager.node_client.get_extra_nonce1()
+                print(f"✅ extra_nonce1 получен из ноды: {extra_nonce1}", flush=True)
+            except Exception as e:
+                print(f"⚠️ Ошибка получения extra_nonce1 из ноды: {e}", flush=True)
+
+        # Если не удалось получить из ноды, используем fallback
+        if not extra_nonce1:
+            extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
+            print(f"⚠️ Используем fallback extra_nonce1: {extra_nonce1}", flush=True)
+
         response = {
             "id": msg_id,
             "result": [
                 [["mining.set_difficulty", "difficulty"], ["mining.notify", "job_id"]],
-                STRATUM_EXTRA_NONCE1,
+                extra_nonce1,
                 EXTRA_NONCE2_SIZE
             ],
             "error": None
@@ -355,11 +370,11 @@ class StratumTCPServer:
         # Отправляем extranonce
         extranonce_msg = {
             "method": "mining.set_extranonce",
-            "params": [STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE]
+            "params": [extra_nonce1, EXTRA_NONCE2_SIZE]
         }
         await self._send_json(writer, extranonce_msg)
         logger.info("✅ Extranonce sent")
-        print(f"📤 SENT EXTRANONCE: {STRATUM_EXTRA_NONCE1}", flush=True)
+        print(f"📤 SENT EXTRANONCE: {extra_nonce1}", flush=True)
 
     async def _handle_configure(self, msg_id: int, writer: asyncio.StreamWriter, params: list):
         """Обработка mining.configure от WhatsMiner"""

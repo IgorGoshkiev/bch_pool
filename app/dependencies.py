@@ -7,7 +7,7 @@ from app.services.difficulty_service import DifficultyService
 from app.services.auth_service import AuthService
 from app.services.database_service import DatabaseService
 from app.stratum.validator import ShareValidator
-from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE
+from app.utils.protocol_helpers import  EXTRA_NONCE2_SIZE
 from app.services.job_service import JobService
 from app.jobs.manager import JobManager
 from app.stratum.websocket_server import StratumServer
@@ -89,7 +89,7 @@ class DependencyContainer:
             self._share_validator = ShareValidator(
                 pool_difficulty=settings.default_share_difficulty,
                 extra_nonce2_size=EXTRA_NONCE2_SIZE,
-                extra_nonce1=STRATUM_EXTRA_NONCE1
+                extra_nonce1=None
             )
             logger.info(
                 "ShareValidator создан",

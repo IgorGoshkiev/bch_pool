@@ -6,7 +6,6 @@ from app.utils.network_config import NETWORK_CONFIGS
 
 from app.utils.logging_config import StructuredLogger
 from app.utils.protocol_helpers import (
-    STRATUM_EXTRA_NONCE1,
     EXTRA_NONCE2_SIZE,
 )
 
@@ -19,9 +18,12 @@ class ShareValidator:
     def __init__(self,
                  pool_difficulty: float = 1.0,
                  extra_nonce2_size: int = EXTRA_NONCE2_SIZE,
-                 extra_nonce1: str = STRATUM_EXTRA_NONCE1):
+                 extra_nonce1: str = None):
         self.pool_difficulty = pool_difficulty
         self.extra_nonce2_size = extra_nonce2_size
+        if not extra_nonce1:
+            extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
+            print(f"⚠️ VALIDATOR: extra_nonce1 не передан, используем fallback", flush=True)
         self.extra_nonce1 = extra_nonce1
         self.jobs_cache: Dict[str, dict] = {}
         self._used_nonces: Dict[str, set] = {}

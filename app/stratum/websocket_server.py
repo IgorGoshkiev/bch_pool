@@ -3,8 +3,7 @@ from datetime import datetime, UTC
 from fastapi import WebSocket
 
 from app.utils.logging_config import StructuredLogger
-# from app.dependencies import auth_service, database_service, job_service
-from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1, EXTRA_NONCE2_SIZE
+from app.utils.protocol_helpers import  EXTRA_NONCE2_SIZE
 
 logger = StructuredLogger(__name__)
 
@@ -184,12 +183,15 @@ class StratumServer:
     @staticmethod
     async def _handle_subscribe(websocket: WebSocket, msg_id: int):
         """Обработка подписки майнера"""
+        #TODO В websocket нет прямого доступа к node_client, используем fallback
+        extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
+
         response = {
             "id": msg_id,
             "result": [
                 [["mining.set_difficulty", "difficulty"], ["mining.notify", "job_id"]],
-                STRATUM_EXTRA_NONCE1,  # Extra nonce 1
-                EXTRA_NONCE2_SIZE  # Extra nonce 2 size
+                extra_nonce1,  # ← fallback
+                EXTRA_NONCE2_SIZE
             ],
             "error": None
         }

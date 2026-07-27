@@ -5,7 +5,7 @@ from typing import Optional, Dict
 from datetime import datetime, UTC
 
 from app.utils.config import settings
-from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
+# from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
 from app.utils.logging_config import StructuredLogger
 from app.jobs.real_node_client import RealBCHNodeClient
 
@@ -149,6 +149,11 @@ class JobManager:
                 )
                 return None
 
+            # ===== ДОБАВЛЯЕМ ПОЛУЧЕНИЕ EXTRA_NONCE1 =====
+            extra_nonce1 = await self.node_client.get_extra_nonce1()
+            print(f"🔵 extra_nonce1 from node: {extra_nonce1}", flush=True)
+            # ============================================
+
             # Обновляем высоту блока
             if 'height' in template:
                 old_height = self.block_height
@@ -173,7 +178,7 @@ class JobManager:
                 job_id = f"job_{timestamp}_{self.job_counter:08x}"
 
             # Используем block_builder для создания Stratum задания
-            stratum_job = await self._create_stratum_job_from_template(template, job_id, miner_address)
+            stratum_job = await self._create_stratum_job_from_template(template, job_id, miner_address, extra_nonce1)
 
             if not stratum_job:
                 logger.warning(
@@ -266,8 +271,13 @@ class JobManager:
         except Exception as e:
             logger.error(f"Error checking for reorg: {e}")
 
-    async def _create_stratum_job_from_template(self, template: Dict, job_id: str, miner_address: str = None) -> \
-    Optional[Dict]:
+    async def _create_stratum_job_from_template(
+            self,
+            template: Dict,
+            job_id: str,
+            miner_address: str = None,
+            extra_nonce1: str = None
+    ) -> Optional[Dict]:
         """Создать Stratum задание из шаблона блока"""
         try:
             # Если есть адрес майнера, используем его, иначе адрес пула
@@ -277,12 +287,17 @@ class JobManager:
                 # публичный тестовый адрес из Bitcoin Cash документации
                 address = settings.pool_wallet if settings.pool_wallet else "qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a"
 
+            # Если extra_nonce1 не передан, используем fallback
+            if not extra_nonce1:
+                extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
+                print(f"⚠️ EXTRA_NONCE1 НЕ ПЕРЕДАН, ИСПОЛЬЗУЕМ FALLBACK: {extra_nonce1}", flush=True)
+
             # Используем block_builder для создания данных задания
             job_data = self.block_builder.create_stratum_job_data(
                 template=template,
                 job_id=job_id,
                 miner_address=address,
-                extra_nonce1=STRATUM_EXTRA_NONCE1
+                extra_nonce1=extra_nonce1
             )
 
             if not job_data:
@@ -305,12 +320,15 @@ class JobManager:
             )
             return self._create_fallback_stratum_job(template, job_id)
 
-
     @staticmethod
-    def _create_fallback_stratum_job(template: Dict, job_id: str) -> Dict:
+    def _create_fallback_stratum_job(template: Dict, job_id: str, extra_nonce1: str = None) -> Dict:
         """Создать fallback Stratum задание"""
         curtime = template.get("curtime", int(time.time()))
         ntime_hex = format(curtime, '08x')
+
+        # Если extra_nonce1 не передан, используем fallback
+        if not extra_nonce1:
+            extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
 
         return {
             "method": "mining.notify",
@@ -325,7 +343,7 @@ class JobManager:
                 ntime_hex,
                 True
             ],
-            "extra_nonce1": STRATUM_EXTRA_NONCE1,
+            "extra_nonce1": extra_nonce1,  # ← используем переданный
             "template": template
         }
 
@@ -459,11 +477,20 @@ class JobManager:
                     "miner": miner_address
                 }
 
+            # ===== ПОЛУЧАЕМ EXTRA_NONCE1 ИЗ JOB_DATA ИЛИ ИЗ НОДЫ =====
+            # Сначала пробуем взять из job_data
+            extra_nonce1 = job_data.get('extra_nonce1')
+            if not extra_nonce1:
+                # Если нет, получаем из ноды
+                extra_nonce1 = await self.node_client.get_extra_nonce1()
+            print(f"🔍 EXTRA_NONCE1 ДЛЯ БЛОКА: {extra_nonce1}", flush=True)
+            # =========================================================
+
             # Создаем полный блок
             complete_block = self.block_builder.create_complete_block(
                 template=template,
                 miner_address=miner_address,
-                extra_nonce1=STRATUM_EXTRA_NONCE1,
+                extra_nonce1=extra_nonce1,  # используем динамический
                 extra_nonce2=extra_nonce2,
                 ntime=ntime,
                 nonce=nonce

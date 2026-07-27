@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime, UTC
 
 from app.utils.logging_config import StructuredLogger
-from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
+# from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
 from app.utils.bch_address import create_coinbase_script
 from app.utils.config import settings
 
@@ -115,7 +115,7 @@ class BlockBuilder:
     def build_coinbase_transaction(self,
                                    template: Dict,
                                    miner_address: str,
-                                   extra_nonce1: str = STRATUM_EXTRA_NONCE1,
+                                   extra_nonce1: str,
                                    extra_nonce2: str = "00000000"
                                    ) -> Tuple[str, str, str]:
         """
@@ -131,6 +131,9 @@ class BlockBuilder:
             Tuple[coinbase_hex, coinbase_txid, merkle_branch]
         """
         try:
+            # Проверяем, что extra_nonce1 передан
+            if not extra_nonce1:
+                raise ValueError("extra_nonce1 is required and cannot be None")
             # Получаем награду за блок из шаблона
             coinbase_value = self._get_coinbase_value(template)
 
@@ -732,7 +735,7 @@ class BlockBuilder:
             template: Dict,
             job_id: str,
             miner_address: str,
-            extra_nonce1: str = STRATUM_EXTRA_NONCE1
+            extra_nonce1: str = None
     ) -> Optional[Dict]:
         """
         Создание данных задания для Stratum протокола
@@ -749,7 +752,11 @@ class BlockBuilder:
         try:
             height = template.get('height', 'unknown')
 
-            # Создаем coinbase транзакцию с placeholder для extra_nonce2
+            if not extra_nonce1:
+                extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
+                print(f"⚠️ EXTRA_NONCE1 НЕ ПЕРЕДАН, ИСПОЛЬЗУЕМ FALLBACK: {extra_nonce1}", flush=True)
+
+                # Создаем coinbase транзакцию с placeholder для extra_nonce2
             coinbase_hex, coinbase_txid, merkle_branch_json = self.build_coinbase_transaction(
                 template, miner_address, extra_nonce1, "00000000"
             )
@@ -759,26 +766,32 @@ class BlockBuilder:
 
             # Разделяем coinbase на части для Stratum
             coinbase_bytes = bytes.fromhex(coinbase_hex)
+            print(f"🔍 FULL COINBASE HEX: {coinbase_bytes.hex()}", flush=True)
+            print(f"🔍 COINBASE LENGTH: {len(coinbase_bytes)} байт", flush=True)
+
             extra_nonce1_bytes = bytes.fromhex(extra_nonce1)
 
             try:
-                # Находим позицию extra_nonce1
-                pos = coinbase_bytes.index(extra_nonce1_bytes)
+                # Находим ПЕРВЫЙ ffffffff в coinbase (это sequence)
+                seq_pos = coinbase_bytes.find(b'\xff\xff\xff\xff')
 
-                # coinb1 = все ДО extra_nonce1 (включая sequence ffffffff)
-                # Находим sequence (ffffffff) перед extra_nonce1
-                seq_pos = coinbase_bytes.rfind(b'\xff\xff\xff\xff', 0, pos)
+                # Находим позицию extra_nonce1 внутри coinbase (он в script_sig)
+                pos_extra = coinbase_bytes.find(extra_nonce1_bytes)
 
-                if seq_pos != -1:
-                    # coinb1 заканчивается на ffffffff (sequence)
+                if seq_pos != -1 and pos_extra != -1:
+                    # coinb1 должен содержать extra_nonce1 внутри себя
+                    # Берем все до sequence + sequence (включая extra_nonce1)
                     coinb1 = coinbase_bytes[:seq_pos + 4].hex()
-                    # coinb2 = все после extra_nonce1 + extra_nonce2 (оставшаяся часть)
-                    extra_nonce2_size = 4
-                    coinb2 = coinbase_bytes[pos + len(extra_nonce1_bytes) + extra_nonce2_size:].hex()
-                    print(f"🔍 COINB1 (до extra_nonce1): {coinb1[:100]}...", flush=True)
-                    print(f"🔍 COINB2 (после extra_nonce1): {coinb2[:100]}...", flush=True)
+
+                    # coinb2 = все ПОСЛЕ sequence
+                    coinb2 = coinbase_bytes[seq_pos + 4:].hex()
+
+                    print(f"🔍 COINB1 (содержит extra_nonce1): {coinb1[:100]}...", flush=True)
+                    print(f"🔍 COINB2 (после sequence): {coinb2[:100]}...", flush=True)
+                    print(f"🔍 extra_nonce1 находится внутри coinb1 на позиции {pos_extra}", flush=True)
                 else:
                     # fallback
+                    pos = coinbase_bytes.index(extra_nonce1_bytes)
                     coinb1 = coinbase_bytes[:pos].hex()
                     coinb2 = coinbase_bytes[pos + len(extra_nonce1_bytes) + 4:].hex()
 
