@@ -149,7 +149,7 @@ class JobManager:
                 )
                 return None
 
-            # ===== ДОБАВЛЯЕМ ПОЛУЧЕНИЕ EXTRA_NONCE1 =====
+            # =====  ПОЛУЧЕНИЕ EXTRA_NONCE1 =====
             extra_nonce1 = await self.node_client.get_extra_nonce1()
             print(f"🔵 extra_nonce1 from node: {extra_nonce1}", flush=True)
             # ============================================
@@ -178,7 +178,11 @@ class JobManager:
                 job_id = f"job_{timestamp}_{self.job_counter:08x}"
 
             # Используем block_builder для создания Stratum задания
-            stratum_job = await self._create_stratum_job_from_template(template, job_id, miner_address, extra_nonce1)
+            # ===== ПЕРЕДАЕМ extra_nonce1 В _create_stratum_job_from_template =====
+            stratum_job = await self._create_stratum_job_from_template(
+                template, job_id, miner_address, extra_nonce1  #
+            )
+            # ===================================================================
 
             if not stratum_job:
                 logger.warning(
@@ -280,17 +284,24 @@ class JobManager:
     ) -> Optional[Dict]:
         """Создать Stratum задание из шаблона блока"""
         try:
+            print(f"🔍 _create_stratum_job_from_template: START", flush=True)
+            print(f"   job_id: {job_id}", flush=True)
+            print(f"   miner_address: {miner_address}", flush=True)
+            print(f"   extra_nonce1: {extra_nonce1}", flush=True)
+
             # Если есть адрес майнера, используем его, иначе адрес пула
             if miner_address:
                 address = miner_address
             else:
-                # публичный тестовый адрес из Bitcoin Cash документации
                 address = settings.pool_wallet if settings.pool_wallet else "qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a"
+            print(f"   address: {address}", flush=True)
 
             # Если extra_nonce1 не передан, используем fallback
             if not extra_nonce1:
                 extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
                 print(f"⚠️ EXTRA_NONCE1 НЕ ПЕРЕДАН, ИСПОЛЬЗУЕМ FALLBACK: {extra_nonce1}", flush=True)
+
+            print(f"🔍 Вызываем block_builder.create_stratum_job_data...", flush=True)
 
             # Используем block_builder для создания данных задания
             job_data = self.block_builder.create_stratum_job_data(
@@ -300,33 +311,38 @@ class JobManager:
                 extra_nonce1=extra_nonce1
             )
 
+            print(f"🔍 block_builder.create_stratum_job_data вернул: {job_data is not None}", flush=True)
+
             if not job_data:
                 logger.warning(
                     "BlockBuilder не смог создать данные задания",
                     event="job_manager_block_builder_failed",
                     job_id=job_id
                 )
-                # Создаем fallback задание
-                return self._create_fallback_stratum_job(template, job_id)
+                print(f"🔍 Создаем fallback задание...", flush=True)
+                return self._create_fallback_stratum_job(template, job_id, extra_nonce1)
 
+            print(f"✅ Задание создано успешно!", flush=True)
             return job_data
 
         except Exception as e:
+            print(f"❌ ОШИБКА в _create_stratum_job_from_template: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
             logger.error(
                 "Ошибка создания Stratum задания из шаблона",
                 event="job_manager_stratum_conversion_error",
                 job_id=job_id,
                 error=str(e)
             )
-            return self._create_fallback_stratum_job(template, job_id)
+            return self._create_fallback_stratum_job(template, job_id, extra_nonce1)
 
-    @staticmethod
-    def _create_fallback_stratum_job(template: Dict, job_id: str, extra_nonce1: str = None) -> Dict:
+
+    def _create_fallback_stratum_job(self, template: Dict, job_id: str, extra_nonce1: str = None) -> Dict:
         """Создать fallback Stratum задание"""
         curtime = template.get("curtime", int(time.time()))
         ntime_hex = format(curtime, '08x')
 
-        # Если extra_nonce1 не передан, используем fallback
         if not extra_nonce1:
             extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
 
@@ -335,15 +351,15 @@ class JobManager:
             "params": [
                 job_id,
                 template.get("previousblockhash", "0" * 64),
-                "fdfd0800",  # coinb1
-                "",  # coinb2
-                [],  # merkle_branch
+                "fdfd0800",
+                "",
+                [],
                 format(template.get("version", 0x20000000), '08x'),
                 template.get("bits", "1d00ffff"),
                 ntime_hex,
                 True
             ],
-            "extra_nonce1": extra_nonce1,  # ← используем переданный
+            "extra_nonce1": extra_nonce1,
             "template": template
         }
 
