@@ -114,7 +114,7 @@ class DependencyContainer:
             )
         return self._job_service
 
-    # === JOB MANAGER ===
+    # === JOB manager ===
     @property
     def job_manager(self):
         if self._job_manager is None:
@@ -128,7 +128,6 @@ class DependencyContainer:
                 has_node_client=self._job_manager.node_client is not None
             )
         return self._job_manager
-
 
     # === STRATUM SERVER ===
     @property

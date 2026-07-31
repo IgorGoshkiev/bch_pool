@@ -51,6 +51,21 @@ async def lifespan(_app):
                 node_connection=f"{settings.bch_rpc_host}:{settings.bch_rpc_port}"
             )
 
+            # ===== ОБНОВЛЯЕМ EXTRA_NONCE1 В ВАЛИДАТОРЕ =====
+            try:
+                pool_extra_nonce1 = job_manager.get_pool_extra_nonce1()
+                if pool_extra_nonce1 and share_validator:
+                    share_validator.extra_nonce1 = pool_extra_nonce1
+                    print(f"✅ VALIDATOR extra_nonce1 обновлен из пула: {pool_extra_nonce1}", flush=True)
+                    logger.info(
+                        "Validator extra_nonce1 обновлен из пула",
+                        event="validator_extra_nonce1_updated",
+                        extra_nonce1=pool_extra_nonce1[:20] + "..."
+                    )
+            except Exception as e:
+                logger.warning(f"Не удалось обновить extra_nonce1 валидатора: {e}")
+            # =============================================
+
             #  ПОЛУЧАЕМ TARGET ИЗ НОДЫ И ОБНОВЛЯЕМ ВАЛИДАТОР
             try:
                 template = await job_manager.node_client.get_block_template()

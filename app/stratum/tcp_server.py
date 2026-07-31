@@ -281,20 +281,23 @@ class StratumTCPServer:
 
                 success, authorized_address, error_msg = await self.auth_service.authorize_miner(username, "")
                 if success:
+                    # Начальная сложность
+                    initial_diff = int(getattr(settings, 'default_share_difficulty', 16384))
                     async with self._lock:
                         self.miners[client_id] = authorized_address
-                        self.miner_difficulties[authorized_address] = 1.0
+                        self.miner_difficulties[authorized_address] = initial_diff
+                        print(f"✅ СЛОЖНОСТЬ initial_diff:  -> {initial_diff}", flush=True)
 
                     # 1. Ответ на авторизацию
                     response = {"id": msg_id, "result": True, "error": None}
                     await self._send_json(writer, response)
                     print(f"✅ AUTHORIZED: {username} -> {authorized_address}", flush=True)
 
-                    # 2. ОТПРАВЛЯЕМ СЛОЖНОСТЬ
-                    initial_diff = int(getattr(settings, 'default_share_difficulty', 65536))
-                    print(f"✅ ОТПРАВЛЯЕМ СЛОЖНОСТЬ initial_diff:  -> {initial_diff}", flush=True)
-                    self.share_validator.pool_difficulty = initial_diff
+                    # 2. Обновляем валидатор
+                    if self.share_validator:
+                        self.share_validator.pool_difficulty = initial_diff
 
+                    # 3. ОТПРАВЛЯЕМ НАЧАЛЬНУЮ СЛОЖНОСТЬ ASIC
                     difficulty_msg = {
                         "method": "mining.set_difficulty",
                         "params": [initial_diff],
@@ -317,7 +320,37 @@ class StratumTCPServer:
                 suggested = float(params[0])
                 print(f"📊 ASIC suggested difficulty: {suggested}", flush=True)
 
-                # ТОЛЬКО ПОДТВЕРЖДАЕМ ЗАПРОС ASIC
+                # Сохраняем сложность для майнера
+                if client_id in self.miners:
+                    miner_address = self.miners[client_id]
+
+                    # Ограничиваем сложность (мин/макс)
+                    min_diff = getattr(settings, 'min_difficulty', 0.001)
+                    max_diff = getattr(settings, 'max_difficulty', 10000000)
+
+                    if suggested < min_diff:
+                        suggested = min_diff
+                    elif suggested > max_diff:
+                        suggested = max_diff
+
+                    self.miner_difficulties[miner_address] = suggested
+
+                    # Обновляем в share_validator
+                    if self.share_validator:
+                        self.share_validator.pool_difficulty = suggested
+                        print(f"📊 DIFFICULTY UPDATED FOR MINER: {suggested}", flush=True)
+
+                    # ===== ОТПРАВЛЯЕМ НОВУЮ СЛОЖНОСТЬ ASIC =====
+                    difficulty_msg = {
+                        "method": "mining.set_difficulty",
+                        "params": [suggested],
+                        "id": None
+                    }
+                    await self._send_json(writer, difficulty_msg)
+                    print(f"📊 SENT UPDATED DIFFICULTY TO ASIC: {suggested}", flush=True)
+                    # ===========================================
+
+                # Подтверждаем
                 response = {"id": msg_id, "result": True, "error": None}
                 await self._send_json(writer, response)
                 print(f"📊 Confirmed suggest_difficulty: {suggested}", flush=True)
@@ -340,20 +373,21 @@ class StratumTCPServer:
         """Обработка подписки"""
         logger.info("=== START _handle_subscribe ===")
 
-        # Получаем extra_nonce1 с fallback
+        # Используем extra_nonce1 из пула (генерируется при старте)
         extra_nonce1 = None
 
-        if self.job_manager and self.job_manager.node_client:
-            try:
-                extra_nonce1 = await self.job_manager.node_client.get_extra_nonce1()
-                print(f"✅ extra_nonce1 получен из ноды: {extra_nonce1}", flush=True)
-            except Exception as e:
-                print(f"⚠️ Ошибка получения extra_nonce1 из ноды: {e}", flush=True)
+        if self.job_manager:
+            extra_nonce1 = self.job_manager.get_pool_extra_nonce1()
+            if extra_nonce1:
+                print(f"✅ extra_nonce1 из пула: {extra_nonce1}", flush=True)
+            else:
+                print(f"❌ extra_nonce1 не получен из пула", flush=True)
 
-        # Если не удалось получить из ноды, используем fallback
+        # Если по какой-то причине нет - генерируем временный
         if not extra_nonce1:
-            extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
-            print(f"⚠️ Используем fallback extra_nonce1: {extra_nonce1}", flush=True)
+            import secrets
+            extra_nonce1 = secrets.token_hex(20)
+            print(f"⚠️ Генерируем временный extra_nonce1: {extra_nonce1}", flush=True)
 
         response = {
             "id": msg_id,
@@ -375,6 +409,7 @@ class StratumTCPServer:
         await self._send_json(writer, extranonce_msg)
         logger.info("✅ Extranonce sent")
         print(f"📤 SENT EXTRANONCE: {extra_nonce1}", flush=True)
+
 
     async def _handle_configure(self, msg_id: int, writer: asyncio.StreamWriter, params: list):
         """Обработка mining.configure от WhatsMiner"""
@@ -479,7 +514,8 @@ class StratumTCPServer:
                     if hash_int > 0:
                         # Берем TARGET из валидатора (динамический)
                         target_for_diff_1 = self.share_validator.TARGET_FOR_DIFFICULTY_1
-                        share_difficulty = target_for_diff_1 // hash_int
+                        # Вместо целочисленного деления используем float
+                        share_difficulty = target_for_diff_1 / hash_int
                         print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
                     else:
                         share_difficulty = 0
@@ -595,16 +631,10 @@ class StratumTCPServer:
             print(f"🔍 SEND_JOB: job_data keys = {job_data.keys()}", flush=True)
             print(f"🔍 SEND_JOB: params length = {len(job_data['params'])}", flush=True)
 
-            # def reverse_hash(hash_str: str) -> str:
-            #     if len(hash_str) != 64:
-            #         return hash_str
-            #     return ''.join(reversed([hash_str[i:i + 2] for i in range(0, 64, 2)]))
 
-            real_prevhash = job_data['params'][1][::-1]  # reverse в big-endian
 
-            # real_prevhash_le = reverse_hash(real_prevhash)
-
-            real_prevhash_le = real_prevhash  # ← НЕ ДЕЛАЕМ REVERSE!
+            real_prevhash = job_data['params'][1]  # big-endian
+            real_prevhash_le = real_prevhash[::-1]  # little-endian для ASIC
             print(f"🔍 SEND_JOB: real_prevhash (original) = {real_prevhash[:32]}...", flush=True)
             print(f"🔍 SEND_JOB: real_prevhash_le = {real_prevhash_le[:32]}...", flush=True)
 
@@ -623,11 +653,12 @@ class StratumTCPServer:
 
             job_id = f"{int(time.time()) & 0xFFFF:04x}"
 
+            # === ДЛЯ ВАЛИДАТОРА (сохраняем big-endian) ===
             real_job = {
                 "method": "mining.notify",
                 "params": [
                     job_id,
-                    real_prevhash_le,
+                    real_prevhash,  # ← big-endian!
                     real_coinb1,
                     real_coinb2,
                     real_merkle_branch,
@@ -642,7 +673,17 @@ class StratumTCPServer:
 
             job_data_for_send = {
                 "method": real_job["method"],
-                "params": real_job["params"]
+                "params": [
+                    job_id,
+                    real_prevhash_le,  # ← little-endian!
+                    real_coinb1,
+                    real_coinb2,
+                    real_merkle_branch,
+                    real_version,
+                    real_bits,
+                    real_ntime,
+                    True
+                ]
             }
             await self._send_json(writer, job_data_for_send)
 

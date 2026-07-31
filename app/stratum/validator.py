@@ -21,10 +21,9 @@ class ShareValidator:
                  extra_nonce1: str = None):
         self.pool_difficulty = pool_difficulty
         self.extra_nonce2_size = extra_nonce2_size
-        if not extra_nonce1:
-            extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
-            print(f"⚠️ VALIDATOR: extra_nonce1 не передан, используем fallback", flush=True)
+
         self.extra_nonce1 = extra_nonce1
+
         self.jobs_cache: Dict[str, dict] = {}
         self._used_nonces: Dict[str, set] = {}
         self.validated_shares = 0
@@ -49,7 +48,7 @@ class ShareValidator:
             event="validator_initialized",
             target_difficulty=pool_difficulty,
             extra_nonce2_size=extra_nonce2_size,
-            extra_nonce1_length=len(extra_nonce1),
+            extra_nonce1_length=len(extra_nonce1) if extra_nonce1 else 0,
             target_for_difficulty_1=hex(self.TARGET_FOR_DIFFICULTY_1),
             network=network,
             start_time=self.start_time.isoformat()
@@ -339,13 +338,6 @@ class ShareValidator:
             coinb2 = params[3]
             merkle_branch = params[4]
 
-            # ===== ДОБАВЬ ЭТОТ БЛОК ТУТ =====
-            if len(prevhash) == 64 and prevhash[:2] != "00" and prevhash[-2:] == "00":
-                print(f"🔍 PREVHASH LOOKS LIKE LITTLE-ENDIAN, CONVERTING...", flush=True)
-                prevhash = prevhash[::-1]
-                print(f"🔍 PREVHASH CONVERTED: {prevhash[:32]}...", flush=True)
-            # =================================
-
             # Используем version из параметра или из job_data
             if version:
                 version_hex = version
@@ -357,7 +349,6 @@ class ShareValidator:
             nbits = params[6]
 
             # ===== ОТЛАДКА =====
-            # ===== ДОБАВЬ ЭТОТ БЛОК =====
             print(f"\n🔍🔍🔍 ПОЛНЫЕ ДАННЫЕ В VALIDATOR 🔍🔍🔍", flush=True)
             print(f"prevhash (оригинал): {prevhash}", flush=True)
             print(f"coinb1: {coinb1}", flush=True)
@@ -387,18 +378,9 @@ class ShareValidator:
             merkle_root = self._calculate_merkle_root_with_branch(coinbase_hash.hex(), merkle_branch)
             print(f"🔍 MERKLE ROOT: {merkle_root}", flush=True)
 
-            # Собираем заголовок (все в little-endian)
-            # header = (
-            #         bytes.fromhex(version_hex)[::-1] +
-            #         bytes.fromhex(prevhash)[::-1] +
-            #         bytes.fromhex(merkle_root)[::-1] +
-            #         bytes.fromhex(ntime)[::-1] +
-            #         bytes.fromhex(nbits)[::-1] +
-            #         bytes.fromhex(nonce)[::-1]
-            # )
             header = (
                     bytes.fromhex(version_hex)[::-1] +
-                    bytes.fromhex(prevhash) +  # ← УБРАЛ [::-1]
+                    bytes.fromhex(prevhash) +
                     bytes.fromhex(merkle_root)[::-1] +
                     bytes.fromhex(ntime)[::-1] +
                     bytes.fromhex(nbits)[::-1] +

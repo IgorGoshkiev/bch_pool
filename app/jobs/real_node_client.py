@@ -342,9 +342,7 @@ class RealBCHNodeClient:
                 self.extra_nonce1 = extra_nonce1
                 print(f"🔍 EXTRA_NONCE1 ИЗ НОДЫ: {self.extra_nonce1}", flush=True)
             else:
-                # Если не удалось извлечь, используем fallback
-                self.extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
-                print(f"⚠️ EXTRA_NONCE1 НЕ НАЙДЕН, ИСПОЛЬЗУЕМ FALLBACK: {self.extra_nonce1}", flush=True)
+                print(f"⚠️ EXTRA_NONCE1 НЕ НАЙДЕН В ШАБЛОНЕ", flush=True)
 
             response_time = (datetime.now(UTC) - request_start).total_seconds() * 1000
 
@@ -369,69 +367,13 @@ class RealBCHNodeClient:
 
     def _extract_extra_nonce1(self, template: Dict) -> Optional[str]:
         """Извлечение extra_nonce1 из шаблона блока"""
-        try:
-            # Способ 1: Из coinbaseaux (BCH нода)
-            if 'coinbaseaux' in template:
-                coinbaseaux = template['coinbaseaux']
-                if 'flags' in coinbaseaux:
-                    # flags обычно содержит extra_nonce1
-                    flags = coinbaseaux['flags']
-                    # Проверяем, что это hex строка
-                    if len(flags) > 0:
-                        # Проверяем, что это hex строка
-                        try:
-                            bytes.fromhex(flags)
-                            return flags
-                        except ValueError:
-                            # Если не hex, пробуем как есть
-                            return flags
+        # BCH нода не предоставляет extra_nonce1
+        return None
 
-            # Способ 2: Из coinbasetxn (альтернативный формат)
-            if 'coinbasetxn' in template:
-                coinbasetxn = template['coinbasetxn']
-                if 'data' in coinbasetxn:
-                    coinbase_data = coinbasetxn['data']  # ← теперь используется
-                    # Ищем extra_nonce1 в coinbase_data
-                    # В BCH обычно после height (4 байта) идет extra_nonce1 (20 байт)
-                    # Но это сложно без полного парсинга
-                    # Пробуем найти по паттерну
-                    if len(coinbase_data) > 8:
-                        # Первые 8 символов - это height (4 байта)
-                        # Следующие 40 символов - это extra_nonce1 (20 байт)
-                        possible_extra = coinbase_data[8:48]
-                        if len(possible_extra) == 40:
-                            try:
-                                bytes.fromhex(possible_extra)
-                                return possible_extra
-                            except ValueError:
-                                pass
-
-            # Способ 3: Использовать сохраненное значение из предыдущего вызова
-            if hasattr(self, '_last_extra_nonce1') and self._last_extra_nonce1:
-                return self._last_extra_nonce1
-
-            return None
-
-        except Exception as e:
-            logger.warning(f"Ошибка извлечения extra_nonce1 из шаблона: {e}")
-            return None
-
-    async def get_extra_nonce1(self) -> str:
-        """Получение актуального extra_nonce1 из ноды"""
-        # Если у нас уже есть extra_nonce1, возвращаем его
-        if self.extra_nonce1:
-            return self.extra_nonce1
-
-        # Если нет, получаем шаблон блока
-        if not self.current_template:
-            await self.get_block_template()
-
-        # Если все еще нет, используем fallback
-        if not self.extra_nonce1:
-            self.extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
-            logger.warning(f"Используем fallback extra_nonce1: {self.extra_nonce1}")
-
-        return self.extra_nonce1
+    async def get_extra_nonce1(self) -> Optional[str]:
+        """Получение extra_nonce1 (возвращает None, т.к. генерируется пулом)"""
+        # BCH нода не предоставляет extra_nonce1, он генерируется пулом
+        return None
 
     async def submit_block(self, hex_data: str) -> Optional[Dict]:
         """Отправка найденного блока"""

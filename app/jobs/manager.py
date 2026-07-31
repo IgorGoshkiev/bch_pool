@@ -1,4 +1,5 @@
 import asyncio
+import secrets
 import time
 
 from typing import Optional, Dict
@@ -37,6 +38,10 @@ class JobManager:
 
         self.last_best_hash: Optional[str] = None
         self.reorg_check_interval = 10  # Проверка каждые 10 секунд
+
+        # Генерируем extra_nonce1 для пула (используется если нода не возвращает)
+        self.pool_extra_nonce1 = secrets.token_hex(20)
+        print(f"🔑 POOL EXTRANONCE1 GENERATED: {self.pool_extra_nonce1}", flush=True)
 
         logger.info(
             "JobManager инициализирован",
@@ -128,6 +133,10 @@ class JobManager:
             )
             return False
 
+    def get_pool_extra_nonce1(self) -> str:
+        """Получить extra_nonce1 пула"""
+        return self.pool_extra_nonce1
+
     async def create_new_job(self, miner_address: str = None) -> Optional[Dict]:
         """Создать новое задание для майнера"""
         print(f"🔵 create_new_job called for {miner_address}", flush=True)
@@ -142,6 +151,8 @@ class JobManager:
             template = await self.node_client.get_block_template()
             print(f"🔵 template received: {template is not None}", flush=True)
             if not template:
+                print(f"🔵 Не удалось получить шаблон блока от ноды: {template}", flush=True)
+
                 logger.warning(
                     "Не удалось получить шаблон блока от ноды",
                     event="job_manager_no_template",
@@ -149,9 +160,9 @@ class JobManager:
                 )
                 return None
 
-            # =====  ПОЛУЧЕНИЕ EXTRA_NONCE1 =====
-            extra_nonce1 = await self.node_client.get_extra_nonce1()
-            print(f"🔵 extra_nonce1 from node: {extra_nonce1}", flush=True)
+            # ===== ИСПОЛЬЗУЕМ extra_nonce1 ИЗ ПУЛА =====
+            extra_nonce1 = self.get_pool_extra_nonce1()
+            print(f"🔵 extra_nonce1 из пула: {extra_nonce1}", flush=True)
             # ============================================
 
             # Обновляем высоту блока
