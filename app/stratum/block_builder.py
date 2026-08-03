@@ -749,6 +749,20 @@ class BlockBuilder:
             Данные задания в формате Stratum или None
         """
         try:
+
+            # ===== ПРОВЕРКА АКТУАЛЬНОСТИ ШАБЛОНА =====
+            if not template:
+                raise ValueError("template is required")
+
+            # Проверяем, что шаблон не устарел (не старше 60 секунд)
+            current_time = int(datetime.now(UTC).timestamp())
+            template_time = template.get('curtime', 0)
+            if current_time - template_time > 60:
+                print(f"⚠️ Шаблон устарел на {current_time - template_time} сек, пропускаем создание задания",
+                      flush=True)
+                return None
+            # ===================================================
+
             height = template.get('height', 'unknown')
 
             # extra_nonce1 ДОЛЖЕН быть передан извне!

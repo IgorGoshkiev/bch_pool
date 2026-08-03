@@ -160,9 +160,9 @@ class JobManager:
                 )
                 return None
 
-            # ===== ИСПОЛЬЗУЕМ extra_nonce1 ИЗ ПУЛА =====
-            extra_nonce1 = self.get_pool_extra_nonce1()
-            print(f"🔵 extra_nonce1 из пула: {extra_nonce1}", flush=True)
+            # Генерируем НОВЫЙ extra_nonce1 для этого задания
+            extra_nonce1 = secrets.token_hex(20)
+            print(f"🔑 NEW EXTRANONCE1 FOR JOB: {extra_nonce1}", flush=True)
             # ============================================
 
             # Обновляем высоту блока
@@ -189,9 +189,9 @@ class JobManager:
                 job_id = f"job_{timestamp}_{self.job_counter:08x}"
 
             # Используем block_builder для создания Stratum задания
-            # ===== ПЕРЕДАЕМ extra_nonce1 В _create_stratum_job_from_template =====
+            # Создаем задание — если ошибка, пробрасываем дальше
             stratum_job = await self._create_stratum_job_from_template(
-                template, job_id, miner_address, extra_nonce1  #
+                template, job_id, miner_address, extra_nonce1
             )
             # ===================================================================
 
@@ -312,10 +312,9 @@ class JobManager:
                 address = settings.pool_wallet if settings.pool_wallet else "qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a"
             print(f"   address: {address}", flush=True)
 
-            # Если extra_nonce1 не передан, используем fallback
+            # extra_nonce1 обязателен
             if not extra_nonce1:
-                extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
-                print(f"⚠️ EXTRA_NONCE1 НЕ ПЕРЕДАН, ИСПОЛЬЗУЕМ FALLBACK: {extra_nonce1}", flush=True)
+                raise ValueError("extra_nonce1 is required and must be provided by JobManager")
 
             print(f"🔍 Вызываем block_builder.create_stratum_job_data...", flush=True)
 
@@ -330,13 +329,8 @@ class JobManager:
             print(f"🔍 block_builder.create_stratum_job_data вернул: {job_data is not None}", flush=True)
 
             if not job_data:
-                logger.warning(
-                    "BlockBuilder не смог создать данные задания",
-                    event="job_manager_block_builder_failed",
-                    job_id=job_id
-                )
-                print(f"🔍 Создаем fallback задание...", flush=True)
-                return self._create_fallback_stratum_job(template, job_id, extra_nonce1)
+                # Вместо fallback — ошибка
+                raise RuntimeError(f"BlockBuilder failed to create job data for job {job_id}")
 
             print(f"✅ Задание создано успешно!", flush=True)
             return job_data
@@ -351,33 +345,8 @@ class JobManager:
                 job_id=job_id,
                 error=str(e)
             )
-            return self._create_fallback_stratum_job(template, job_id, extra_nonce1)
-
-
-    def _create_fallback_stratum_job(self, template: Dict, job_id: str, extra_nonce1: str = None) -> Dict:
-        """Создать fallback Stratum задание"""
-        curtime = template.get("curtime", int(time.time()))
-        ntime_hex = format(curtime, '08x')
-
-        if not extra_nonce1:
-            extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
-
-        return {
-            "method": "mining.notify",
-            "params": [
-                job_id,
-                template.get("previousblockhash", "0" * 64),
-                "fdfd0800",
-                "",
-                [],
-                format(template.get("version", 0x20000000), '08x'),
-                template.get("bits", "1d00ffff"),
-                ntime_hex,
-                True
-            ],
-            "extra_nonce1": extra_nonce1,
-            "template": template
-        }
+            # Пробрасываем ошибку дальше, а не создаем fallback
+            raise
 
     async def broadcast_new_job_to_all(self):
         """Рассылать новое задание всем подключенным майнерам"""
