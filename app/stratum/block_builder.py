@@ -169,8 +169,7 @@ class BlockBuilder:
             extra_nonce2_bytes = bytes.fromhex(extra_nonce2)
 
             # Создаем ScriptSig с префиксом
-            script_sig_data = height_bytes + self._get_coinbase_prefix() + \
-                              extra_nonce1_bytes + extra_nonce2_bytes
+            script_sig_data = height_bytes + extra_nonce1_bytes + extra_nonce2_bytes
 
             # Если ScriptSig слишком длинный, обрезаем
             max_script_sig_size = self._get_max_script_sig_size()
@@ -752,11 +751,12 @@ class BlockBuilder:
         try:
             height = template.get('height', 'unknown')
 
+            # extra_nonce1 ДОЛЖЕН быть передан извне!
             if not extra_nonce1:
-                extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
-                print(f"⚠️ EXTRA_NONCE1 НЕ ПЕРЕДАН, ИСПОЛЬЗУЕМ FALLBACK: {extra_nonce1}", flush=True)
+                # Если не передан - ошибка, а не fallback!
+                raise ValueError("extra_nonce1 is required and must be provided by JobManager")
 
-                # Создаем coinbase транзакцию с placeholder для extra_nonce2
+            # Создаем coinbase транзакцию
             coinbase_hex, coinbase_txid, merkle_branch_json = self.build_coinbase_transaction(
                 template, miner_address, extra_nonce1, "00000000"
             )

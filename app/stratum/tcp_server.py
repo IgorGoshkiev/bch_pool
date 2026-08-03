@@ -666,11 +666,19 @@ class StratumTCPServer:
                     real_bits,
                     real_ntime,
                     True
-                ]
+                ],
+                "extra_nonce1": job_data.get('extra_nonce1')
             }
 
-            self.job_service.add_job(job_id, real_job, miner_address)
+            # Добавляем в job_service
+            self.job_service.add_job(
+                job_id,
+                real_job,
+                miner_address,
+                extra_nonce1=job_data.get('extra_nonce1')
+            )
 
+            # Для отправки ASIC
             job_data_for_send = {
                 "method": real_job["method"],
                 "params": [

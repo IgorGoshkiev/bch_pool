@@ -522,7 +522,12 @@ class StratumServer:
                     job_data_copy["params"][0] = job_id
 
                     # Сохраняем в job_service
-                    self.job_service.add_job(job_id, job_data_copy, miner_address)
+                    self.job_service.add_job(
+                        job_id,
+                        job_data,
+                        miner_address,
+                        extra_nonce1=extra_nonce1
+                    )
 
                     # Отправляем майнеру
                     await websocket.send_json(job_data_copy)

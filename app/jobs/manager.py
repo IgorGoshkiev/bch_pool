@@ -206,7 +206,12 @@ class JobManager:
 
             # Сохраняем задание в job_service
             if miner_address:
-                self.job_service.add_job(job_id, stratum_job, miner_address)
+                self.job_service.add_job(
+                    job_id,
+                    stratum_job,
+                    miner_address,
+                    extra_nonce1=extra_nonce1
+                )
             else:
                 # Для broadcast задания сохраняем как последнее общее
                 self.job_service.set_last_broadcast_job(stratum_job)

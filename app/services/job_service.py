@@ -76,27 +76,24 @@ class JobService:
 
         return job_id
 
-    def add_job(self, job_id: str, job_data: dict, miner_address: str = None):
+    def add_job(self, job_id: str, job_data: dict, miner_address: str = None, extra_nonce1: str = None):
         """
         Добавить задание в систему
 
         Args:
-            job_id: Уникальный ID задания
-            job_data: Данные задания в формате Stratum
-            miner_address: Адрес майнера (если персональное задание)
+        job_id: ID задания
+        job_data: Данные задания
+        miner_address: Адрес майнера
+        extra_nonce1: Extra nonce 1 (обязательный параметр)
         """
         try:
-            # Добавляем extra_nonce1 в данные задания для валидатора
-            if 'extra_nonce1' not in job_data:
-                # Если нет - пробуем взять из job_data или использовать fallback
-                extra_nonce1 = job_data.get('extra_nonce1')
-                if not extra_nonce1:
-                    extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
-                    print(f"⚠️ JOB_SERVICE: extra_nonce1 не найден, используем fallback", flush=True)
-                job_data['extra_nonce1'] = extra_nonce1
+            if not extra_nonce1:
+                raise ValueError(f"extra_nonce1 is required for job {job_id}")
 
-            print(f"🔵 JOB_SERVICE.add_job: job_id={job_id}, calling validator.add_job", flush=True)
-            # Сохраняем задание
+            job_data['extra_nonce1'] = extra_nonce1
+
+            print(f"🔵 JOB_SERVICE.add_job: job_id={job_id}, extra_nonce1={extra_nonce1}", flush=True)
+
             self.active_jobs[job_id] = job_data
 
             # Сохраняем в валидаторе
@@ -261,9 +258,14 @@ class JobService:
         """Установить последнее broadcast задание"""
         self.last_broadcast_job = job_data.copy()
 
-        # Также сохраняем в активных заданиях
+        # Сохраняем в активных заданиях с extra_nonce1
         job_id = job_data["params"][0]
-        self.add_job(job_id, job_data)
+        extra_nonce1 = job_data.get('extra_nonce1')
+
+        if not extra_nonce1:
+            raise ValueError(f"extra_nonce1 is required for broadcast job {job_id}")
+
+        self.add_job(job_id, job_data, miner_address=None, extra_nonce1=extra_nonce1)
 
         logger.info(
             "Установлено broadcast задание",
