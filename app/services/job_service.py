@@ -96,8 +96,8 @@ class JobService:
 
             self.active_jobs[job_id] = job_data
 
-            # Сохраняем в валидаторе
             if self.validator:
+                # Добавляем задание в валидатор
                 self.validator.add_job(job_id, job_data)
                 print(f"✅ JOB_SERVICE: added job {job_id} to validator", flush=True)
             else:
@@ -476,8 +476,13 @@ class JobService:
             # Получаем extra_nonce1 из job_data
             extra_nonce1 = job_data.get('extra_nonce1')
             if not extra_nonce1:
-                extra_nonce1 = "0e2f4a434243482fc0874feb93e7e6920005c159"
-                print(f"⚠️ extra_nonce1 не найден в job_data, используем fallback", flush=True)
+                # Если нет в job_data, берем из job_manager (уже передан в __init__)
+                if self.job_manager:
+                    extra_nonce1 = self.job_manager.get_pool_extra_nonce1()
+                    print(f"⚠️ extra_nonce1 не найден в job_data, 🔄 EXTRA_NONCE1 взят из пула", flush=True)
+                else:
+                    # Если job_manager нет - ошибка
+                    return {"status": "rejected", "message": "JobManager not available for extra_nonce1"}
 
             template = job_data.get('template')
             if not template:

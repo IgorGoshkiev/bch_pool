@@ -160,10 +160,10 @@ class JobManager:
                 )
                 return None
 
-            # Генерируем НОВЫЙ extra_nonce1 для этого задания
-            extra_nonce1 = secrets.token_hex(20)
-            print(f"🔑 NEW EXTRANONCE1 FOR JOB: {extra_nonce1}", flush=True)
-            # ============================================
+            # ===== ИСПОЛЬЗУЕМ ПОСТОЯННЫЙ extra_nonce1 ИЗ ПУЛА =====
+            extra_nonce1 = self.pool_extra_nonce1
+            print(f"🔑 USING POOL EXTRANONCE1: {extra_nonce1}", flush=True)
+            # ===================================================
 
             # Обновляем высоту блока
             if 'height' in template:
@@ -478,12 +478,12 @@ class JobManager:
                     "miner": miner_address
                 }
 
-            # ===== ПОЛУЧАЕМ EXTRA_NONCE1 ИЗ JOB_DATA ИЛИ ИЗ НОДЫ =====
+            # ===== ПОЛУЧАЕМ EXTRA_NONCE1 ИЗ JOB_DATA ИЛИ ИЗ Пула =====
             # Сначала пробуем взять из job_data
             extra_nonce1 = job_data.get('extra_nonce1')
             if not extra_nonce1:
-                # Если нет, получаем из ноды
-                extra_nonce1 = await self.node_client.get_extra_nonce1()
+                # Если нет
+                extra_nonce1 = self.get_pool_extra_nonce1()  # из пула, а не из ноды
             print(f"🔍 EXTRA_NONCE1 ДЛЯ БЛОКА: {extra_nonce1}", flush=True)
             # =========================================================
 

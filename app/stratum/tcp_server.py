@@ -282,7 +282,7 @@ class StratumTCPServer:
                 success, authorized_address, error_msg = await self.auth_service.authorize_miner(username, "")
                 if success:
                     # Начальная сложность
-                    initial_diff = int(getattr(settings, 'default_share_difficulty', 16384))
+                    initial_diff = getattr(settings, 'default_share_difficulty', 1)
                     async with self._lock:
                         self.miners[client_id] = authorized_address
                         self.miner_difficulties[authorized_address] = initial_diff

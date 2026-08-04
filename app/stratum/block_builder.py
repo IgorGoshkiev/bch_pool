@@ -168,13 +168,14 @@ class BlockBuilder:
             extra_nonce1_bytes = bytes.fromhex(extra_nonce1)
             extra_nonce2_bytes = bytes.fromhex(extra_nonce2)
 
-            # Создаем ScriptSig с префиксом
-            script_sig_data = height_bytes + extra_nonce1_bytes + extra_nonce2_bytes
+            # Должно быть (без extra_nonce1, он добавляется отдельно в create_stratum_job_data):
+            script_sig_data = height_bytes + extra_nonce2_bytes
 
             # Если ScriptSig слишком длинный, обрезаем
             max_script_sig_size = self._get_max_script_sig_size()
             if len(script_sig_data) > max_script_sig_size:
                 script_sig_data = script_sig_data[:max_script_sig_size]
+                print(f"ScriptSig слишком длинный, обрезан", flush=True)
                 logger.warning(
                     "ScriptSig слишком длинный, обрезан",
                     event="block_builder_scriptsig_truncated",
@@ -189,6 +190,7 @@ class BlockBuilder:
             # Создаем ScriptPubKey для адреса майнера
             script_pubkey_hex = create_coinbase_script(miner_address)
             if not script_pubkey_hex:
+                print(f"Не удалось создать ScriptPubKey для адреса", flush=True)
                 logger.error(
                     "Не удалось создать ScriptPubKey для адреса",
                     event="block_builder_scriptpubkey_error",
