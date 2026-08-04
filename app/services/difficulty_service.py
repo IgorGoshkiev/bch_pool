@@ -358,36 +358,57 @@ class DifficultyService:
             return 0.0
 
     async def calculate_difficulty_for_miner(self, miner_address: str) -> float:
-        """Расчет оптимальной сложности для конкретного майнера"""
+        """
+        Расчет оптимальной сложности для конкретного майнера
+        Использует частоту шаров для адаптации
+        """
         if miner_address not in self.share_timestamps:
             return self.min_difficulty
 
-        current_diff = self.miner_difficulties.get(miner_address, self.min_difficulty)
-
         timestamps = list(self.share_timestamps[miner_address])
-        if len(timestamps) < 3:
+        if len(timestamps) < 5:
             return self.min_difficulty
 
-        # Считаем частоту шаров за последние 60 секунд
         now = datetime.now(UTC)
+        # Анализируем последние 60 секунд
         recent = [ts for ts in timestamps if (now - ts).total_seconds() < 60]
 
         if len(recent) < 2:
-            return self.min_difficulty
+            # Мало шаров — снижаем сложность
+            current = self.miner_difficulties.get(miner_address, self.min_difficulty)
+            new_diff = max(self.min_difficulty, current / 2)
+            self.miner_difficulties[miner_address] = new_diff
+            return new_diff
 
         # Среднее время между шарами
-        avg_time = (recent[-1] - recent[0]).total_seconds() / (len(recent) - 1)
+        time_span = (recent[-1] - recent[0]).total_seconds()
+        if time_span < 1:
+            time_span = 1
+        avg_time = time_span / (len(recent) - 1)
 
-        if avg_time < 2:
-            new_diff = min(self.max_difficulty, current_diff * 2)
-            self.miner_difficulties[miner_address] = new_diff
-            return new_diff
-        elif avg_time > 30:
-            new_diff = max(self.min_difficulty, current_diff / 2)
-            self.miner_difficulties[miner_address] = new_diff
-            return new_diff
+        # Целевое время между шарами: 3-5 секунд (10-20 шаров в минуту)
+        TARGET_TIME_BETWEEN_SHARES = 3.0  # секунд
+
+        current = self.miner_difficulties.get(miner_address, self.min_difficulty)
+
+        if avg_time < TARGET_TIME_BETWEEN_SHARES * 0.5:
+            # Слишком часто — повышаем сложность
+            new_diff = min(self.max_difficulty, current * 1.5)
+        elif avg_time > TARGET_TIME_BETWEEN_SHARES * 1.5:
+            # Слишком редко — снижаем сложность
+            new_diff = max(self.min_difficulty, current / 1.5)
         else:
-            return current_diff
+            # Оптимально — оставляем как есть
+            new_diff = current
+
+        # Ограничиваем изменение за раз
+        if new_diff > current * 2:
+            new_diff = current * 2
+        elif new_diff < current / 2:
+            new_diff = current / 2
+
+        self.miner_difficulties[miner_address] = new_diff
+        return new_diff
 
     async def get_pool_hashrate(self, period_minutes: int = 5) -> float:
         """Расчет общего хэшрейта пула"""

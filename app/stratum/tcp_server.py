@@ -282,7 +282,8 @@ class StratumTCPServer:
                 success, authorized_address, error_msg = await self.auth_service.authorize_miner(username, "")
                 if success:
                     # Начальная сложность
-                    initial_diff = getattr(settings, 'default_share_difficulty', 1)
+                    initial_diff = getattr(settings, 'default_share_difficulty', 0.001)
+
                     async with self._lock:
                         self.miners[client_id] = authorized_address
                         self.miner_difficulties[authorized_address] = initial_diff
@@ -315,40 +316,50 @@ class StratumTCPServer:
             else:
                 await self._send_error(writer, msg_id, "Invalid authorize parameters")
 
+
         elif method == "mining.suggest_difficulty":
             if params and len(params) >= 1:
                 suggested = float(params[0])
                 print(f"📊 ASIC suggested difficulty: {suggested}", flush=True)
 
-                # Сохраняем сложность для майнера
                 if client_id in self.miners:
                     miner_address = self.miners[client_id]
 
-                    # Ограничиваем сложность (мин/макс)
+                    # Сохраняем предложенную сложность как начальную точку
+                    # Но ограничиваем разумными пределами
+
                     min_diff = getattr(settings, 'min_difficulty', 0.001)
                     max_diff = getattr(settings, 'max_difficulty', 10000000)
 
+                    # Для mainnet ASIC предлагают очень малую сложность (~1e-21)
+                    # Это нормально — это их реальная мощность на один шар
+                    # Но мы будем использовать ее только как начальную
+                    # Если предложенная сложность меньше минимальной — используем минимальную
+
                     if suggested < min_diff:
                         suggested = min_diff
+                        print(f"📊 Adjusted to minimum: {suggested}", flush=True)
+
                     elif suggested > max_diff:
                         suggested = max_diff
+                        print(f"📊 Adjusted to maximum: {suggested}", flush=True)
 
+                    # Сохраняем сложность
                     self.miner_difficulties[miner_address] = suggested
-
-                    # Обновляем в share_validator
+                    # Обновляем валидатор
                     if self.share_validator:
-                        self.share_validator.pool_difficulty = suggested
-                        print(f"📊 DIFFICULTY UPDATED FOR MINER: {suggested}", flush=True)
+                        # НЕ обновляем глобальную сложность пула!
+                        # У каждого майнера своя сложность
+                        pass
 
-                    # ===== ОТПРАВЛЯЕМ НОВУЮ СЛОЖНОСТЬ ASIC =====
+                    # Отправляем сложность ASIC
                     difficulty_msg = {
                         "method": "mining.set_difficulty",
                         "params": [suggested],
                         "id": None
                     }
                     await self._send_json(writer, difficulty_msg)
-                    print(f"📊 SENT UPDATED DIFFICULTY TO ASIC: {suggested}", flush=True)
-                    # ===========================================
+                    print(f"📊 SENT DIFFICULTY TO ASIC: {suggested}", flush=True)
 
                 # Подтверждаем
                 response = {"id": msg_id, "result": True, "error": None}
@@ -528,14 +539,19 @@ class StratumTCPServer:
             # 4. ВАЛИДАЦИЯ
             print(f"🔍 enable_share_validation={settings.enable_share_validation}", flush=True)
 
+            # Получаем персональную сложность майнера
+            miner_diff = self.miner_difficulties.get(miner_address, 0.001)
+            print(f"🔍 MINER DIFFICULTY: {miner_diff}", flush=True)
+
             if settings.enable_share_validation:
-                print(f"🔍 Calling validate_and_process_share...", flush=True)
+                print(f"🔍 Calling validate_and_process_share with difficulty={miner_diff}...", flush=True)
                 is_valid, error_msg, extra_data = self.job_service.validate_and_process_share(
                     job_id=job_id,
                     extra_nonce2=extra_nonce2,
                     ntime=ntime,
                     nonce=nonce,
-                    miner_address=miner_address
+                    miner_address=miner_address,
+                    pool_difficulty=miner_diff  # ← ПЕРЕДАЕМ ПЕРСОНАЛЬНУЮ СЛОЖНОСТЬ
                 )
                 print(f"🔍 VALIDATION RESULT: is_valid={is_valid}, error_msg={error_msg}", flush=True)
             else:

@@ -134,6 +134,7 @@ class BlockBuilder:
             # Проверяем, что extra_nonce1 передан
             if not extra_nonce1:
                 raise ValueError("extra_nonce1 is required and cannot be None")
+
             # Получаем награду за блок из шаблона
             coinbase_value = self._get_coinbase_value(template)
 
@@ -168,8 +169,15 @@ class BlockBuilder:
             extra_nonce1_bytes = bytes.fromhex(extra_nonce1)
             extra_nonce2_bytes = bytes.fromhex(extra_nonce2)
 
-            # Должно быть (без extra_nonce1, он добавляется отдельно в create_stratum_job_data):
-            script_sig_data = height_bytes + extra_nonce2_bytes
+            print(f"🔍 DEBUG: height_bytes = {height_bytes.hex()}", flush=True)
+            print(f"🔍 DEBUG: extra_nonce1_bytes = {extra_nonce1_bytes.hex()}", flush=True)
+            print(f"🔍 DEBUG: extra_nonce2_bytes = {extra_nonce2_bytes.hex()}", flush=True)
+
+            # ===== extra_nonce1 И extra_nonce2 ВНУТРИ script_sig =====
+            script_sig_data = height_bytes + extra_nonce1_bytes + extra_nonce2_bytes
+            # =========================================================
+
+            print(f"🔍 DEBUG: script_sig_data = {script_sig_data.hex()}", flush=True)
 
             # Если ScriptSig слишком длинный, обрезаем
             max_script_sig_size = self._get_max_script_sig_size()
@@ -788,30 +796,32 @@ class BlockBuilder:
             extra_nonce1_bytes = bytes.fromhex(extra_nonce1)
 
             try:
-                # Находим ПЕРВЫЙ ffffffff в coinbase (это sequence)
-                seq_pos = coinbase_bytes.find(b'\xff\xff\xff\xff')
-
-                # Находим позицию extra_nonce1 внутри coinbase (он в script_sig)
+                # Находим позицию extra_nonce1 внутри coinbase
                 pos_extra = coinbase_bytes.find(extra_nonce1_bytes)
 
-                if seq_pos != -1 and pos_extra != -1:
-                    # coinb1 должен содержать extra_nonce1 внутри себя
-                    # Берем все до sequence + sequence (включая extra_nonce1)
-                    coinb1 = coinbase_bytes[:seq_pos + 4].hex()
+                if pos_extra != -1:
+                    # coinb1 = все ДО extra_nonce1 (БЕЗ extra_nonce1)
+                    coinb1 = coinbase_bytes[:pos_extra].hex()
+                    # coinb2 = все ПОСЛЕ extra_nonce1 (включая extra_nonce2 и все остальное)
+                    coinb2 = coinbase_bytes[pos_extra + len(extra_nonce1_bytes):].hex()
 
-                    # coinb2 = все ПОСЛЕ sequence
-                    coinb2 = coinbase_bytes[seq_pos + 4:].hex()
-
-                    print(f"🔍 COINB1 (содержит extra_nonce1): {coinb1[:100]}...", flush=True)
-                    print(f"🔍 COINB2 (после sequence): {coinb2[:100]}...", flush=True)
-                    print(f"🔍 extra_nonce1 находится внутри coinb1 на позиции {pos_extra}", flush=True)
+                    print(f"🔍 COINB1 (до extra_nonce1): {coinb1[:100]}...", flush=True)
+                    print(f"🔍 COINB2 (после extra_nonce1): {coinb2[:100]}...", flush=True)
+                    print(f"🔍 extra_nonce1 находится на позиции {pos_extra}", flush=True)
                 else:
-                    # fallback
-                    pos = coinbase_bytes.index(extra_nonce1_bytes)
-                    coinb1 = coinbase_bytes[:pos].hex()
-                    coinb2 = coinbase_bytes[pos + len(extra_nonce1_bytes) + 4:].hex()
+                    # fallback: ищем sequence
+                    seq_pos = coinbase_bytes.find(b'\xff\xff\xff\xff')
+                    if seq_pos != -1:
+                        coinb1 = coinbase_bytes[:seq_pos + 4].hex()
+                        coinb2 = coinbase_bytes[seq_pos + 4:].hex()
+                        print(f"🔍 FALLBACK: используем sequence на позиции {seq_pos}", flush=True)
+                    else:
+                        raise ValueError("Cannot find extra_nonce1 or sequence in coinbase")
 
-            except ValueError:
+
+            except Exception as e:
+                print(f"❌ Ошибка разделения coinbase: {e}", flush=True)
+                # fallback
                 coinb1 = coinbase_hex[:100]
                 coinb2 = coinbase_hex[100:]
 

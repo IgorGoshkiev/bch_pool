@@ -16,7 +16,7 @@ class ShareValidator:
     """Валидатор шаров (shares) для Stratum протокола"""
 
     def __init__(self,
-                 pool_difficulty: float = 1.0,
+                 pool_difficulty: float = 1.0, # ← ГЛОБАЛЬНАЯ СЛОЖНОСТЬ (FALLBACK)
                  extra_nonce2_size: int = EXTRA_NONCE2_SIZE,
                  extra_nonce1: str = None):
         self.pool_difficulty = pool_difficulty
@@ -35,7 +35,7 @@ class ShareValidator:
         # константа для расчета сложности (никогда не меняется)
         self.TARGET_FOR_DIFFICULTY_1 = network_config.get(
             'target_for_difficulty_1',
-            0x0000000000000000024cb3000000000000000000000000000000000000000000
+            0x00000000FFFF0000000000000000000000000000000000000000000000000000
         )
 
         self.last_network_update = None
@@ -115,13 +115,16 @@ class ShareValidator:
                        ntime: str,
                        nonce: str,
                        miner_address: str,
-                       version: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[dict]]:
+                       version: Optional[str] = None,
+                       pool_difficulty: Optional[float] = None) -> Tuple[bool, Optional[str], Optional[dict]]:
         """
         Проверка валидности шара
 
         Returns:
             Tuple[is_valid, error_message, extra_data]
             extra_data содержит информацию о найденном блоке
+         Args:
+        pool_difficulty: Персональная сложность майнера (если None — используется глобальная)
         """
         """Проверка валидности шара"""
         validation_start = datetime.now(UTC)
@@ -141,6 +144,13 @@ class ShareValidator:
             return False, f"Задание {job_id} не найдено", None
 
         job = self.jobs_cache[job_id]
+
+        # Определяем какую сложность использовать
+        difficulty_to_check = pool_difficulty if pool_difficulty is not None else self.pool_difficulty
+
+        print(f"🔍 VALIDATE: pool_difficulty parameter = {pool_difficulty}", flush=True)
+        print(f"🔍 VALIDATE: self.pool_difficulty = {self.pool_difficulty}", flush=True)
+        print(f"🔍 VALIDATE: USING difficulty_to_check = {difficulty_to_check}", flush=True)
 
         try:
             expected_extra_nonce2_len = self.extra_nonce2_size * 2
@@ -224,24 +234,31 @@ class ShareValidator:
                 )
                 return False, "Ошибка расчета хэша", None
 
-            # 5. Проверка сложности пула
-            print(f"🔍 VALIDATE: BEFORE check_difficulty", flush=True)
+            # 5. Проверка сложности пула С ПЕРСОНАЛЬНОЙ СЛОЖНОСТЬЮ
+            print(f"🔍 ========================================", flush=True)
+            print(f"🔍 POOL CHECK DETAILS:", flush=True)
             print(f"🔍 hash_result: {hash_result}", flush=True)
-            print(f"🔍 target_difficulty: {self.pool_difficulty}", flush=True)
+            print(f"🔍 difficulty_to_check: {difficulty_to_check}", flush=True)
+            print(f"🔍 self.pool_difficulty (global): {self.pool_difficulty}", flush=True)
+            print(f"🔍 ========================================", flush=True)
 
-            # 5. Проверка сложности пула
-            is_pool_difficulty_ok = self._check_pool_difficulty(hash_result, self.pool_difficulty)
+            is_pool_difficulty_ok = self._check_pool_difficulty(hash_result, difficulty_to_check)
 
             if not is_pool_difficulty_ok:
                 self.invalid_shares += 1
+                print(f"🔴 SHARE FAILED: difficulty {difficulty_to_check} not met", flush=True)
                 logger.debug(
                     "Хэш не соответствует сложности пула",
                     event="share_validation_failed",
                     miner_address=miner_address,
                     job_id=job_id,
-                    reason="pool_difficulty_not_met"
+                    reason="pool_difficulty_not_met",
+                    pool_difficulty=difficulty_to_check,
+                    hash_prefix=hash_result[:16]
                 )
-                return False, "Hash doesn't meet pool target difficulty", None
+                return False, f"Hash doesn't meet pool target difficulty (target: {difficulty_to_check})", None
+
+            print(f"✅ SHARE PASSED difficulty check: {difficulty_to_check}", flush=True)
 
             # 6. Проверка, является ли шар БЛОКОМ
             is_valid_block = False
@@ -273,7 +290,8 @@ class ShareValidator:
                 validation_time_ms=validation_time,
                 total_validated=self.validated_shares,
                 total_invalid=self.invalid_shares,
-                is_valid_block=is_valid_block
+                is_valid_block=is_valid_block,
+                pool_difficulty=difficulty_to_check
             )
             # Возвращаем дополнительную информацию
             extra_data = {

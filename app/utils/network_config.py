@@ -29,12 +29,13 @@ NETWORK_CONFIGS = {
         'wif_prefix': 0x80,
         'bip32_public': 0x0488b21e,
         'bip32_private': 0x0488ade4,
-        'block_reward': 3.125,  # BCH
+        'block_reward': 3.125,
         'halving_interval': 210000,
         'magic_bytes': bytes.fromhex('e3e1f3e8'),
         'genesis_hash': '000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f',
         'default_difficulty': 1.0,
-        'target_for_difficulty_1': 0x0000000000000000024cb3000000000000000000000000000000000000000000,
+        # ✅ ПРАВИЛЬНАЯ КОНСТАНТА
+        'target_for_difficulty_1': 0x00000000FFFF0000000000000000000000000000000000000000000000000000,
         'testnet': False
     },
     'testnet': {
@@ -54,11 +55,13 @@ NETWORK_CONFIGS = {
         'magic_bytes': bytes.fromhex('f4e5f3f4'),
         'genesis_hash': '000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943',
         'default_difficulty': 1.0,
+        # ✅ ТА ЖЕ КОНСТАНТА ДЛЯ ВСЕХ СЕТЕЙ
+        'target_for_difficulty_1': 0x00000000FFFF0000000000000000000000000000000000000000000000000000,
         'testnet': True
     },
     'testnet4': {
         'name': 'Bitcoin Cash Testnet4',
-        'rpc_port': 28332,  # Специфичный порт для testnet4
+        'rpc_port': 28332,
         'default_rpc_port': 18332,
         'stratum_port': 3333,
         'address_prefix': 'bchtest',
@@ -72,7 +75,9 @@ NETWORK_CONFIGS = {
         'halving_interval': 210000,
         'magic_bytes': bytes.fromhex('e2b7daaf'),
         'genesis_hash': '000000001dd410c49a788668ce26751718cc797474d3152a5fc073dd44fd9f7b',
-        'default_difficulty': 0.001,  # Низкая сложность для тестирования
+        'default_difficulty': 0.001,
+        # ✅ ТА ЖЕ КОНСТАНТА
+        'target_for_difficulty_1': 0x00000000FFFF0000000000000000000000000000000000000000000000000000,
         'testnet': True
     },
     'regtest': {
@@ -88,10 +93,12 @@ NETWORK_CONFIGS = {
         'bip32_public': 0x043587cf,
         'bip32_private': 0x04358394,
         'block_reward': 6.25,
-        'halving_interval': 150,  # Быстрый halving для тестов
+        'halving_interval': 150,
         'magic_bytes': bytes.fromhex('fabfb5da'),
         'genesis_hash': '0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206',
-        'default_difficulty': 0.0001,  # Очень низкая сложность
+        'default_difficulty': 0.0001,
+        # ✅ ТА ЖЕ КОНСТАНТА
+        'target_for_difficulty_1': 0x00000000FFFF0000000000000000000000000000000000000000000000000000,
         'testnet': True
     }
 }
