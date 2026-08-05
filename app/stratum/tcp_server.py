@@ -37,6 +37,7 @@ class StratumTCPServer:
         self.share_validator = share_validator
         self.miner_difficulties: Dict[str, float] = {}  # Хранилище сложности
         self.miner_max_difficulties = {}  # Хранилище максимальной сложности от ASIC
+        self.miner_display_difficulties = {}
         self.start_time = datetime.now(UTC)
         self._lock = asyncio.Lock()  # Для синхронизации доступа
         self.max_connections = 1000  # Максимальное количество подключений
@@ -331,6 +332,9 @@ class StratumTCPServer:
                     # НО для проверки используем начальную сложность из настроек
                     self.miner_max_difficulties = getattr(self, 'miner_max_difficulties', {})
                     self.miner_max_difficulties[miner_address] = suggested
+
+                    # Сохраняем для отображения в ASIC
+                    self.miner_display_difficulties[miner_address] = suggested
                     print(f"📊 ASIC max difficulty saved: {suggested}", flush=True)
 
                     # Если у майнера еще нет текущей сложности - устанавливаем начальную
@@ -339,15 +343,14 @@ class StratumTCPServer:
                         self.miner_difficulties[miner_address] = initial_diff
                         print(f"📊 Initial difficulty set: {initial_diff}", flush=True)
 
-                    # Отправляем ASIC ТЕКУЩУЮ сложность (а не предложенную!)
-                    current_diff = self.miner_difficulties.get(miner_address, 0.001)
+                    # Отправляем ASIC предложенную сложность ДЛЯ ОТОБРАЖЕНИЯ
                     difficulty_msg = {
                         "method": "mining.set_difficulty",
-                        "params": [current_diff],
+                        "params": [suggested],  # ← 16384 для отображения!
                         "id": None
                     }
                     await self._send_json(writer, difficulty_msg)
-                    print(f"📊 SENT CURRENT DIFFICULTY TO ASIC: {current_diff} (not {suggested})", flush=True)
+                    print(f"📊 SENT DISPLAY DIFFICULTY TO ASIC: {suggested}", flush=True)
 
                 # Подтверждаем
                 response = {"id": msg_id, "result": True, "error": None}
@@ -408,7 +411,6 @@ class StratumTCPServer:
         await self._send_json(writer, extranonce_msg)
         logger.info("✅ Extranonce sent")
         print(f"📤 SENT EXTRANONCE: {extra_nonce1}", flush=True)
-
 
     async def _handle_configure(self, msg_id: int, writer: asyncio.StreamWriter, params: list):
         """Обработка mining.configure от WhatsMiner"""
@@ -645,8 +647,6 @@ class StratumTCPServer:
 
             print(f"🔍 SEND_JOB: job_data keys = {job_data.keys()}", flush=True)
             print(f"🔍 SEND_JOB: params length = {len(job_data['params'])}", flush=True)
-
-
 
             real_prevhash = job_data['params'][1]  # big-endian
             real_prevhash_le = real_prevhash[::-1]  # little-endian для ASIC
