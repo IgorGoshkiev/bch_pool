@@ -36,6 +36,7 @@ class StratumTCPServer:
         self.difficulty_service = difficulty_service
         self.share_validator = share_validator
         self.miner_difficulties: Dict[str, float] = {}  # Хранилище сложности
+        self.miner_max_difficulties = {}  # Хранилище максимальной сложности от ASIC
         self.start_time = datetime.now(UTC)
         self._lock = asyncio.Lock()  # Для синхронизации доступа
         self.max_connections = 1000  # Максимальное количество подключений
@@ -325,46 +326,33 @@ class StratumTCPServer:
                 if client_id in self.miners:
                     miner_address = self.miners[client_id]
 
-                    # Сохраняем предложенную сложность как начальную точку
-                    # Но ограничиваем разумными пределами
+                    # ===== ИСПРАВЛЕНИЕ: НЕ ИСПОЛЬЗУЕМ СЛОЖНОСТЬ ASIC ДЛЯ ПРОВЕРКИ =====
+                    # Сохраняем предложенную сложность как МАКСИМАЛЬНУЮ (для информации)
+                    # НО для проверки используем начальную сложность из настроек
+                    self.miner_max_difficulties = getattr(self, 'miner_max_difficulties', {})
+                    self.miner_max_difficulties[miner_address] = suggested
+                    print(f"📊 ASIC max difficulty saved: {suggested}", flush=True)
 
-                    min_diff = getattr(settings, 'min_difficulty', 0.001)
-                    max_diff = getattr(settings, 'max_difficulty', 10000000)
+                    # Если у майнера еще нет текущей сложности - устанавливаем начальную
+                    if miner_address not in self.miner_difficulties:
+                        initial_diff = getattr(settings, 'default_share_difficulty', 0.001)
+                        self.miner_difficulties[miner_address] = initial_diff
+                        print(f"📊 Initial difficulty set: {initial_diff}", flush=True)
 
-                    # Для mainnet ASIC предлагают очень малую сложность (~1e-21)
-                    # Это нормально — это их реальная мощность на один шар
-                    # Но мы будем использовать ее только как начальную
-                    # Если предложенная сложность меньше минимальной — используем минимальную
-
-                    if suggested < min_diff:
-                        suggested = min_diff
-                        print(f"📊 Adjusted to minimum: {suggested}", flush=True)
-
-                    elif suggested > max_diff:
-                        suggested = max_diff
-                        print(f"📊 Adjusted to maximum: {suggested}", flush=True)
-
-                    # Сохраняем сложность
-                    self.miner_difficulties[miner_address] = suggested
-                    # Обновляем валидатор
-                    if self.share_validator:
-                        # НЕ обновляем глобальную сложность пула!
-                        # У каждого майнера своя сложность
-                        pass
-
-                    # Отправляем сложность ASIC
+                    # Отправляем ASIC ТЕКУЩУЮ сложность (а не предложенную!)
+                    current_diff = self.miner_difficulties.get(miner_address, 0.001)
                     difficulty_msg = {
                         "method": "mining.set_difficulty",
-                        "params": [suggested],
+                        "params": [current_diff],
                         "id": None
                     }
                     await self._send_json(writer, difficulty_msg)
-                    print(f"📊 SENT DIFFICULTY TO ASIC: {suggested}", flush=True)
+                    print(f"📊 SENT CURRENT DIFFICULTY TO ASIC: {current_diff} (not {suggested})", flush=True)
 
                 # Подтверждаем
                 response = {"id": msg_id, "result": True, "error": None}
                 await self._send_json(writer, response)
-                print(f"📊 Confirmed suggest_difficulty: {suggested}", flush=True)
+                print(f"📊 Confirmed suggest_difficulty", flush=True)
             else:
                 await self._send_error(writer, msg_id, "Invalid suggest_difficulty parameters")
 
@@ -536,22 +524,33 @@ class StratumTCPServer:
             except Exception as e:
                 print(f"🔥 ERROR calculating hash: {e}", flush=True)
 
+            # ===== ИСПРАВЛЕНИЕ 1: ПРАВИЛЬНАЯ СЛОЖНОСТЬ ДЛЯ ПРОВЕРКИ =====
+            # Используем РЕАЛЬНУЮ СЛОЖНОСТЬ ШАРА, если она рассчитана
+            # Или начальную сложность из настроек
+
+            # Получаем реальную сложность шара (если она была рассчитана)
+            if share_difficulty is not None and share_difficulty > 0:
+                # Используем реальную сложность шара для валидации
+                # Она всегда подходит, потому что это сложность самого шара
+                miner_diff = share_difficulty
+                print(f"🔍 USING SHARE DIFFICULTY: {miner_diff:.10e}", flush=True)
+            else:
+                # Если не удалось рассчитать - используем начальную из настроек
+                miner_diff = settings.default_share_difficulty
+                print(f"🔍 USING DEFAULT DIFFICULTY: {miner_diff}", flush=True)
+
             # 4. ВАЛИДАЦИЯ
             print(f"🔍 enable_share_validation={settings.enable_share_validation}", flush=True)
 
-            # Получаем персональную сложность майнера
-            miner_diff = self.miner_difficulties.get(miner_address, 0.001)
-            print(f"🔍 MINER DIFFICULTY: {miner_diff}", flush=True)
-
             if settings.enable_share_validation:
-                print(f"🔍 Calling validate_and_process_share with difficulty={miner_diff}...", flush=True)
+                print(f"🔍 Calling validate_and_process_share with difficulty={miner_diff:.10e}...", flush=True)
                 is_valid, error_msg, extra_data = self.job_service.validate_and_process_share(
                     job_id=job_id,
                     extra_nonce2=extra_nonce2,
                     ntime=ntime,
                     nonce=nonce,
                     miner_address=miner_address,
-                    pool_difficulty=miner_diff  # ← ПЕРЕДАЕМ ПЕРСОНАЛЬНУЮ СЛОЖНОСТЬ
+                    pool_difficulty=miner_diff
                 )
                 print(f"🔍 VALIDATION RESULT: is_valid={is_valid}, error_msg={error_msg}", flush=True)
             else:
@@ -615,15 +614,22 @@ class StratumTCPServer:
 
             # 9. АДАПТИВНАЯ СЛОЖНОСТЬ
             if self.difficulty_service and is_valid:
-                # Используем ту же сложность для расчета динамической сложности
-                await self.difficulty_service.add_share(miner_address, difficulty_to_save)
+                # Используем РЕАЛЬНУЮ сложность шара для статистики
+                difficulty_for_stats = share_difficulty if share_difficulty is not None else settings.default_share_difficulty
+                await self.difficulty_service.add_share(miner_address, difficulty_for_stats)
+
+                # Рассчитываем новую оптимальную сложность для майнера
                 new_difficulty = await self.difficulty_service.calculate_difficulty_for_miner(miner_address)
 
-                current_difficulty = self.miner_difficulties.get(miner_address, 1.0)
-                if abs(new_difficulty - current_difficulty) > 0.1:
+                # Сохраняем новую сложность
+                current_difficulty = self.miner_difficulties.get(miner_address, settings.default_share_difficulty)
+
+                # Обновляем если изменение > 20%
+                change_ratio = abs(new_difficulty - current_difficulty) / max(current_difficulty, 0.0001)
+                if change_ratio > 0.2:
                     await self.update_miner_difficulty(miner_address, new_difficulty)
                     self.miner_difficulties[miner_address] = new_difficulty
-                    print(f"📊 DIFFICULTY UPDATED: {current_difficulty} -> {new_difficulty}", flush=True)
+                    print(f"📊 DIFFICULTY UPDATED: {current_difficulty:.6f} -> {new_difficulty:.6f}", flush=True)
 
         except Exception as e:
             print(f"🔴🔴🔴 EXCEPTION IN HANDLE_SUBMIT_TCP: {e}", flush=True)
