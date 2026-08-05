@@ -408,13 +408,18 @@ class JobService:
                                    ntime: str,
                                    nonce: str,
                                    miner_address: str,
-                                   version: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[dict]]:
+                                   version: Optional[str] = None,
+                                   pool_difficulty: Optional[float] = None) -> Tuple[
+        bool, Optional[str], Optional[dict]]:
         """
         Валидация и обработка шара
 
         Returns:
             Tuple[is_valid, error_message, extra_data]
             extra_data содержит информацию о найденном блоке
+
+        Args:
+        pool_difficulty: Персональная сложность майнера (если None - используется глобальная)
         """
         try:
             # Получаем задание
@@ -437,7 +442,8 @@ class JobService:
                 ntime=ntime,
                 nonce=nonce,
                 miner_address=miner_address,
-                version=version
+                version=version,
+                pool_difficulty=pool_difficulty
             )
 
             if not is_valid:

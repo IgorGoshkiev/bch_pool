@@ -18,11 +18,13 @@ class ShareValidator:
     def __init__(self,
                  pool_difficulty: float = 1.0, # ← ГЛОБАЛЬНАЯ СЛОЖНОСТЬ (FALLBACK)
                  extra_nonce2_size: int = EXTRA_NONCE2_SIZE,
-                 extra_nonce1: str = None):
+                 extra_nonce1: str = None,
+                 block_builder=None):
+
         self.pool_difficulty = pool_difficulty
         self.extra_nonce2_size = extra_nonce2_size
-
         self.extra_nonce1 = extra_nonce1
+        self.block_builder = block_builder
 
         self.jobs_cache: Dict[str, dict] = {}
         self._used_nonces: Dict[str, set] = {}
@@ -347,16 +349,29 @@ class ShareValidator:
             logger.error(f"check_difficulty error: {e}")
             return False
 
-    def calculate_hash(self, job_data: dict, extra_nonce2: str, ntime: str, nonce: str, version: Optional[str] = None) -> str:
-        """Расчет хэша заголовка блока"""
+    def calculate_hash(self, job_data: dict, extra_nonce2: str, ntime: str, nonce: str,
+                       version: Optional[str] = None) -> str:
+        """Расчет хэша заголовка блока (альтернативная версия с принтами)"""
         try:
+            # ===== ДИАГНОСТИКА =====
+            print(f"\n{'=' * 60}", flush=True)
+            print(f"🔍 ДИАГНОСТИКА VALIDATOR", flush=True)
+            print(f"{'=' * 60}", flush=True)
+            print(f"extra_nonce1 from self: {self.extra_nonce1}", flush=True)
+            print(f"extra_nonce1 from job_data: {job_data.get('extra_nonce1', 'NOT FOUND')}", flush=True)
+            print(f"extra_nonce2 from param: {extra_nonce2}", flush=True)
+
             params = job_data["params"]
             prevhash = params[1]
+            print(f"prevhash from params (BE): {prevhash}", flush=True)
+            print(f"prevhash LE (для заголовка): {bytes.fromhex(prevhash)[::-1].hex()}", flush=True)
+            print(f"{'=' * 60}\n", flush=True)
+            # =========================
+
             coinb1 = params[2]
             coinb2 = params[3]
             merkle_branch = params[4]
 
-            # Используем version из параметра или из job_data
             if version:
                 version_hex = version
                 print(f"🔍 USING VERSION FROM ASIC: {version_hex}", flush=True)
@@ -365,44 +380,76 @@ class ShareValidator:
                 print(f"🔍 USING VERSION FROM JOB: {version_hex}", flush=True)
 
             nbits = params[6]
+            extra_nonce1 = self.extra_nonce1
 
-            # ===== ОТЛАДКА =====
             print(f"\n🔍🔍🔍 ПОЛНЫЕ ДАННЫЕ В VALIDATOR 🔍🔍🔍", flush=True)
             print(f"prevhash (оригинал): {prevhash}", flush=True)
-            print(f"coinb1: {coinb1}", flush=True)
-            print(f"coinb2: {coinb2}", flush=True)
+            print(f"coinb1: {coinb1[:50]}...", flush=True)
+            print(f"coinb2: {coinb2[:50]}...", flush=True)
             print(f"merkle_branch: {len(merkle_branch)} элементов", flush=True)
-            for i, branch in enumerate(merkle_branch):
-                print(f"  branch[{i}]: {branch[:32]}...", flush=True)
-            print(f"version: {version if version else params[5]}", flush=True)
-            print(f"nbits: {params[6]}", flush=True)
+            print(f"version: {version_hex}", flush=True)
+            print(f"nbits: {nbits}", flush=True)
             print(f"ntime: {ntime}", flush=True)
             print(f"nonce: {nonce}", flush=True)
             print(f"extra_nonce2: {extra_nonce2}", flush=True)
             print(f"==========================================\n", flush=True)
-            # =============================
 
-            extra_nonce1 = self.extra_nonce1
-
-            # Собираем coinbase
+            # ===== 1. СБОРКА COINBASE =====
             coinbase = coinb1 + extra_nonce1 + extra_nonce2 + coinb2
             print(f"🔍 COINBASE: {coinbase[:100]}...", flush=True)
 
-            coinbase_hash_obj = hashlib.sha256(bytes.fromhex(coinbase))
-            coinbase_hash = hashlib.sha256(coinbase_hash_obj.digest()).digest()
-            print(f"🔍 COINBASE HASH: {coinbase_hash.hex()}", flush=True)
+            coinbase_bytes = bytes.fromhex(coinbase)
+            print(f"🔍 COINBASE BYTES LENGTH: {len(coinbase_bytes)} байт", flush=True)
 
-            # Merkle root
-            merkle_root = self._calculate_merkle_root_with_branch(coinbase_hash.hex(), merkle_branch)
+            # ===== 2. ХЭШ COINBASE =====
+            # Двойной SHA256
+            coinbase_hash = hashlib.sha256(hashlib.sha256(coinbase_bytes).digest()).digest()
+            coinbase_hash_hex = coinbase_hash.hex()
+            coinbase_hash_le = coinbase_hash[::-1].hex()
+            print(f"🔍 COINBASE HASH (BE): {coinbase_hash_hex}", flush=True)
+            print(f"🔍 COINBASE HASH (LE): {coinbase_hash_le}", flush=True)
+
+            # ===== 3. РАСЧЕТ MERKLE ROOT =====
+            # Собираем список хэшей транзакций
+            # Сначала проверяем, есть ли готовый Merkle root в job_data
+            merkle_root = job_data.get('merkle_root')
+
+            if not merkle_root:
+                # Если нет готового, считаем через block_builder
+                tx_hashes = [coinbase_hash_hex]  # BE хэш coinbase
+                for branch in merkle_branch:
+                    tx_hashes.append(branch)
+
+                print(f"\n🔍 СПИСОК ХЭШЕЙ ДЛЯ MERKLE (BE):", flush=True)
+                print(f"  [0] coinbase: {tx_hashes[0][:32]}...", flush=True)
+                for i, h in enumerate(tx_hashes[1:], 1):
+                    print(f"  [{i}] branch:   {h[:32]}...", flush=True)
+
+                if self.block_builder:
+                    merkle_root = self.block_builder.calculate_merkle_root(tx_hashes)
+                else:
+                    from app.stratum.block_builder import BlockBuilder
+                    merkle_root = BlockBuilder.calculate_merkle_root(tx_hashes)
+
             print(f"🔍 MERKLE ROOT: {merkle_root}", flush=True)
 
+            # ===== 4. СБОРКА ЗАГОЛОВКА =====
+            # Конвертируем все поля в LE для заголовка
+            version_bytes = bytes.fromhex(version_hex)[::-1]
+            prevhash_bytes = bytes.fromhex(prevhash)[::-1]  # BE -> LE
+            merkle_bytes = bytes.fromhex(merkle_root)[::-1]
+            ntime_bytes = bytes.fromhex(ntime)[::-1]
+            nbits_bytes = bytes.fromhex(nbits)[::-1]
+            nonce_bytes = bytes.fromhex(nonce)[::-1]
+
+            # Собираем заголовок
             header = (
-                    bytes.fromhex(version_hex)[::-1] +
-                    bytes.fromhex(prevhash) +
-                    bytes.fromhex(merkle_root)[::-1] +
-                    bytes.fromhex(ntime)[::-1] +
-                    bytes.fromhex(nbits)[::-1] +
-                    bytes.fromhex(nonce)[::-1]
+                    version_bytes +
+                    prevhash_bytes +
+                    merkle_bytes +
+                    ntime_bytes +
+                    nbits_bytes +
+                    nonce_bytes
             )
 
             if len(header) != 80:
@@ -412,16 +459,31 @@ class ShareValidator:
             print(f"🔍 HEADER LENGTH: {len(header)} (должно быть 80)", flush=True)
             print(f"🔍 HEADER HEX: {header.hex()[:100]}...", flush=True)
 
-            # Двойной SHA256
+            # ===== ОТЛАДОЧНЫЕ ПРИНТЫ ПОСЛЕ СБОРКИ =====
+            print(f"\n🔍 СБОРКА ЗАГОЛОВКА (все поля в LE):", flush=True)
+            print(f"  version: {version_hex} -> LE: {version_bytes.hex()}", flush=True)
+            print(f"  prevhash (BE): {prevhash}", flush=True)
+            print(f"  prevhash -> LE: {prevhash_bytes.hex()[:32]}...", flush=True)
+            print(f"  merkle_root: {merkle_root}", flush=True)
+            print(f"  merkle -> LE: {merkle_bytes.hex()[:32]}...", flush=True)
+            print(f"  ntime: {ntime} -> LE: {ntime_bytes.hex()}", flush=True)
+            print(f"  nbits: {nbits} -> LE: {nbits_bytes.hex()}", flush=True)
+            print(f"  nonce: {nonce} -> LE: {nonce_bytes.hex()}", flush=True)
+            print(f"  HEADER LENGTH: {len(header)} байт", flush=True)
+            print(f"  HEADER HEX: {header.hex()[:100]}...", flush=True)
+
+            # ===== 5. ДВОЙНОЙ SHA256 =====
             first_hash = hashlib.sha256(header).digest()
             block_hash = hashlib.sha256(first_hash).digest()
-            result = block_hash[::-1].hex()
+            result = block_hash[::-1].hex()  # BE для отображения
             print(f"🔍 BLOCK HASH: {result}", flush=True)
 
             return result
 
         except Exception as e:
-            logger.error(f"Ошибка расчета хэша: {e}")
+            print(f"❌ Ошибка расчета хэша: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
             return "0" * 64
 
     @staticmethod

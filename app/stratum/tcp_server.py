@@ -674,7 +674,7 @@ class StratumTCPServer:
                 "method": "mining.notify",
                 "params": [
                     job_id,
-                    real_prevhash,  # ← big-endian!
+                    real_prevhash,  # ← BE! НЕ LE!
                     real_coinb1,
                     real_coinb2,
                     real_merkle_branch,
@@ -683,7 +683,8 @@ class StratumTCPServer:
                     real_ntime,
                     True
                 ],
-                "extra_nonce1": job_data.get('extra_nonce1')
+                "extra_nonce1": job_data.get('extra_nonce1'),
+                "merkle_root": job_data.get('merkle_root')
             }
 
             # Добавляем в job_service

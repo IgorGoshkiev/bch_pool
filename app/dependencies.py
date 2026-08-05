@@ -89,7 +89,8 @@ class DependencyContainer:
             self._share_validator = ShareValidator(
                 pool_difficulty=settings.default_share_difficulty,
                 extra_nonce2_size=EXTRA_NONCE2_SIZE,
-                extra_nonce1=None
+                extra_nonce1=None,
+                block_builder=self.block_builder
             )
             logger.info(
                 "ShareValidator создан",

@@ -862,6 +862,12 @@ class BlockBuilder:
             print(f"🔍 JOB COINB2: {coinb2[:50]}...", flush=True)
             print(f"🔍 JOB BITS: {template.get('bits', '1d00ffff')}", flush=True)
 
+            # Добавляем merkle_root в job_data для валидатора
+            # Рассчитываем Merkle root из coinbase_txid и merkle_branch
+            tx_hashes = [coinbase_txid] + merkle_branch
+            merkle_root = self.calculate_merkle_root(tx_hashes)
+            job_data['merkle_root'] = merkle_root
+
             logger.info(
                 "Созданы данные задания Stratum",
                 event="block_builder_stratum_job_created",
@@ -871,6 +877,8 @@ class BlockBuilder:
                 coinb2_length=len(coinb2),
                 merkle_branch_length=len(merkle_branch)
             )
+
+
 
             return job_data
 
