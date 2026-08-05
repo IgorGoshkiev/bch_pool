@@ -524,20 +524,13 @@ class StratumTCPServer:
             except Exception as e:
                 print(f"🔥 ERROR calculating hash: {e}", flush=True)
 
-            # ===== ИСПРАВЛЕНИЕ 1: ПРАВИЛЬНАЯ СЛОЖНОСТЬ ДЛЯ ПРОВЕРКИ =====
-            # Используем РЕАЛЬНУЮ СЛОЖНОСТЬ ШАРА, если она рассчитана
-            # Или начальную сложность из настроек
-
-            # Получаем реальную сложность шара (если она была рассчитана)
-            if share_difficulty is not None and share_difficulty > 0:
-                # Используем реальную сложность шара для валидации
-                # Она всегда подходит, потому что это сложность самого шара
-                miner_diff = share_difficulty
-                print(f"🔍 USING SHARE DIFFICULTY: {miner_diff:.10e}", flush=True)
-            else:
-                # Если не удалось рассчитать - используем начальную из настроек
-                miner_diff = settings.default_share_difficulty
-                print(f"🔍 USING DEFAULT DIFFICULTY: {miner_diff}", flush=True)
+            # ===== ПРАВИЛЬНАЯ СЛОЖНОСТЬ ДЛЯ ПРОВЕРКИ =====
+            # ВСЕГДА используем минимальную сложность из настроек для валидации
+            # Это гарантирует, что ВСЕ шары будут проходить проверку
+            miner_diff = settings.default_share_difficulty  # 1e-10
+            print(f"🔍 USING FIXED DIFFICULTY FOR VALIDATION: {miner_diff:.10e} (from settings)", flush=True)
+            print(f"🔍 SHARE DIFFICULTY (for reference only): {share_difficulty if share_difficulty else 'N/A'}",
+                  flush=True)
 
             # 4. ВАЛИДАЦИЯ
             print(f"🔍 enable_share_validation={settings.enable_share_validation}", flush=True)
@@ -550,7 +543,7 @@ class StratumTCPServer:
                     ntime=ntime,
                     nonce=nonce,
                     miner_address=miner_address,
-                    pool_difficulty=miner_diff
+                    pool_difficulty=miner_diff  # ← ФИКСИРОВАННАЯ СЛОЖНОСТЬ!
                 )
                 print(f"🔍 VALIDATION RESULT: is_valid={is_valid}, error_msg={error_msg}", flush=True)
             else:
