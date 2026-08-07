@@ -315,6 +315,7 @@ class BCHAddress:
             )
             return False
 
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ  ==========
 
 def create_p2pkh_script(pubkey_hash: bytes) -> str:
     """Создание P2PKH ScriptPubKey (76a914{pubkey_hash}88ac)"""

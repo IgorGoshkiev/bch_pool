@@ -1,3 +1,6 @@
+"""
+Вспомогательные функции
+"""
 from datetime import datetime, UTC
 
 

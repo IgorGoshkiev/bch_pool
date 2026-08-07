@@ -57,9 +57,15 @@ class Settings(BaseSettings):
     auto_register_miners: bool = True
     auto_worker_name: str = "default"
 
-    default_share_difficulty: float = 1
+    default_share_difficulty: float = 1e-10
     default_miner_address: str = "qqxsgzrcxvwh3emhrzmgedttm3ju6ks4ec6072chl0"
     enable_share_validation: bool = True
+
+    # ===== НАСТРОЙКИ СТАТИСТИКИ =====
+    stats_max_age_seconds: int = 600  # Храним 10 минут в памяти
+    stats_max_shares_in_memory: int = 1000  # 1000 шаров на майнера
+    stats_cleanup_interval: int = 60  # Очистка каждую минуту
+    stats_aggregate_interval: int = 3600  # Агрегация в БД каждый час
 
     # Разработка
     debug: bool = False

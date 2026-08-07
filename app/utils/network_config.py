@@ -97,7 +97,6 @@ NETWORK_CONFIGS = {
         'magic_bytes': bytes.fromhex('fabfb5da'),
         'genesis_hash': '0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206',
         'default_difficulty': 0.0001,
-        # ✅ ТА ЖЕ КОНСТАНТА
         'target_for_difficulty_1': 0x00000000FFFF0000000000000000000000000000000000000000000000000000,
         'testnet': True
     }
@@ -117,6 +116,20 @@ class NetworkManager:
             network=self.network,
             network_name=self.config['name']
         )
+
+    def get_network_info(self) -> Dict[str, Any]:
+        """Получение информации о сети"""
+        return {
+            'name': self.config['name'],
+            'network': self.network,
+            'rpc_port': self.config['rpc_port'],
+            'stratum_port': self.config['stratum_port'],
+            'address_prefix': self.config['address_prefix'],
+            'block_reward': self.config['block_reward'],
+            'default_difficulty': self.config['default_difficulty'],
+            'is_testnet': self.config['testnet'],
+            'genesis_hash': self.config['genesis_hash']
+        }
 
     @staticmethod
     def detect_network() -> str:
@@ -282,19 +295,6 @@ def get_network_manager(network: str = None) -> NetworkManager:
     """Получение NetworkManager для указанной сети"""
     return NetworkManager(network)
 
-def get_network_info(self) -> Dict[str, Any]:
-        """Получение информации о сети"""
-        return {
-            'name': self.config['name'],
-            'network': self.network,
-            'rpc_port': self.config['rpc_port'],
-            'stratum_port': self.config['stratum_port'],
-            'address_prefix': self.config['address_prefix'],
-            'block_reward': self.config['block_reward'],
-            'default_difficulty': self.config['default_difficulty'],
-            'is_testnet': self.config['testnet'],
-            'genesis_hash': self.config['genesis_hash']
-        }
 
 
 

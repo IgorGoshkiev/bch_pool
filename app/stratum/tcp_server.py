@@ -7,6 +7,7 @@ from typing import Dict, Optional
 from app.utils.logging_config import StructuredLogger
 from app.utils.protocol_helpers import EXTRA_NONCE2_SIZE
 from app.utils.config import settings
+from app.services.miner_stats import miner_stats_service, ShareInfo
 
 logger = StructuredLogger(__name__)
 
@@ -481,6 +482,14 @@ class StratumTCPServer:
         print(f"msg_id={msg_id}, miner={miner_address}, params={params}", flush=True)
         print(f"params length={len(params)}", flush=True)
 
+        # ===== ИНИЦИАЛИЗАЦИЯ ВСЕХ ПЕРЕМЕННЫХ =====
+        hash_result = None
+        job_data = None
+        share_difficulty = None
+        extra_data = None
+        is_valid = False
+        error_msg = None
+
         try:
             # 1. ПРОВЕРКА ПАРАМЕТРОВ
             if len(params) < 5:
@@ -502,7 +511,7 @@ class StratumTCPServer:
             print(f"📊 VERSION FROM ASIC: {version_from_asic}", flush=True)
 
             # 3. РАСЧЕТ ХЭША И СЛОЖНОСТИ ШАРА
-            share_difficulty = None
+
             try:
                 job_data = self.job_service.get_job(job_id)
                 if job_data and self.share_validator:
@@ -526,7 +535,13 @@ class StratumTCPServer:
             except Exception as e:
                 print(f"🔥 ERROR calculating hash: {e}", flush=True)
 
-            # ===== ПРАВИЛЬНАЯ СЛОЖНОСТЬ ДЛЯ ПРОВЕРКИ =====
+            # 4. ПРОВЕРЯЕМ, ЧТО ХЭШ РАССЧИТАН
+            if hash_result is None:
+                print(f"🔴 SHARE REJECTED: hash calculation failed", flush=True)
+                await self._send_error(writer, msg_id, "Failed to calculate hash")
+                return
+
+            # 5. СЛОЖНОСТЬ ДЛЯ ПРОВЕРКИ
             # ВСЕГДА используем минимальную сложность из настроек для валидации
             # Это гарантирует, что ВСЕ шары будут проходить проверку
             miner_diff = settings.default_share_difficulty  # 1e-10
@@ -534,7 +549,7 @@ class StratumTCPServer:
             print(f"🔍 SHARE DIFFICULTY (for reference only): {share_difficulty if share_difficulty else 'N/A'}",
                   flush=True)
 
-            # 4. ВАЛИДАЦИЯ
+            # 6. ВАЛИДАЦИЯ
             print(f"🔍 enable_share_validation={settings.enable_share_validation}", flush=True)
 
             if settings.enable_share_validation:
@@ -554,37 +569,50 @@ class StratumTCPServer:
                 error_msg = None
                 extra_data = None
 
-            # 5. ЕСЛИ НЕВАЛИДЕН - ОТКЛОНЯЕМ
+            # 7. ЕСЛИ НЕВАЛИДЕН - ОТКЛОНЯЕМ
             if not is_valid:
                 print(f"🔴 SHARE REJECTED: {error_msg}", flush=True)
                 await self._send_error(writer, msg_id, f"Invalid share: {error_msg}")
                 return
 
-            # 6. ОПРЕДЕЛЯЕМ СЛОЖНОСТЬ ДЛЯ СОХРАНЕНИЯ
+            # 8. ОПРЕДЕЛЯЕМ СЛОЖНОСТЬ ДЛЯ СТАТИСТИКИ
             # Используем сложность шара, если она рассчитана, иначе fallback
             difficulty_to_save = share_difficulty if share_difficulty is not None else settings.default_share_difficulty
-            print(f"💾 SAVING SHARE with difficulty: {difficulty_to_save}", flush=True)
+            print(f"📊 SHARE difficulty: {difficulty_to_save:.10e}", flush=True)
 
-            saved, share_id = await self.database_service.save_share(
-                miner_address=miner_address,
-                job_id=job_id,
-                extra_nonce2=extra_nonce2,
-                ntime=ntime,
-                nonce=nonce,
+            # 9. ОБНОВЛЯЕМ СТАТИСТИКУ В ПАМЯТИ
+            # Создаем информацию о шаре
+            share_info = ShareInfo(
+                hash=hash_result,
                 difficulty=difficulty_to_save,
-                is_valid=True
+                is_valid=is_valid,
+                timestamp=datetime.now(UTC),
+                job_id=job_id,
+                nonce=nonce,
+                ntime=ntime
             )
 
-            print(f"💾 SAVE RESULT: saved={saved}, share_id={share_id}", flush=True)
+            # Добавляем в статистику (мгновенно, без БД)
+            await miner_stats_service.add_share(miner_address, share_info)
+            print(f"📊 STATS UPDATED IN MEMORY", flush=True)
 
-            if not saved:
-                print(f"🔴 DATABASE SAVE FAILED", flush=True)
-                await self._send_error(writer, msg_id, "Failed to save share to database")
-                return
-
-            # 7. ПРОВЕРЯЕМ, НЕ НАЙДЕН ЛИ БЛОК (ИСПОЛЬЗУЕМ extra_data)
+            # 10. ПРОВЕРЯЕМ БЛОК (ИСПОЛЬЗУЕМ extra_data)
             if extra_data and extra_data.get('is_valid_block', False):
                 print(f"🎉🎉🎉 BLOCK FOUND! Отправляем в ноду...", flush=True)
+
+                # Получаем высоту блока из job_data
+                block_height = 0
+                if job_data and 'template' in job_data:
+                    block_height = job_data['template'].get('height', 0)
+
+                # Сохраняем ТОЛЬКО блок в БД!
+                await self.database_service.save_block(
+                    height=block_height,
+                    block_hash=hash_result,
+                    miner_address=miner_address,
+                    confirmed=False
+                )
+                print(f"💾 BLOCK SAVED TO DB! height={block_height}", flush=True)
 
                 # Отправляем блок через job_service
                 block_result = await self.job_service.process_found_block(
@@ -597,17 +625,16 @@ class StratumTCPServer:
                 )
 
                 if block_result.get("status") == "accepted":
-                    print(f"✅ BLOCK ACCEPTED BY NODE! hash={block_result.get('block_hash', '')[:16]}...",
-                          flush=True)
+                    print(f"✅ BLOCK ACCEPTED BY NODE! hash={hash_result[:16]}...", flush=True)
                 else:
                     print(f"🔴 BLOCK REJECTED: {block_result.get('message')}", flush=True)
 
-            # 8. ОТПРАВЛЯЕМ УСПЕХ
+            # 11. ОТПРАВЛЯЕМ УСПЕХ
             response = {"id": msg_id, "result": True, "error": None}
             await self._send_json(writer, response)
-            print(f"✅ SHARE ACCEPTED: share_id={share_id}", flush=True)
+            print(f"✅ SHARE ACCEPTED (stats in memory)", flush=True)
 
-            # 9. АДАПТИВНАЯ СЛОЖНОСТЬ
+            # 12. АДАПТИВНАЯ СЛОЖНОСТЬ
             if self.difficulty_service and is_valid:
                 # Используем РЕАЛЬНУЮ сложность шара для статистики
                 difficulty_for_stats = share_difficulty if share_difficulty is not None else settings.default_share_difficulty

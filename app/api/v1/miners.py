@@ -6,27 +6,20 @@ from sqlalchemy import true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
-from typing import Optional, List
+from typing import Optional
+from datetime import datetime, UTC
 
 from app.utils.logging_config import StructuredLogger
 from app.utils.helpers import humanize_time_ago
+from app.utils.protocol_helpers import format_hashrate
 from app.utils.protocol_helpers import DEFAULT_PAGINATION_LIMIT, MAX_PAGINATION_LIMIT
-from app.utils.db_utils import (
-    get_shares,
-    get_blocks,
-    get_miner_stats_universal,
-    TimeRangeParams
-)
-from app.schemas.models import (
-    ApiResponse,
-    MinerResponse,
-    MinerCreate,
-)
+from app.schemas.models import ApiResponse, MinerResponse, MinerCreate
 
 from app.models.database import get_db
 from app.models.miner import Miner
-from app.models.share import Share
-from app.models.block import Block
+
+# Новый сервис статистики в памяти
+from app.services.miner_stats import miner_stats_service
 
 logger = StructuredLogger(__name__)
 
@@ -62,41 +55,7 @@ async def get_miner_or_404(bch_address: str, db: AsyncSession) -> Miner:
     return miner
 
 
-async def get_miner_shares_data(
-        bch_address: str,
-        db: AsyncSession,
-        skip: int = 0,
-        limit: int = 50,
-        valid_only: bool = False
-) -> List[Share]:
-    """Получить шары майнера с пагинацией"""
-    return await get_shares(db, bch_address, skip, limit, valid_only)
-
-
-async def get_miner_blocks_data(
-        bch_address: str,
-        db: AsyncSession,
-        skip: int = 0,
-        limit: int = 20,
-        confirmed_only: bool = False
-) -> List[Block]:
-    """Получить блоки майнера с пагинацией"""
-    return await get_blocks(db, bch_address, skip, limit, confirmed_only)
-
-
-async def get_miner_stats_data(
-        bch_address: str,
-        db: AsyncSession,
-        time_range: str = "24h"
-) -> dict:
-    """Получить статистику майнера"""
-    time_params = TimeRangeParams(time_range)
-    return await get_miner_stats_universal(
-        db=db,
-        bch_address=bch_address,
-        time_filter=time_params.time_filter
-    )
-
+# ========== ОСНОВНЫЕ ЭНДПОИНТЫ (РАБОТАЮТ С БД) ==========
 
 @router.get(
     "/",
@@ -108,9 +67,7 @@ async def list_miners(
         params: ListMinersParams = Depends(),
         db: AsyncSession = Depends(get_db)
 ):
-    """
-    Получение списка майнеров с пагинацией.
-    """
+    """Получение списка майнеров с пагинацией."""
     query = select(Miner)
 
     if params.active_only:
@@ -160,9 +117,7 @@ async def register_miner(
         miner_data: MinerCreate,
         db: AsyncSession = Depends(get_db)
 ):
-    """
-    Регистрация майнера в соло-пуле.
-    """
+    """Регистрация майнера в соло-пуле."""
     bch_address = miner_data.bch_address
     worker_name = miner_data.worker_name
 
@@ -224,18 +179,22 @@ async def get_miner(
     """Получение информации о конкретном майнере по BCH адресу."""
     miner = await get_miner_or_404(bch_address, db)
 
-    return {
-        "miner": {
-            "id": miner.id,
-            "bch_address": miner.bch_address,
-            "worker_name": miner.worker_name,
-            "is_active": miner.is_active,
-            "total_shares": miner.total_shares,
-            "total_blocks": miner.total_blocks,
-            "hashrate": miner.hashrate,
-            "registered_at": miner.created_at.isoformat() if hasattr(miner, 'created_at') else None
+    return ApiResponse(
+        status="success",
+        message=f"Информация о майнере {bch_address}",
+        data={
+            "miner": {
+                "id": miner.id,
+                "bch_address": miner.bch_address,
+                "worker_name": miner.worker_name,
+                "is_active": miner.is_active,
+                "total_shares": miner.total_shares,
+                "total_blocks": miner.total_blocks,
+                "hashrate": miner.hashrate,
+                "registered_at": miner.created_at.isoformat() if hasattr(miner, 'created_at') else None
+            }
         }
-    }
+    )
 
 
 @router.delete(
@@ -255,13 +214,15 @@ async def delete_miner(
         miner.is_active = False
         await db.commit()
 
-        return {
-            "status": "deactivated",
-            "message": f"Майнер {bch_address} успешно деактивирован",
-            "bch_address": bch_address,
-            "action": "soft_delete",
-            "note": "Майнер деактивирован, но данные сохранены в БД"
-        }
+        return ApiResponse(
+            status="success",
+            message=f"Майнер {bch_address} успешно деактивирован",
+            data={
+                "bch_address": bch_address,
+                "action": "soft_delete",
+                "note": "Майнер деактивирован, но данные сохранены в БД"
+            }
+        )
 
     except Exception as e:
         await db.rollback()
@@ -310,21 +271,23 @@ async def update_miner(
         await db.commit()
         await db.refresh(miner)
 
-        return {
-            "status": "updated",
-            "message": f"Данные майнера {bch_address} обновлены",
-            "bch_address": bch_address,
-            "updated_fields": update_data,
-            "miner": {
-                "id": miner.id,
-                "bch_address": miner.bch_address,
-                "worker_name": miner.worker_name,
-                "is_active": miner.is_active,
-                "total_shares": miner.total_shares,
-                "total_blocks": miner.total_blocks,
-                "hashrate": miner.hashrate
+        return ApiResponse(
+            status="success",
+            message=f"Данные майнера {bch_address} обновлены",
+            data={
+                "bch_address": bch_address,
+                "updated_fields": update_data,
+                "miner": {
+                    "id": miner.id,
+                    "bch_address": miner.bch_address,
+                    "worker_name": miner.worker_name,
+                    "is_active": miner.is_active,
+                    "total_shares": miner.total_shares,
+                    "total_blocks": miner.total_blocks,
+                    "hashrate": miner.hashrate
+                }
             }
-        }
+        )
 
     except Exception as e:
         await db.rollback()
@@ -334,145 +297,126 @@ async def update_miner(
         )
 
 
+# ========== НОВЫЕ ЭНДПОИНТЫ ДЛЯ ЖИВОЙ СТАТИСТИКИ (ИЗ ПАМЯТИ) ==========
+
 @router.get(
-    "/{bch_address}/stats",
-    summary="Подробная статистика майнера",
-    response_description="Детальная статистика по майнеру",
-    response_model=ApiResponse
+    "/{bch_address}/stats/live",
+    summary="Живая статистика майнера",
+    response_description="Статистика из памяти (последние 10 минут)"
 )
-async def get_miner_stats(
+async def get_miner_live_stats(
         bch_address: str,
-        time_range: Optional[str] = Query("24h", description="Временной диапазон: 1h, 24h, 7d, 30d, all"),
         db: AsyncSession = Depends(get_db)
 ):
-    """Получение детальной статистики по майнеру."""
-    try:
-        miner = await get_miner_or_404(bch_address, db)
+    """Живая статистика майнера из памяти (без БД)."""
+    miner = await get_miner_or_404(bch_address, db)
 
-        valid_time_ranges = {"1h", "24h", "7d", "30d", "all"}
-        if not time_range or time_range not in valid_time_ranges:
-            time_range = "24h"
+    stats = await miner_stats_service.get_stats(bch_address)
 
-        time_params = TimeRangeParams(time_range)
-
-        stats_data = await get_miner_stats_universal(
-            db=db,
-            bch_address=bch_address,
-            time_filter=time_params.time_filter
-        )
-
-        shares = stats_data["shares"]
-        blocks = stats_data["blocks"]
-
-        # Рассчеты
-        valid_shares = [s for s in shares if s.is_valid]
-        invalid_shares = [s for s in shares if not s.is_valid]
-
-        avg_difficulty = 0
-        if valid_shares:
-            avg_difficulty = sum(s.difficulty for s in valid_shares) / len(valid_shares)
-
-        confirmed_blocks = [b for b in blocks if b.confirmed]
-
-        human_readable = time_params.get_human_readable()
-
-        # Расчет хэшрейта
-        hashrate_calc = 0.0
-        time_seconds = time_params.get_seconds()
-
-        if valid_shares and time_seconds and time_seconds > 0:
-            hashes_per_share = 2 ** 32
-            total_hashes = sum(s.difficulty * hashes_per_share for s in valid_shares)
-            hashrate_calc = total_hashes / time_seconds
-
+    if not stats:
         return ApiResponse(
             status="success",
-            message=f"Статистика майнера {bch_address} получена",
+            message=f"Майнер {bch_address} активен, но пока нет шаров",
             data={
                 "miner": {
-                    "bch_address": miner.bch_address,
+                    "bch_address": bch_address,
                     "worker_name": miner.worker_name,
-                    "is_active": miner.is_active,
-                    "registered_at": miner.created_at.isoformat() if hasattr(miner, 'created_at') else None
+                    "is_active": miner.is_active
                 },
-                "time_range": {
-                    "selected": time_range,
-                    "human_readable": human_readable
-                },
-                "statistics": {
-                    "shares": {
-                        "total": len(shares),
-                        "valid": len(valid_shares),
-                        "invalid": len(invalid_shares),
-                        "validity_rate": len(valid_shares) / len(shares) if shares else 0,
-                        "avg_difficulty": avg_difficulty
-                    },
-                    "blocks": {
-                        "total": len(blocks),
-                        "confirmed": len(confirmed_blocks),
-                        "unconfirmed": len(blocks) - len(confirmed_blocks),
-                        "confirmation_rate": len(confirmed_blocks) / len(blocks) if blocks else 0
-                    },
-                    "performance": {
-                        "total_shares": miner.total_shares,
-                        "total_blocks": miner.total_blocks,
-                        "current_hashrate": miner.hashrate,
-                        "calculated_hashrate": hashrate_calc,
-                        "unit": "H/s"
-                    }
-                },
-                "recent_activity": {
-                    "last_share": shares[-1].submitted_at.isoformat() if shares else None,
-                    "last_block": blocks[-1].found_at.isoformat() if blocks else None
+                "stats": {
+                    "total_shares": 0,
+                    "accepted": 0,
+                    "rejected": 0,
+                    "acceptance_rate": 0,
+                    "hashrate": 0,
+                    "hashrate_formatted": "0 H/s",
+                    "max_difficulty": 0,
+                    "last_update": None
                 }
             }
         )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Ошибка получения статистики майнера {bch_address}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Внутренняя ошибка при получении статистики: {str(e)}"
-        )
+    hashrate = await miner_stats_service.get_hashrate(bch_address)
+
+    return ApiResponse(
+        status="success",
+        message=f"Живая статистика майнера {bch_address} получена",
+        data={
+            "miner": {
+                "bch_address": bch_address,
+                "worker_name": miner.worker_name,
+                "is_active": miner.is_active
+            },
+            "stats": {
+                "total_shares": stats.total_shares,
+                "accepted": stats.accepted_shares,
+                "rejected": stats.rejected_shares,
+                "acceptance_rate": round(stats.accepted_shares / stats.total_shares if stats.total_shares > 0 else 0, 4),
+                "hashrate": hashrate,
+                "hashrate_formatted": format_hashrate(hashrate),
+                "max_difficulty": stats.max_difficulty,
+                "last_update": stats.last_update.isoformat()
+            },
+            "timestamp": datetime.now(UTC).isoformat()
+        }
+    )
 
 
 @router.get(
-    "/{bch_address}/shares",
-    summary="Шары майнера",
-    response_description="Список шаров (shares) майнера"
+    "/{bch_address}/shares/last",
+    summary="Последние шары майнера",
+    response_description="Последние N шаров из памяти"
 )
-async def get_miner_shares(
+async def get_last_shares(
         bch_address: str,
-        skip: int = 0,
-        limit: int = 50,
-        valid_only: bool = False,
+        limit: int = Query(50, ge=1, le=200, description="Количество шаров"),
         db: AsyncSession = Depends(get_db)
 ):
-    """Получение списка шаров майнера."""
-    miner = await get_miner_or_404(bch_address, db)
-    shares = await get_miner_shares_data(bch_address, db, skip, limit, valid_only)
+    """Получить последние N шаров майнера из памяти."""
+    await get_miner_or_404(bch_address, db)
 
-    return {
-        "miner": bch_address,
-        "worker_name": miner.worker_name,
-        "shares_count": len(shares),
-        "skip": skip,
-        "limit": limit,
-        "valid_only": valid_only,
-        "shares": [
-            {
-                "id": s.id,
-                "job_id": s.job_id,
-                "difficulty": s.difficulty,
-                "is_valid": s.is_valid,
-                "submitted_at": s.submitted_at.isoformat(),
-                "time_ago": humanize_time_ago(s.submitted_at) if hasattr(s, 'submitted_at') else None
-            }
-            for s in shares
-        ]
-    }
+    shares = await miner_stats_service.get_last_shares(bch_address, limit)
+
+    return ApiResponse(
+        status="success",
+        message=f"Получено {len(shares)} последних шаров",
+        data={
+            "address": bch_address,
+            "count": len(shares),
+            "shares": [s.to_dict() for s in shares],
+            "timestamp": datetime.now(UTC).isoformat()
+        }
+    )
+
+
+@router.get(
+    "/{bch_address}/max-share",
+    summary="Самый сложный шар майнера",
+    response_description="Шар с максимальной сложностью"
+)
+async def get_max_difficulty_share(
+        bch_address: str,
+        db: AsyncSession = Depends(get_db)
+):
+    """Получить шар с максимальной сложностью для майнера."""
+    await get_miner_or_404(bch_address, db)
+
+    share = await miner_stats_service.get_max_difficulty_share(bch_address)
+
+    if not share:
+        return ApiResponse(
+            status="success",
+            message="У майнера пока нет шаров",
+            data={"share": None}
+        )
+
+    return ApiResponse(
+        status="success",
+        message="Самый сложный шар найден",
+        data={
+            "share": share.to_dict()
+        }
+    )
 
 
 @router.get(
@@ -482,31 +426,45 @@ async def get_miner_shares(
 )
 async def get_miner_blocks(
         bch_address: str,
-        skip: int = 0,
-        limit: int = 20,
-        confirmed_only: bool = False,
+        skip: int = Query(0, ge=0, description="Сколько пропустить"),
+        limit: int = Query(20, ge=1, le=100, description="Количество блоков"),
+        confirmed_only: bool = Query(False, description="Только подтвержденные"),
         db: AsyncSession = Depends(get_db)
 ):
-    """Получение списка блоков, найденных майнером."""
+    """Получение списка блоков, найденных майнером (из БД)."""
     miner = await get_miner_or_404(bch_address, db)
-    blocks = await get_miner_blocks_data(bch_address, db, skip, limit, confirmed_only)
 
-    return {
-        "miner": bch_address,
-        "worker_name": miner.worker_name,
-        "blocks_count": len(blocks),
-        "skip": skip,
-        "limit": limit,
-        "confirmed_only": confirmed_only,
-        "blocks": [
-            {
-                "id": b.id,
-                "height": b.height,
-                "hash": b.hash,
-                "confirmed": b.confirmed,
-                "found_at": b.found_at.isoformat(),
-                "time_ago": humanize_time_ago(b.found_at) if hasattr(b, 'found_at') else None
-            }
-            for b in blocks
-        ]
-    }
+    from app.dependencies import database_service
+    blocks = await database_service.get_blocks_by_miner(
+        bch_address,
+        limit=limit,
+        skip=skip
+    )
+
+    if confirmed_only:
+        blocks = [b for b in blocks if b.confirmed]
+
+    return ApiResponse(
+        status="success",
+        message=f"Найдено {len(blocks)} блоков",
+        data={
+            "miner": bch_address,
+            "worker_name": miner.worker_name,
+            "blocks_count": len(blocks),
+            "skip": skip,
+            "limit": limit,
+            "confirmed_only": confirmed_only,
+            "blocks": [
+                {
+                    "id": b.id,
+                    "height": b.height,
+                    "hash": b.hash,
+                    "confirmed": b.confirmed,
+                    "found_at": b.found_at.isoformat(),
+                    "time_ago": humanize_time_ago(b.found_at) if hasattr(b, 'found_at') else None
+                }
+                for b in blocks
+            ],
+            "timestamp": datetime.now(UTC).isoformat()
+        }
+    )

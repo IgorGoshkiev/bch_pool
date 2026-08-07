@@ -5,7 +5,6 @@ import time
 from typing import Tuple
 
 # ========== КОНСТАНТЫ STRATUM ПРОТОКОЛА ==========
-# STRATUM_EXTRA_NONCE1 = None
 EXTRA_NONCE2_SIZE = 4  # 4 байта = 8 hex символов
 BLOCK_HEADER_SIZE = 80  # байт
 
