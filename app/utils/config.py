@@ -2,6 +2,8 @@ from pydantic_settings import BaseSettings
 from pydantic import ConfigDict
 from typing import Optional
 
+from sqlalchemy import false
+
 
 class Settings(BaseSettings):
     # База данных
@@ -66,6 +68,7 @@ class Settings(BaseSettings):
     stats_max_shares_in_memory: int = 1000  # 1000 шаров на майнера
     stats_cleanup_interval: int = 60  # Очистка каждую минуту
     stats_aggregate_interval: int = 3600  # Агрегация в БД каждый час
+    SAVE_SHARES_TO_DB = false  # НЕ сохраняем шары в БД
 
     # Разработка
     debug: bool = False

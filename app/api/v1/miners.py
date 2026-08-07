@@ -468,3 +468,25 @@ async def get_miner_blocks(
             "timestamp": datetime.now(UTC).isoformat()
         }
     )
+
+
+@router.get(
+    "/{bch_address}/stats/weekly",
+    summary="Статистика майнера за неделю",
+    response_description="Агрегированная статистика за 7 дней"
+)
+async def get_miner_weekly_stats(
+        bch_address: str,
+        db: AsyncSession = Depends(get_db)
+):
+    """Получить агрегированную статистику майнера за неделю"""
+    await get_miner_or_404(bch_address, db)
+
+    from app.services.aggregated_stats_service import AggregatedStatsService
+    stats = await AggregatedStatsService.get_weekly_stats(bch_address)
+
+    return ApiResponse(
+        status="success",
+        message=f"Статистика за неделю для {bch_address}",
+        data=stats
+    )

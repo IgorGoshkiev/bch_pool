@@ -486,9 +486,9 @@ class StratumTCPServer:
         hash_result = None
         job_data = None
         share_difficulty = None
-        extra_data = None
-        is_valid = False
-        error_msg = None
+        extra_data = None  # noqa: F841
+        is_valid = False  # noqa: F841
+        error_msg = None  # noqa: F841
 
         try:
             # 1. ПРОВЕРКА ПАРАМЕТРОВ

@@ -3,11 +3,15 @@
 """
 from contextlib import asynccontextmanager
 import asyncio
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta, date
 
 from app.utils.logging_config import StructuredLogger
 from app.dependencies import job_manager, stratum_server, tcp_stratum_server, share_validator, difficulty_service
 from app.utils.config import settings
+
+# Новые импорты для статистики
+from app.services.miner_stats import miner_stats_service
+from app.services.aggregated_stats_service import AggregatedStatsService
 
 logger = StructuredLogger(__name__)
 
@@ -73,7 +77,6 @@ async def lifespan(_app):
                     target_hex = template['target']
                     target_int = int(target_hex, 16)
 
-                    # ← ВЫЗЫВАЕМ МЕТОД ВАЛИДАТОРА
                     share_validator.update_target_from_node(target_int)
 
                     print(f"🎯 TARGET FROM NODE UPDATED: {target_hex}", flush=True)
@@ -99,9 +102,23 @@ async def lifespan(_app):
                 event="job_manager_init_failed",
                 error_details="Не удалось подключиться к BCH ноде"
             )
-            # Можно продолжить работу в fallback режиме
 
-        # 3. Запускаем TCP Stratum сервер в фоне (если включен)
+        # 3. Запускаем MinerStatsService (очистка старых данных 10 минут)
+        try:
+            await miner_stats_service.start()
+            logger.info(
+                "MinerStatsService запущен (очистка старых данных)",
+                event="miner_stats_service_started",
+                max_age_seconds=settings.stats_max_age_seconds
+            )
+        except Exception as e:
+            logger.error(
+                "Ошибка запуска MinerStatsService",
+                event="miner_stats_service_start_failed",
+                error=str(e)
+            )
+
+        # 4. Запускаем TCP Stratum сервер в фоне (если включен)
         if settings.stratum_tcp_enabled:
             try:
                 tcp_task = asyncio.create_task(tcp_stratum_server.start())
@@ -122,7 +139,7 @@ async def lifespan(_app):
                     port=tcp_stratum_server.port
                 )
 
-        # 4. Запускаем периодическую рассылку заданий
+        # 5. Запускаем периодическую рассылку заданий
         try:
             broadcast_task = asyncio.create_task(_periodic_job_broadcaster())
             background_tasks.append(broadcast_task)
@@ -139,7 +156,7 @@ async def lifespan(_app):
                 error=str(e)
             )
 
-        # 5. Запускаем очистку старых заданий
+        # 6. Запускаем очистку старых заданий
         try:
             cleanup_task = asyncio.create_task(_periodic_job_cleanup())
             background_tasks.append(cleanup_task)
@@ -156,7 +173,7 @@ async def lifespan(_app):
                 error=str(e)
             )
 
-        # 6. Запускаем периодическое обновление сложности
+        # 7. Запускаем периодическое обновление сложности
         if settings.enable_dynamic_difficulty:
             try:
                 difficulty_task = asyncio.create_task(_periodic_difficulty_updater())
@@ -174,7 +191,7 @@ async def lifespan(_app):
                     error=str(e)
                 )
 
-        # 7. Запускаем периодическую проверку реорганизации
+        # 8. Запускаем периодическую проверку реорганизации
         try:
             reorg_task = asyncio.create_task(_periodic_reorg_checker())
             background_tasks.append(reorg_task)
@@ -188,6 +205,21 @@ async def lifespan(_app):
             logger.error(
                 "Ошибка запуска проверки реорганизации",
                 event="reorg_checker_start_failed",
+                error=str(e)
+            )
+
+        # 9. Запускаем ежедневную агрегацию статистики
+        try:
+            aggregation_task = asyncio.create_task(_daily_aggregation_loop())
+            background_tasks.append(aggregation_task)
+            logger.info(
+                "Ежедневная агрегация статистики запущена",
+                event="daily_aggregation_started"
+            )
+        except Exception as e:
+            logger.error(
+                "Ошибка запуска ежедневной агрегации",
+                event="daily_aggregation_start_failed",
                 error=str(e)
             )
 
@@ -208,7 +240,6 @@ async def lifespan(_app):
             error_type=type(e).__name__,
             startup_duration_seconds=(datetime.now(UTC) - startup_time).total_seconds()
         )
-        # Пробрасываем исключение дальше
         raise
 
     # Передаем управление приложению
@@ -224,7 +255,21 @@ async def lifespan(_app):
     )
 
     try:
+        # Останавливаем MinerStatsService
+        try:
+            await miner_stats_service.stop()
+            logger.info(
+                "MinerStatsService остановлен",
+                event="miner_stats_service_stopped"
+            )
+        except Exception as e:
+            logger.warning(
+                "Ошибка остановки MinerStatsService",
+                event="miner_stats_service_stop_error",
+                error=str(e)
+            )
 
+        # Отправляем уведомление майнерам
         try:
             import json
             shutdown_notice = {
@@ -233,7 +278,7 @@ async def lifespan(_app):
                 "error": None
             }
 
-            # Отправляем уведомление WebSocket майнерам
+            # WebSocket майнерам
             ws_count = 0
             for conn_id, ws in stratum_server.active_connections.items():
                 try:
@@ -247,7 +292,7 @@ async def lifespan(_app):
                         error=str(e)
                     )
 
-            # Отправляем уведомление TCP майнерам
+            # TCP майнерам
             tcp_count = 0
             for client_id, writer in tcp_stratum_server.connections.items():
                 try:
@@ -261,6 +306,7 @@ async def lifespan(_app):
                         client_id=client_id,
                         error=str(e)
                     )
+
             if ws_count > 0 or tcp_count > 0:
                 logger.info(
                     "Уведомление о остановке отправлено майнерам",
@@ -269,7 +315,6 @@ async def lifespan(_app):
                     tcp_count=tcp_count
                 )
 
-            # Даем время на отправку (2 секунды)
             await asyncio.sleep(2)
 
         except Exception as e:
@@ -357,6 +402,8 @@ async def lifespan(_app):
         )
 
 
+# ========== ФОНОВЫЕ ЗАДАЧИ ==========
+
 async def _periodic_job_broadcaster():
     """Периодическая рассылка новых заданий"""
     iteration = 0
@@ -373,7 +420,6 @@ async def _periodic_job_broadcaster():
         try:
             await asyncio.sleep(settings.job_broadcast_interval)
 
-            # Проверяем есть ли активные майнеры
             ws_miners = len(stratum_server.active_connections)
             tcp_miners = len(tcp_stratum_server.connections)
             active_miners = ws_miners + tcp_miners
@@ -419,7 +465,6 @@ async def _periodic_job_broadcaster():
             await asyncio.sleep(5)
 
 
-# Добавим новую фоновую задачу:
 async def _periodic_difficulty_updater():
     """Периодическое обновление сложности"""
     iteration = 0
@@ -436,11 +481,9 @@ async def _periodic_difficulty_updater():
         try:
             await asyncio.sleep(settings.difficulty_update_interval)
 
-            # Обновляем сложность
             updated, new_difficulty, message = await difficulty_service.update_difficulty()
 
             if updated:
-                # Обновляем валидатор
                 share_validator.pool_difficulty = new_difficulty
 
                 logger.info(
@@ -459,7 +502,6 @@ async def _periodic_difficulty_updater():
                     message=message
                 )
 
-            # Очищаем старые данные
             difficulty_service.cleanup_old_data(max_age_hours=24)
 
         except asyncio.CancelledError:
@@ -494,7 +536,7 @@ async def _periodic_reorg_checker():
     while True:
         iteration += 1
         try:
-            await asyncio.sleep(10)  # Проверяем каждые 10 секунд
+            await asyncio.sleep(10)
 
             if job_manager and hasattr(job_manager, 'check_for_reorg'):
                 await job_manager.check_for_reorg()
@@ -519,7 +561,8 @@ async def _periodic_reorg_checker():
                 iteration=iteration,
                 error=str(e)
             )
-            await asyncio.sleep(30)  # При ошибке ждем дольше
+            await asyncio.sleep(30)
+
 
 async def _periodic_job_cleanup():
     """Периодическая очистка старых заданий"""
@@ -537,11 +580,9 @@ async def _periodic_job_cleanup():
         try:
             await asyncio.sleep(60)
 
-            # Очищаем задания в WebSocket сервере
             ws_jobs_before = len(getattr(stratum_server, 'subscriptions', {}))
             stratum_server.cleanup_old_jobs(max_age_seconds=settings.job_cleanup_age)
 
-            # Очищаем задания в валидаторе
             validator_jobs_before = 0
             if hasattr(share_validator, 'jobs_cache'):
                 validator_jobs_before = len(share_validator.jobs_cache)
@@ -572,3 +613,60 @@ async def _periodic_job_cleanup():
                 error=str(e)
             )
 
+
+# ========== НОВАЯ ФОНОВАЯ ЗАДАЧА: ЕЖЕДНЕВНАЯ АГРЕГАЦИЯ ==========
+
+async def _daily_aggregation_loop():
+    """
+    Ежедневная агрегация статистики в полночь.
+    Сохраняет данные из памяти в БД для недельной статистики.
+    """
+    logger.info(
+        "Запуск ежедневной агрегации статистики",
+        event="daily_aggregation_loop_started"
+    )
+
+    while True:
+        try:
+            now = datetime.now(UTC)
+            # Вычисляем время до следующей полуночи
+            tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+            wait_seconds = (tomorrow - now).total_seconds()
+
+            logger.debug(
+                f"Следующая агрегация через {wait_seconds:.0f} секунд",
+                event="daily_aggregation_next",
+                wait_seconds=wait_seconds
+            )
+
+            await asyncio.sleep(wait_seconds)
+
+            # Агрегируем статистику за вчера
+            yesterday = date.today() - timedelta(days=1)
+            logger.info(
+                f"Запуск агрегации за {yesterday}",
+                event="daily_aggregation_start",
+                date=yesterday.isoformat()
+            )
+
+            await AggregatedStatsService.aggregate_daily_stats(yesterday)
+
+            logger.info(
+                f"Агрегация за {yesterday} завершена",
+                event="daily_aggregation_completed",
+                date=yesterday.isoformat()
+            )
+
+        except asyncio.CancelledError:
+            logger.info(
+                "Ежедневная агрегация остановлена",
+                event="daily_aggregation_stopped"
+            )
+            break
+        except Exception as e:
+            logger.error(
+                f"Ошибка в ежедневной агрегации: {e}",
+                event="daily_aggregation_error",
+                error=str(e)
+            )
+            await asyncio.sleep(3600)  # При ошибке ждем час
