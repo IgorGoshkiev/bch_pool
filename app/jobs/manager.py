@@ -280,11 +280,11 @@ class JobManager:
                     old_hash=self.last_best_hash[:16] + "...",
                     new_hash=current_best[:16] + "..."
                 )
-                # Отправляем clean_jobs=True
-                await self._broadcast_clean_jobs()
-
-                # Создаем новое задание
+                # 1. СНАЧАЛА создаем НОВОЕ задание
                 await self.broadcast_new_job_to_all()
+
+                # 2. ПОТОМ отправляем clean_jobs=True (майнеры переключатся на новое)
+                await self._broadcast_clean_jobs()
 
             self.last_best_hash = current_best
 
