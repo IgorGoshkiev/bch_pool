@@ -9,7 +9,6 @@ from collections import deque
 from app.utils.logging_config import StructuredLogger
 from app.utils.config import settings
 
-
 logger = StructuredLogger(__name__)
 
 
@@ -401,23 +400,54 @@ class DifficultyService:
 
         current = self.miner_difficulties.get(miner_address, self.min_difficulty)
 
-        if avg_time < TARGET_TIME_BETWEEN_SHARES * 0.5:
+        # ===== НОВЫЙ АЛГОРИТМ (ПЛАВНАЯ АДАПТАЦИЯ) =====
+
+        # Коэффициент адаптации (чем меньше, тем плавнее изменение)
+        # 0.1 = изменение на 10% за раз
+        ADAPTATION_RATE = 0.1
+
+        # Идеальное время между шарами
+        TARGET_TIME = TARGET_TIME_BETWEEN_SHARES
+
+        if avg_time < TARGET_TIME * 0.5:
             # Слишком часто — повышаем сложность
-            new_diff = current * 1.5
-            if self.max_difficulty is not None:
-                new_diff = min(self.max_difficulty, new_diff)
-        elif avg_time > TARGET_TIME_BETWEEN_SHARES * 1.5:
+            # Рассчитываем, насколько нужно повысить
+            ratio = TARGET_TIME / avg_time
+            # Плавное повышение
+            new_diff = current * (1 + (ratio - 1) * ADAPTATION_RATE)
+            print(f"🔍 [DIFF_CALC] Too fast ({avg_time:.2f}s), raising: {current:.2f} -> {new_diff:.2f}", flush=True)
+
+        elif avg_time > TARGET_TIME * 1.5:
             # Слишком редко — снижаем сложность
-            new_diff = max(self.min_difficulty, current / 1.5)
+            ratio = TARGET_TIME / avg_time
+            # Плавное снижение
+            new_diff = current * (1 - (1 - ratio) * ADAPTATION_RATE)
+            print(f"🔍 [DIFF_CALC] Too slow ({avg_time:.2f}s), lowering: {current:.2f} -> {new_diff:.2f}", flush=True)
+
         else:
             # Оптимально — оставляем как есть
             new_diff = current
+            print(f"🔍 [DIFF_CALC] Optimal ({avg_time:.2f}s), keeping: {current:.2f}", flush=True)
 
-        # Ограничиваем изменение за раз
+        # ===== ЗАЩИТА ОТ КОСМИЧЕСКИХ ЗНАЧЕНИЙ =====
+        # Если сложность слишком высокая (> 1000) и шаров мало, снижаем
+        if new_diff > 1000 and len(recent) < 10:
+            new_diff = current / 2
+            print(f"⚠️ [DIFF_CALC] Too high ({new_diff:.2f}) with few shares, lowering to {new_diff:.2f}", flush=True)
+
+        # Ограничиваем изменение за один раз (НЕ более чем в 2 раза)
         if new_diff > current * 2:
             new_diff = current * 2
+            print(f"🔍 [DIFF_CALC] Capped at 2x: {new_diff:.2f}", flush=True)
         elif new_diff < current / 2:
             new_diff = current / 2
+            print(f"🔍 [DIFF_CALC] Capped at 0.5x: {new_diff:.2f}", flush=True)
+
+        # ===== ЗАЩИТА ОТ МИКРО-ЗНАЧЕНИЙ =====
+        # Не даем сложности упасть слишком низко
+        if new_diff < self.min_difficulty:
+            new_diff = self.min_difficulty
+            print(f"🔍 [DIFF_CALC] Min difficulty: {new_diff:.2f}", flush=True)
 
         self.miner_difficulties[miner_address] = new_diff
         return new_diff
@@ -504,5 +534,3 @@ class DifficultyService:
             "max_difficulty": self.max_difficulty,
             "history_size": len(self.share_history)
         }
-
-
