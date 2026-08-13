@@ -345,31 +345,39 @@ class StratumTCPServer:
                     # НО для проверки используем начальную сложность из настроек
                     self.miner_max_difficulties = getattr(self, 'miner_max_difficulties', {})
                     self.miner_max_difficulties[miner_address] = suggested
-
                     # Сохраняем для отображения в ASIC
                     self.miner_display_difficulties[miner_address] = suggested
                     print(f"📊 ASIC max difficulty saved: {suggested}", flush=True)
+
+                    # ===== ЛОГИРУЕМ ТЕКУЩУЮ СЛОЖНОСТЬ МАЙНЕРА =====
+                    current_miner_diff = self.miner_difficulties.get(miner_address, 0)
+                    print(
+                        f"📊 [SUGGEST_DIFF] Miner: {miner_address[:20]}... | Suggested: {suggested} | Current: {current_miner_diff}",
+                        flush=True)
 
                     # Если у майнера еще нет текущей сложности - устанавливаем начальную
                     if miner_address not in self.miner_difficulties:
                         initial_diff = getattr(settings, 'default_share_difficulty', 0.001)
                         self.miner_difficulties[miner_address] = initial_diff
-                        print(f"📊 Initial difficulty set: {initial_diff}", flush=True)
+                        print(f"📊 [SUGGEST_DIFF] Initial difficulty set: {initial_diff}", flush=True)
 
                     # Отправляем ASIC предложенную сложность ДЛЯ ОТОБРАЖЕНИЯ
                     difficulty_msg = {
                         "method": "mining.set_difficulty",
-                        "params": [suggested],  # ← 16384 для отображения!
+                        "params": [suggested],  #  для отображения!
                         "id": None
                     }
                     await self._send_json(writer, difficulty_msg)
-                    print(f"📊 SENT DISPLAY DIFFICULTY TO ASIC: {suggested}", flush=True)
+                    print(f"📊 [SUGGEST_DIFF] SENT TO ASIC: {suggested}", flush=True)
+                else:
+                    print(f"⚠️ [SUGGEST_DIFF] Client {client_id} not authorized, ignoring", flush=True)
 
                 # Подтверждаем
                 response = {"id": msg_id, "result": True, "error": None}
                 await self._send_json(writer, response)
-                print(f"📊 Confirmed suggest_difficulty", flush=True)
+                print(f"📊 [SUGGEST_DIFF] Confirmed", flush=True)
             else:
+                print(f"⚠️ [SUGGEST_DIFF] Invalid params: {params}", flush=True)
                 await self._send_error(writer, msg_id, "Invalid suggest_difficulty parameters")
 
         elif method == "mining.extranonce.subscribe":
@@ -721,10 +729,19 @@ class StratumTCPServer:
 
                     # Обновляем если изменение > 20%
                     change_ratio = abs(new_difficulty - current_difficulty) / max(current_difficulty, 0.0001)
+
+                    print(f"📊 [DIFF_DEBUG] ========================================", flush=True)
+                    print(f"📊 [DIFF_DEBUG] miner: {miner_address[:20]}...", flush=True)
+                    print(f"📊 [DIFF_DEBUG] current_difficulty: {current_difficulty:.10f}", flush=True)
+                    print(f"📊 [DIFF_DEBUG] new_difficulty:     {new_difficulty:.10f}", flush=True)
+                    print(f"📊 [DIFF_DEBUG] change_ratio:       {change_ratio:.4f}", flush=True)
+                    print(f"📊 [DIFF_DEBUG] threshold:          0.2", flush=True)
+                    print(f"📊 [DIFF_DEBUG] change_ratio > 0.2: {change_ratio > 0.2}", flush=True)
+
                     if change_ratio > 0.2:
                         await self.update_miner_difficulty(miner_address, new_difficulty)
                         self.miner_difficulties[miner_address] = new_difficulty
-                        print(f"📊 DIFFICULTY UPDATED: {current_difficulty:.6f} -> {new_difficulty:.6f}", flush=True)
+                        print(f"📊 [DIFF_UPDATE] REAL DIFF: {new_difficulty} | DISPLAY DIFF: {self.miner_display_difficulties.get(miner_address, 16384)}", flush=True)
 
                     profiler['difficulty'] = (time.time() - t0) * 1000
                     print(f"⏱️ difficulty: {profiler['difficulty']:.1f}ms", flush=True)
@@ -997,6 +1014,7 @@ class StratumTCPServer:
             }
 
             await self._send_json(writer, method_data)
+            print(f"📊 REAL DIFFICULTY SENT: {difficulty}", flush=True)
 
             logger.info(
                 "Персональная сложность отправлена TCP майнеру",

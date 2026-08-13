@@ -362,22 +362,31 @@ class DifficultyService:
         Расчет оптимальной сложности для конкретного майнера
         Использует частоту шаров для адаптации
         """
+        print(f"🔍 [DIFF_CALC] START for {miner_address[:20]}...", flush=True)
+
         if miner_address not in self.share_timestamps:
+            print(f"🔍 [DIFF_CALC] No timestamps, returning min: {self.min_difficulty}", flush=True)
             return self.min_difficulty
 
         timestamps = list(self.share_timestamps[miner_address])
+        print(f"🔍 [DIFF_CALC] timestamps count: {len(timestamps)}", flush=True)
+
         if len(timestamps) < 5:
+            print(f"🔍 [DIFF_CALC] Too few timestamps, returning min: {self.min_difficulty}", flush=True)
             return self.min_difficulty
 
         now = datetime.now(UTC)
         # Анализируем последние 60 секунд
         recent = [ts for ts in timestamps if (now - ts).total_seconds() < 60]
+        print(f"🔍 [DIFF_CALC] recent timestamps (60s): {len(recent)}", flush=True)
 
         if len(recent) < 2:
             # Мало шаров — снижаем сложность
             current = self.miner_difficulties.get(miner_address, self.min_difficulty)
             new_diff = max(self.min_difficulty, current / 2)
             self.miner_difficulties[miner_address] = new_diff
+            print(f"🔍 [DIFF_CALC] Too few recent, lowering: {current} -> {new_diff}", flush=True)
+
             return new_diff
 
         # Среднее время между шарами
