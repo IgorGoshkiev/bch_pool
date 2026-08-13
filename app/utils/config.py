@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     enable_dynamic_difficulty: bool = True
     difficulty_update_interval: int = 300
     min_difficulty: float = 0.001
-    max_difficulty: float = 10000000
+    max_difficulty: Optional[float] = None
     target_shares_per_minute: int = 60
 
     # Stratum серверы

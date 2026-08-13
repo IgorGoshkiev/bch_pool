@@ -35,7 +35,7 @@ class DifficultyService:
         self.current_difficulty = network_config['default_difficulty']
         self.target_shares_per_minute = settings.target_shares_per_minute
         self.min_difficulty = settings.min_difficulty
-        self.max_difficulty = settings.max_difficulty
+        self.max_difficulty = getattr(settings, 'max_difficulty', None)
 
         # История шаров для расчета сложности
         self.share_timestamps: Dict[str, deque] = {}
@@ -383,6 +383,7 @@ class DifficultyService:
         if len(recent) < 2:
             # Мало шаров — снижаем сложность
             current = self.miner_difficulties.get(miner_address, self.min_difficulty)
+            # Снижаем сложность ВДВОЕ
             new_diff = max(self.min_difficulty, current / 2)
             self.miner_difficulties[miner_address] = new_diff
             print(f"🔍 [DIFF_CALC] Too few recent, lowering: {current} -> {new_diff}", flush=True)
@@ -402,7 +403,9 @@ class DifficultyService:
 
         if avg_time < TARGET_TIME_BETWEEN_SHARES * 0.5:
             # Слишком часто — повышаем сложность
-            new_diff = min(self.max_difficulty, current * 1.5)
+            new_diff = current * 1.5
+            if self.max_difficulty is not None:
+                new_diff = min(self.max_difficulty, new_diff)
         elif avg_time > TARGET_TIME_BETWEEN_SHARES * 1.5:
             # Слишком редко — снижаем сложность
             new_diff = max(self.min_difficulty, current / 1.5)

@@ -578,6 +578,21 @@ class StratumTCPServer:
                         # Вместо целочисленного деления используем float
                         share_difficulty = target_for_diff_1 / hash_int
                         print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
+
+                        if share_difficulty > 0:
+                            # Отправляем ASIC сложность, которую он только что нашел
+                            # Умножаем на 10, чтобы дать стимул расти
+                            suggested_diff = min(share_difficulty * 10, 1000)
+
+                            difficulty_msg = {
+                                "method": "mining.set_difficulty",
+                                "params": [suggested_diff],
+                                "id": None
+                            }
+                            await self._send_json(writer, difficulty_msg)
+                            print(f"📊 SENT ASIC DIFFICULTY: {suggested_diff:.10f} (share: {share_difficulty:.10f})",
+                                  flush=True)
+
                     else:
                         share_difficulty = 0
                         print(f"🔥 WARNING: hash_int is 0, cannot calculate difficulty", flush=True)
@@ -595,9 +610,8 @@ class StratumTCPServer:
                 return
 
             # 5. СЛОЖНОСТЬ ДЛЯ ПРОВЕРКИ
-            # ВСЕГДА используем минимальную сложность из настроек для валидации
             # Это гарантирует, что ВСЕ шары будут проходить проверку
-            miner_diff = settings.default_share_difficulty  # 1e-10
+            miner_diff = settings.default_share_difficulty
 
             # 6. ВАЛИДАЦИЯ
             print(f"🔍 enable_share_validation={settings.enable_share_validation}", flush=True)
