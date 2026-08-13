@@ -75,13 +75,17 @@ class ShareValidator:
 
     def add_job(self, job_id: str, job_data: dict):
         """Добавить задание в кэш для валидации"""
-        print(f"🟢 VALIDATOR.add_job: job_id={job_id}, exists? {job_id in self.jobs_cache}", flush=True)
-        print(f"🟢 VALIDATOR.add_job: cache before size={len(self.jobs_cache)}", flush=True)
+        # Если кэш слишком большой — удаляем старые
+        if len(self.jobs_cache) > 100:
+            # Удаляем половину
+            keys = list(self.jobs_cache.keys())[:50]
+            for key in keys:
+                self.jobs_cache.pop(key, None)
 
         self.jobs_cache[job_id] = job_data
 
-        print(f"✅ VALIDATOR.add_job: cache after size={len(self.jobs_cache)}", flush=True)
-        print(f"✅ VALIDATOR.add_job: now in cache? {job_id in self.jobs_cache}", flush=True)
+        # print(f"✅ VALIDATOR.add_job: cache after size={len(self.jobs_cache)}", flush=True)
+        print(f"✅ VALIDATOR.add_job: ", flush=True)
 
         logger.debug(
             "Добавлено задание в кэш",

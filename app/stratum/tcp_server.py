@@ -478,9 +478,10 @@ class StratumTCPServer:
                                 writer: asyncio.StreamWriter):
         """Обработка шара от TCP клиента"""
 
-        print(f"🔵🔵🔵 HANDLE_SUBMIT_TCP CALLED 🔵🔵🔵", flush=True)
-        print(f"msg_id={msg_id}, miner={miner_address}, params={params}", flush=True)
-        print(f"params length={len(params)}", flush=True)
+        # ===== ПРОФАЙЛИНГ =====
+        profiler = {}
+        start_total = time.time()
+        print(f"⏱️ START HANDLE_SUBMIT_TCP", flush=True)
 
         # ===== ИНИЦИАЛИЗАЦИЯ ВСЕХ ПЕРЕМЕННЫХ =====
         hash_result = None
@@ -493,47 +494,51 @@ class StratumTCPServer:
         try:
             # 1. ПРОВЕРКА ПАРАМЕТРОВ
             if len(params) < 5:
-                print(f"🔴 SUBMIT ERROR: not enough params (got {len(params)}, need 5)", flush=True)
                 await self._send_error(writer, msg_id, "Invalid submit parameters")
                 return
 
             # 2. ИЗВЛЕКАЕМ ДАННЫЕ
-            worker = params[0]
             job_id = params[1]
             extra_nonce2 = params[2]
             ntime = params[3]
             nonce = params[4]
             version_from_asic = params[5] if len(params) > 5 else None
 
-            print(
-                f"📊 PARAMS: job_id={job_id}, extra_nonce2={extra_nonce2}, ntime={ntime}, nonce={nonce}, worker={worker}",
-                flush=True)
-            print(f"📊 VERSION FROM ASIC: {version_from_asic}", flush=True)
-
-            # 3. РАСЧЕТ ХЭША И СЛОЖНОСТИ ШАРА
-
+            # 3. ПОЛУЧАЕМ ЗАДАНИЕ  РАСЧЕТ ХЭША И СЛОЖНОСТИ ШАРА
             try:
+                t0 = time.time()
                 job_data = self.job_service.get_job(job_id)
-                if job_data and self.share_validator:
-                    hash_result = self.share_validator.calculate_hash(
-                        job_data, extra_nonce2, ntime, nonce, version_from_asic
-                    )
-                    print(f"🔥 SHARE HASH: {hash_result}", flush=True)
+                profiler['get_job'] = (time.time() - t0) * 1000
+                print(f"⏱️ get_job: {profiler['get_job']:.1f}ms", flush=True)
+            except Exception as e:
+                print(f"🔥 ERROR getting job: {e}", flush=True)
 
-                    hash_int = int(hash_result, 16)
-                    if hash_int > 0:
-                        # Берем TARGET из валидатора (динамический)
-                        target_for_diff_1 = self.share_validator.TARGET_FOR_DIFFICULTY_1
-                        # Вместо целочисленного деления используем float
-                        share_difficulty = target_for_diff_1 / hash_int
-                        print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
-                    else:
-                        share_difficulty = 0
-                        print(f"🔥 WARNING: hash_int is 0, cannot calculate difficulty", flush=True)
+                if job_data and self.share_validator:
+                    try:
+                        t0 = time.time()
+                        hash_result = self.share_validator.calculate_hash(
+                            job_data, extra_nonce2, ntime, nonce, version_from_asic
+                        )
+                        profiler['calculate_hash'] = (time.time() - t0) * 1000
+                        print(f"⏱️ calculate_hash: {profiler['calculate_hash']:.1f}ms", flush=True)
+                        print(f"🔥 SHARE HASH: {hash_result}", flush=True)
+
+                        hash_int = int(hash_result, 16)
+                        if hash_int > 0:
+                            # Берем TARGET из валидатора (динамический)
+                            target_for_diff_1 = self.share_validator.TARGET_FOR_DIFFICULTY_1
+                            # Вместо целочисленного деления используем float
+                            share_difficulty = target_for_diff_1 / hash_int
+                            print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
+                        else:
+                            share_difficulty = 0
+                            print(f"🔥 WARNING: hash_int is 0, cannot calculate difficulty", flush=True)
+                    except Exception as e:
+                        print(f"🔥 ERROR calculating hash: {e}", flush=True)
+                        hash_result = None
                 else:
                     print(f"🔥 JOB NOT FOUND or no validator: {job_id}", flush=True)
-            except Exception as e:
-                print(f"🔥 ERROR calculating hash: {e}", flush=True)
+
 
             # 4. ПРОВЕРЯЕМ, ЧТО ХЭШ РАССЧИТАН
             if hash_result is None:
@@ -545,24 +550,27 @@ class StratumTCPServer:
             # ВСЕГДА используем минимальную сложность из настроек для валидации
             # Это гарантирует, что ВСЕ шары будут проходить проверку
             miner_diff = settings.default_share_difficulty  # 1e-10
-            print(f"🔍 USING FIXED DIFFICULTY FOR VALIDATION: {miner_diff:.10e} (from settings)", flush=True)
-            print(f"🔍 SHARE DIFFICULTY (for reference only): {share_difficulty if share_difficulty else 'N/A'}",
-                  flush=True)
 
             # 6. ВАЛИДАЦИЯ
             print(f"🔍 enable_share_validation={settings.enable_share_validation}", flush=True)
 
             if settings.enable_share_validation:
-                print(f"🔍 Calling validate_and_process_share with difficulty={miner_diff:.10e}...", flush=True)
-                is_valid, error_msg, extra_data = self.job_service.validate_and_process_share(
-                    job_id=job_id,
-                    extra_nonce2=extra_nonce2,
-                    ntime=ntime,
-                    nonce=nonce,
-                    miner_address=miner_address,
-                    pool_difficulty=miner_diff  # ← ФИКСИРОВАННАЯ СЛОЖНОСТЬ!
-                )
-                print(f"🔍 VALIDATION RESULT: is_valid={is_valid}, error_msg={error_msg}", flush=True)
+                try:
+                    t0 = time.time()
+                    is_valid, error_msg, extra_data = self.job_service.validate_and_process_share(
+                        job_id=job_id,
+                        extra_nonce2=extra_nonce2,
+                        ntime=ntime,
+                        nonce=nonce,
+                        miner_address=miner_address,
+                        pool_difficulty=miner_diff
+                    )
+
+                    profiler['validate'] = (time.time() - t0) * 1000
+                    print(f"⏱️ validate: {profiler['validate']:.1f}ms", flush=True)
+                except Exception as e:
+                    print(f"🔥 ERROR validating: {e}", flush=True)
+                    is_valid = False
             else:
                 print(f"⚠️ VALIDATION DISABLED: accepting all shares", flush=True)
                 is_valid = True
@@ -591,10 +599,15 @@ class StratumTCPServer:
                 nonce=nonce,
                 ntime=ntime
             )
-
-            # Добавляем в статистику (мгновенно, без БД)
-            await miner_stats_service.add_share(miner_address, share_info)
-            print(f"📊 STATS UPDATED IN MEMORY", flush=True)
+            try:
+                t0 = time.time()
+                # Добавляем в статистику (мгновенно, без БД)
+                await miner_stats_service.add_share(miner_address, share_info)
+                profiler['stats'] = (time.time() - t0) * 1000
+                print(f"⏱️ stats: {profiler['stats']:.1f}ms", flush=True)
+                print(f"📊 STATS UPDATED IN MEMORY", flush=True)
+            except Exception as e:
+                print(f"🔥 ERROR adding stats: {e}", flush=True)
 
             # 10. ПРОВЕРЯЕМ БЛОК (ИСПОЛЬЗУЕМ extra_data)
             if extra_data and extra_data.get('is_valid_block', False):
@@ -605,54 +618,92 @@ class StratumTCPServer:
                 if job_data and 'template' in job_data:
                     block_height = job_data['template'].get('height', 0)
 
-                # Сохраняем ТОЛЬКО блок в БД!
-                await self.database_service.save_block(
-                    height=block_height,
-                    block_hash=hash_result,
-                    miner_address=miner_address,
-                    confirmed=False
-                )
-                print(f"💾 BLOCK SAVED TO DB! height={block_height}", flush=True)
+                try:
+                    t0 = time.time()
+                    # Сохраняем ТОЛЬКО блок в БД!
+                    await self.database_service.save_block(
+                        height=block_height,
+                        block_hash=hash_result,
+                        miner_address=miner_address,
+                        confirmed=False
+                    )
+                    profiler['save_block'] = (time.time() - t0) * 1000
+                    print(f"⏱️ save_block: {profiler['save_block']:.1f}ms", flush=True)
+                    print(f"💾 BLOCK SAVED TO DB! height={block_height}", flush=True)
+                except Exception as e:
+                    print(f"🔥 ERROR saving block: {e}", flush=True)
 
-                # Отправляем блок через job_service
-                block_result = await self.job_service.process_found_block(
-                    miner_address=miner_address,
-                    job_id=job_id,
-                    extra_nonce2=extra_nonce2,
-                    ntime=ntime,
-                    nonce=nonce,
-                    hash_result=extra_data.get('hash_result', '')
-                )
+                try:
+                    # Отправляем блок через job_service
+                    block_result = await self.job_service.process_found_block(
+                        miner_address=miner_address,
+                        job_id=job_id,
+                        extra_nonce2=extra_nonce2,
+                        ntime=ntime,
+                        nonce=nonce,
+                        hash_result=extra_data.get('hash_result', '')
+                    )
 
-                if block_result.get("status") == "accepted":
-                    print(f"✅ BLOCK ACCEPTED BY NODE! hash={hash_result[:16]}...", flush=True)
-                else:
-                    print(f"🔴 BLOCK REJECTED: {block_result.get('message')}", flush=True)
+                    if block_result.get("status") == "accepted":
+                        print(f"✅ BLOCK ACCEPTED BY NODE! hash={hash_result[:16]}...", flush=True)
+                    else:
+                        print(f"🔴 BLOCK REJECTED: {block_result.get('message')}", flush=True)
+                except Exception as e:
+                    print(f"🔥 ERROR submitting block: {e}", flush=True)
 
             # 11. ОТПРАВЛЯЕМ УСПЕХ
-            response = {"id": msg_id, "result": True, "error": None}
-            await self._send_json(writer, response)
-            print(f"✅ SHARE ACCEPTED (stats in memory)", flush=True)
+            try:
+                t0 = time.time()
+                response = {"id": msg_id, "result": True, "error": None}
+                await self._send_json(writer, response)
+                profiler['send_json'] = (time.time() - t0) * 1000
+                print(f"⏱️ send_json: {profiler['send_json']:.1f}ms", flush=True)
+                print(f"✅ SHARE ACCEPTED (stats in memory)", flush=True)
+            except BrokenPipeError:
+                print(f"🔴 ASIC DISCONNECTED during send", flush=True)
+                return
+            except Exception as e:
+                print(f"🔥 ERROR sending response: {e}", flush=True)
 
             # 12. АДАПТИВНАЯ СЛОЖНОСТЬ
             if self.difficulty_service and is_valid:
                 # Используем РЕАЛЬНУЮ сложность шара для статистики
                 difficulty_for_stats = share_difficulty if share_difficulty is not None else settings.default_share_difficulty
-                await self.difficulty_service.add_share(miner_address, difficulty_for_stats)
 
-                # Рассчитываем новую оптимальную сложность для майнера
-                new_difficulty = await self.difficulty_service.calculate_difficulty_for_miner(miner_address)
+                try:
+                    t0 = time.time()
+                    await self.difficulty_service.add_share(miner_address, difficulty_for_stats)
+                    # Рассчитываем новую оптимальную сложность для майнера
+                    new_difficulty = await self.difficulty_service.calculate_difficulty_for_miner(miner_address)
 
-                # Сохраняем новую сложность
-                current_difficulty = self.miner_difficulties.get(miner_address, settings.default_share_difficulty)
+                    # Сохраняем новую сложность
+                    current_difficulty = self.miner_difficulties.get(miner_address, settings.default_share_difficulty)
 
-                # Обновляем если изменение > 20%
-                change_ratio = abs(new_difficulty - current_difficulty) / max(current_difficulty, 0.0001)
-                if change_ratio > 0.2:
-                    await self.update_miner_difficulty(miner_address, new_difficulty)
-                    self.miner_difficulties[miner_address] = new_difficulty
-                    print(f"📊 DIFFICULTY UPDATED: {current_difficulty:.6f} -> {new_difficulty:.6f}", flush=True)
+                    # Обновляем если изменение > 20%
+                    change_ratio = abs(new_difficulty - current_difficulty) / max(current_difficulty, 0.0001)
+                    if change_ratio > 0.2:
+                        await self.update_miner_difficulty(miner_address, new_difficulty)
+                        self.miner_difficulties[miner_address] = new_difficulty
+                        print(f"📊 DIFFICULTY UPDATED: {current_difficulty:.6f} -> {new_difficulty:.6f}", flush=True)
 
+                    profiler['difficulty'] = (time.time() - t0) * 1000
+                    print(f"⏱️ difficulty: {profiler['difficulty']:.1f}ms", flush=True)
+
+                except Exception as e:
+                    print(f"🔥 ERROR updating difficulty: {e}", flush=True)
+
+            # ===== ВЫВОД ПРОФАЙЛИНГА =====
+            total_ms = (time.time() - start_total) * 1000
+            print(f"⏱️ TOTAL: {total_ms:.1f}ms", flush=True)
+            if total_ms > 50:
+                print(f"⚠️ SLOW SHARE: {total_ms:.1f}ms | " +
+                      f"get_job={profiler.get('get_job', 0):.1f}ms | " +
+                      f"hash={profiler.get('calculate_hash', 0):.1f}ms | " +
+                      f"validate={profiler.get('validate', 0):.1f}ms | " +
+                      f"stats={profiler.get('stats', 0):.1f}ms | " +
+                      f"send={profiler.get('send_json', 0):.1f}ms | " +
+                      f"diff={profiler.get('difficulty', 0):.1f}ms | " +
+                      f"block={profiler.get('save_block', 0):.1f}ms", flush=True)
         except Exception as e:
             print(f"🔴🔴🔴 EXCEPTION IN HANDLE_SUBMIT_TCP: {e}", flush=True)
             import traceback
@@ -940,7 +991,11 @@ class StratumTCPServer:
             msg_preview = msg[:500] if len(msg) > 500 else msg
             print(f"📤 SENDING TO ASIC: {msg_preview}", flush=True)
             writer.write(msg.encode())
-            await writer.drain()
+            try:
+                await asyncio.wait_for(writer.drain(), timeout=5.0)
+            except asyncio.TimeoutError:
+                print(f"🔴 SEND TIMEOUT: ASIC не отвечает", flush=True)
+                # Не блокируем дальше
         except Exception as e:
             print(f"🔴 SEND ERROR: {e}", flush=True)
             logger.error(f'Ошибка отправки TCP: {e}')
