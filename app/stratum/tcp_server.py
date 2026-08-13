@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+import re
 from datetime import datetime, UTC
 from typing import Dict, Optional
 
@@ -44,6 +45,7 @@ class StratumTCPServer:
         self.max_connections = 1000  # Максимальное количество подключений
         self._ip_connections: Dict[str, int] = {}
         self.max_per_ip = 10
+        self._client_ips: Dict[str, str] = {}
 
         logger.info(
             "TCP Stratum сервер инициализирован",
@@ -99,15 +101,21 @@ class StratumTCPServer:
         addr = writer.get_extra_info('peername')
         print(f"🔌 NEW ASIC CONNECTION FROM: {addr}", flush=True)
 
+        # ===== ИЗВЛЕКАЕМ IP АДРЕС =====
+
         if addr is None:
             client_id = f"unknown_{id(writer)}"
+            client_ip = "unknown"
         elif isinstance(addr, tuple) and len(addr) >= 2:
             client_id = f"{addr[0]}:{addr[1]}"
+            client_ip = addr[0]
         else:
             client_id = f"unknown_{id(writer)}"
+            client_ip = "unknown"
 
         print("=== NEW CLIENT CONNECTED ===", flush=True)
         logger.info("=== NEW CLIENT CONNECTED ===")
+
         # Проверка максимального количества подключений:
         async with self._lock:
             if len(self.connections) >= self.max_connections:
@@ -125,15 +133,18 @@ class StratumTCPServer:
         # Записываем время подключения
         connect_time = datetime.now(UTC)
 
+        # записывает данные клиента
         async with self._lock:
             self._connection_times[client_id] = connect_time
             self.connections[client_id] = writer
+            self._client_ips[client_id] = client_ip
 
         logger.info(
             'Новое TCP подключение',
             event="tcp_client_connected",
             client_id=client_id,
             remote_address=str(addr),
+            client_ip=client_ip,
             connect_time=connect_time.isoformat(),
             total_connections=len(self.connections) + 1
         )
@@ -212,6 +223,7 @@ class StratumTCPServer:
                 self.miners.pop(client_id, None)
                 self.connections.pop(client_id, None)
                 self._connection_times.pop(client_id, None)
+                self._client_ips.pop(client_id, None)
 
             # Рассчитываем длительность подключения
             if connect_time:
@@ -363,11 +375,39 @@ class StratumTCPServer:
         elif method == "mining.extranonce.subscribe":
             await self._handle_extranonce_subscribe(msg_id, writer)
 
+
         elif method == "mining.submit":
             if client_id in self.miners:
                 await self.handle_submit_tcp(msg_id, params, self.miners[client_id], writer)
             else:
-                await self._send_error(writer, msg_id, "Not authorized")
+                # ===== АВТОМАТИЧЕСКАЯ АВТОРИЗАЦИЯ ПО IP =====
+                client_ip = self._client_ips.get(client_id, "")
+                if not client_ip:
+                    client_ip = re.sub(r':\d+$', '', client_id)
+
+                found = False
+                for cid, addr in self.miners.items():
+                    if cid.startswith(client_ip):
+                        self.miners[client_id] = addr
+                        if cid in self.miner_difficulties:
+                            self.miner_difficulties[client_id] = self.miner_difficulties[cid]
+                        if cid in self.miner_display_difficulties:
+                            self.miner_display_difficulties[client_id] = self.miner_display_difficulties[cid]
+                        del self.miners[cid]
+                        if cid in self.miner_difficulties:
+                            del self.miner_difficulties[cid]
+                        if cid in self.miner_display_difficulties:
+                            del self.miner_display_difficulties[cid]
+
+                        print(f"🔁 AUTO-AUTHORIZED by IP: {client_ip} -> {addr} (new client: {client_id})", flush=True)
+
+                        await self.handle_submit_tcp(msg_id, params, addr, writer)
+
+                        found = True
+                        break
+
+                if not found:
+                    await self._send_error(writer, msg_id, "Not authorized")
 
         else:
             await self._send_error(writer, msg_id, f"Unknown method: {method}")
@@ -513,31 +553,31 @@ class StratumTCPServer:
             except Exception as e:
                 print(f"🔥 ERROR getting job: {e}", flush=True)
 
-                if job_data and self.share_validator:
-                    try:
-                        t0 = time.time()
-                        hash_result = self.share_validator.calculate_hash(
-                            job_data, extra_nonce2, ntime, nonce, version_from_asic
-                        )
-                        profiler['calculate_hash'] = (time.time() - t0) * 1000
-                        print(f"⏱️ calculate_hash: {profiler['calculate_hash']:.1f}ms", flush=True)
-                        print(f"🔥 SHARE HASH: {hash_result}", flush=True)
+            if job_data and self.share_validator:
+                try:
+                    t0 = time.time()
+                    hash_result = self.share_validator.calculate_hash(
+                        job_data, extra_nonce2, ntime, nonce, version_from_asic
+                    )
+                    profiler['calculate_hash'] = (time.time() - t0) * 1000
+                    print(f"⏱️ calculate_hash: {profiler['calculate_hash']:.1f}ms", flush=True)
+                    print(f"🔥 SHARE HASH: {hash_result}", flush=True)
 
-                        hash_int = int(hash_result, 16)
-                        if hash_int > 0:
-                            # Берем TARGET из валидатора (динамический)
-                            target_for_diff_1 = self.share_validator.TARGET_FOR_DIFFICULTY_1
-                            # Вместо целочисленного деления используем float
-                            share_difficulty = target_for_diff_1 / hash_int
-                            print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
-                        else:
-                            share_difficulty = 0
-                            print(f"🔥 WARNING: hash_int is 0, cannot calculate difficulty", flush=True)
-                    except Exception as e:
-                        print(f"🔥 ERROR calculating hash: {e}", flush=True)
-                        hash_result = None
-                else:
-                    print(f"🔥 JOB NOT FOUND or no validator: {job_id}", flush=True)
+                    hash_int = int(hash_result, 16)
+                    if hash_int > 0:
+                        # Берем TARGET из валидатора (динамический)
+                        target_for_diff_1 = self.share_validator.TARGET_FOR_DIFFICULTY_1
+                        # Вместо целочисленного деления используем float
+                        share_difficulty = target_for_diff_1 / hash_int
+                        print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
+                    else:
+                        share_difficulty = 0
+                        print(f"🔥 WARNING: hash_int is 0, cannot calculate difficulty", flush=True)
+                except Exception as e:
+                    print(f"🔥 ERROR calculating hash: {e}", flush=True)
+                    hash_result = None
+            else:
+                print(f"🔥 JOB NOT FOUND or no validator: {job_id}", flush=True)
 
 
             # 4. ПРОВЕРЯЕМ, ЧТО ХЭШ РАССЧИТАН
@@ -787,9 +827,11 @@ class StratumTCPServer:
                     True
                 ]
             }
-            await self._send_json(writer, job_data_for_send)
-
-            print(f"✅ REAL JOB SENT: id={job_id}, merkle_len={len(real_merkle_branch)}", flush=True)
+            try:
+                await self._send_json(writer, job_data_for_send)
+                print(f"✅ REAL JOB SENT: id={job_id}, merkle_len={len(real_merkle_branch)}", flush=True)
+            except Exception as e:
+                print(f"🔴 FAILED TO SEND JOB TO ASIC: {e}", flush=True)
 
         except Exception as e:
             print(f"🔴 ERROR: {e}", flush=True)
