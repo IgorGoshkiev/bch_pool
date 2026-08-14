@@ -379,14 +379,11 @@ class DifficultyService:
         recent = [ts for ts in timestamps if (now - ts).total_seconds() < 60]
         print(f"🔍 [DIFF_CALC] recent timestamps (60s): {len(recent)}", flush=True)
 
-        if len(recent) < 2:
-            # Мало шаров — снижаем сложность
+        if len(recent) < 3:
             current = self.miner_difficulties.get(miner_address, self.min_difficulty)
-            # Снижаем сложность ВДВОЕ
             new_diff = max(self.min_difficulty, current / 2)
             self.miner_difficulties[miner_address] = new_diff
-            print(f"🔍 [DIFF_CALC] Too few recent, lowering: {current} -> {new_diff}", flush=True)
-
+            print(f"🔍 [DIFF_CALC] Too few recent, lowering: {current:.4f} -> {new_diff:.4f}", flush=True)
             return new_diff
 
         # Среднее время между шарами
@@ -395,59 +392,44 @@ class DifficultyService:
             time_span = 1
         avg_time = time_span / (len(recent) - 1)
 
-        # Целевое время между шарами: 3-5 секунд (10-20 шаров в минуту)
-        TARGET_TIME_BETWEEN_SHARES = 3.0  # секунд
+        TARGET_TIME_BETWEEN_SHARES = 3.0
+        TARGET_MIN = TARGET_TIME_BETWEEN_SHARES * 0.6
+        TARGET_MAX = TARGET_TIME_BETWEEN_SHARES * 1.4
 
         current = self.miner_difficulties.get(miner_address, self.min_difficulty)
 
-        # ===== НОВЫЙ АЛГОРИТМ (ПЛАВНАЯ АДАПТАЦИЯ) =====
+        # =====Плавный расчет  =====
+        ADAPTATION_RATE = 0.05
 
-        # Коэффициент адаптации (чем меньше, тем плавнее изменение)
-        # 0.1 = изменение на 10% за раз
-        ADAPTATION_RATE = 0.1
-
-        # Идеальное время между шарами
-        TARGET_TIME = TARGET_TIME_BETWEEN_SHARES
-
-        if avg_time < TARGET_TIME * 0.5:
+        if avg_time < TARGET_MIN:
             # Слишком часто — повышаем сложность
-            # Рассчитываем, насколько нужно повысить
-            ratio = TARGET_TIME / avg_time
-            # Плавное повышение
+            ratio = TARGET_TIME_BETWEEN_SHARES / avg_time
             new_diff = current * (1 + (ratio - 1) * ADAPTATION_RATE)
-            print(f"🔍 [DIFF_CALC] Too fast ({avg_time:.2f}s), raising: {current:.2f} -> {new_diff:.2f}", flush=True)
+            print(f"🔍 [DIFF_CALC] Too fast ({avg_time:.2f}s), raising: {current:.4f} -> {new_diff:.4f}", flush=True)
 
-        elif avg_time > TARGET_TIME * 1.5:
+        elif avg_time > TARGET_MAX:
             # Слишком редко — снижаем сложность
-            ratio = TARGET_TIME / avg_time
-            # Плавное снижение
+            ratio = TARGET_TIME_BETWEEN_SHARES / avg_time
             new_diff = current * (1 - (1 - ratio) * ADAPTATION_RATE)
-            print(f"🔍 [DIFF_CALC] Too slow ({avg_time:.2f}s), lowering: {current:.2f} -> {new_diff:.2f}", flush=True)
+            print(f"🔍 [DIFF_CALC] Too slow ({avg_time:.2f}s), lowering: {current:.4f} -> {new_diff:.4f}", flush=True)
 
         else:
             # Оптимально — оставляем как есть
             new_diff = current
-            print(f"🔍 [DIFF_CALC] Optimal ({avg_time:.2f}s), keeping: {current:.2f}", flush=True)
+            print(f"🔍 [DIFF_CALC] Optimal ({avg_time:.2f}s), keeping: {current:.4f}", flush=True)
 
-        # ===== ЗАЩИТА ОТ КОСМИЧЕСКИХ ЗНАЧЕНИЙ =====
-        # Если сложность слишком высокая (> 1000) и шаров мало, снижаем
-        if new_diff > 1000 and len(recent) < 10:
-            new_diff = current / 2
-            print(f"⚠️ [DIFF_CALC] Too high ({new_diff:.2f}) with few shares, lowering to {new_diff:.2f}", flush=True)
+        # ===== Защита от резких изменений =====
+        if new_diff > current * 1.5:
+            new_diff = current * 1.5
+            print(f"🔍 [DIFF_CALC] Capped at +50%: {new_diff:.4f}", flush=True)
+        elif new_diff < current / 1.5:
+            new_diff = current / 1.5
+            print(f"🔍 [DIFF_CALC] Capped at -33%: {new_diff:.4f}", flush=True)
 
-        # Ограничиваем изменение за один раз (НЕ более чем в 2 раза)
-        if new_diff > current * 2:
-            new_diff = current * 2
-            print(f"🔍 [DIFF_CALC] Capped at 2x: {new_diff:.2f}", flush=True)
-        elif new_diff < current / 2:
-            new_diff = current / 2
-            print(f"🔍 [DIFF_CALC] Capped at 0.5x: {new_diff:.2f}", flush=True)
-
-        # ===== ЗАЩИТА ОТ МИКРО-ЗНАЧЕНИЙ =====
-        # Не даем сложности упасть слишком низко
+        # Защита от микро-значений
         if new_diff < self.min_difficulty:
             new_diff = self.min_difficulty
-            print(f"🔍 [DIFF_CALC] Min difficulty: {new_diff:.2f}", flush=True)
+            print(f"🔍 [DIFF_CALC] Min difficulty: {new_diff:.4f}", flush=True)
 
         self.miner_difficulties[miner_address] = new_diff
         return new_diff

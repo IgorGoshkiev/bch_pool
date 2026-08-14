@@ -729,39 +729,67 @@ class StratumTCPServer:
 
             # 12. АДАПТИВНАЯ СЛОЖНОСТЬ
             if self.difficulty_service and is_valid:
-                # Используем РЕАЛЬНУЮ сложность шара для статистики
                 difficulty_for_stats = share_difficulty if share_difficulty is not None else settings.default_share_difficulty
 
                 try:
                     t0 = time.time()
                     await self.difficulty_service.add_share(miner_address, difficulty_for_stats)
-                    # Рассчитываем новую оптимальную сложность для майнера
                     new_difficulty = await self.difficulty_service.calculate_difficulty_for_miner(miner_address)
 
-                    # Сохраняем новую сложность
                     current_difficulty = self.miner_difficulties.get(miner_address, settings.default_share_difficulty)
 
-                    # Обновляем если изменение > 20%
-                    change_ratio = abs(new_difficulty - current_difficulty) / max(current_difficulty, 0.0001)
+                    # ===== УНИВЕРСАЛЬНАЯ ФОРМУЛА =====
+                    import math
 
+                    if current_difficulty == 0:
+                        should_update = new_difficulty != current_difficulty
+                        change_ratio = 0
+                        threshold = 0.01
+                    else:
+                        # Относительное изменение
+                        change_ratio = abs(new_difficulty - current_difficulty) / current_difficulty
+
+                        # Адаптивный порог: 0.01 для микро, 0.001 для высокой
+                        # Используем логарифмическую шкалу для плавного перехода
+                        log_diff = math.log10(max(current_difficulty, 1e-10))
+                        # Нормализуем от 0 до 1 (от -10 до 2)
+                        normalized = (log_diff + 10) / 12  # -10 -> 0, 2 -> 1
+                        # Порог от 0.01 до 0.001
+                        threshold = 0.01 - normalized * 0.009
+                        # Ограничиваем
+                        threshold = max(0.001, min(0.01, threshold))
+
+                        should_update = change_ratio > threshold
+
+                    # ===== РАСШИРЕННОЕ ЛОГИРОВАНИЕ =====
                     print(f"📊 [DIFF_DEBUG] ========================================", flush=True)
                     print(f"📊 [DIFF_DEBUG] miner: {miner_address[:20]}...", flush=True)
                     print(f"📊 [DIFF_DEBUG] current_difficulty: {current_difficulty:.10f}", flush=True)
                     print(f"📊 [DIFF_DEBUG] new_difficulty:     {new_difficulty:.10f}", flush=True)
-                    print(f"📊 [DIFF_DEBUG] change_ratio:       {change_ratio:.4f}", flush=True)
-                    print(f"📊 [DIFF_DEBUG] threshold:          0.2", flush=True)
-                    print(f"📊 [DIFF_DEBUG] change_ratio > 0.2: {change_ratio > 0.2}", flush=True)
+                    print(f"📊 [DIFF_DEBUG] change_ratio:       {change_ratio:.6f}", flush=True)
+                    print(f"📊 [DIFF_DEBUG] threshold:          {threshold:.6f}", flush=True)
+                    print(f"📊 [DIFF_DEBUG] change_ratio > threshold: {change_ratio > threshold}", flush=True)
+                    print(f"📊 [DIFF_DEBUG] log10(current):     {math.log10(max(current_difficulty, 1e-10)):.2f}",
+                          flush=True)
 
-                    if change_ratio > 0.2:
+                    if should_update:
+                        print(f"📊 [DIFF_DEBUG] ✅ UPDATE! Sending new difficulty...", flush=True)
                         await self.update_miner_difficulty(miner_address, new_difficulty)
                         self.miner_difficulties[miner_address] = new_difficulty
-                        print(f"📊 [DIFF_UPDATE] REAL DIFF: {new_difficulty} | DISPLAY DIFF: {self.miner_display_difficulties.get(miner_address, 16384)}", flush=True)
+                        print(
+                            f"📊 DIFFICULTY UPDATED: {current_difficulty:.10f} -> {new_difficulty:.10f} (change: {change_ratio:.2%})",
+                            flush=True)
+                    else:
+                        print(f"📊 [DIFF_DEBUG] ⏸️  SKIP: change_ratio {change_ratio:.6f} <= threshold {threshold:.6f}",
+                              flush=True)
 
                     profiler['difficulty'] = (time.time() - t0) * 1000
                     print(f"⏱️ difficulty: {profiler['difficulty']:.1f}ms", flush=True)
 
                 except Exception as e:
                     print(f"🔥 ERROR updating difficulty: {e}", flush=True)
+                    import traceback
+                    traceback.print_exc()
 
             # ===== ВЫВОД ПРОФАЙЛИНГА =====
             total_ms = (time.time() - start_total) * 1000
