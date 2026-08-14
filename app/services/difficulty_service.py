@@ -359,7 +359,6 @@ class DifficultyService:
     async def calculate_difficulty_for_miner(self, miner_address: str) -> float:
         """
         Расчет оптимальной сложности для конкретного майнера
-        Использует частоту шаров для адаптации
         """
         print(f"🔍 [DIFF_CALC] START for {miner_address[:20]}...", flush=True)
 
@@ -370,67 +369,88 @@ class DifficultyService:
         timestamps = list(self.share_timestamps[miner_address])
         print(f"🔍 [DIFF_CALC] timestamps count: {len(timestamps)}", flush=True)
 
-        if len(timestamps) < 5:
-            print(f"🔍 [DIFF_CALC] Too few timestamps, returning min: {self.min_difficulty}", flush=True)
+        # ===== ИЗМЕНЕНИЕ 1: Увеличил порог с 5 до 20 для стабильности =====
+        if len(timestamps) < 20:
+            print(f"🔍 [DIFF_CALC] Too few timestamps ({len(timestamps)} < 20), returning min: {self.min_difficulty}",
+                  flush=True)
             return self.min_difficulty
 
         now = datetime.now(UTC)
-        # Анализируем последние 60 секунд
-        recent = [ts for ts in timestamps if (now - ts).total_seconds() < 60]
-        print(f"🔍 [DIFF_CALC] recent timestamps (60s): {len(recent)}", flush=True)
+        # ===== ИЗМЕНЕНИЕ 2: Увеличил окно с 60с до 120с =====
+        recent = [ts for ts in timestamps if (now - ts).total_seconds() < 120]
+        print(f"🔍 [DIFF_CALC] recent timestamps (120s): {len(recent)}", flush=True)
 
-        if len(recent) < 3:
+        # ===== ИЗМЕНЕНИЕ 3: Увеличил порог с 3 до 10 =====
+        if len(recent) < 10:
             current = self.miner_difficulties.get(miner_address, self.min_difficulty)
-            new_diff = max(self.min_difficulty, current / 2)
+            new_diff = max(self.min_difficulty, current / 2)  # Плавное снижение
             self.miner_difficulties[miner_address] = new_diff
-            print(f"🔍 [DIFF_CALC] Too few recent, lowering: {current:.4f} -> {new_diff:.4f}", flush=True)
+            print(f"🔍 [DIFF_CALC] Too few recent, lowering: {current:.10f} -> {new_diff:.10f}", flush=True)
             return new_diff
 
-        # Среднее время между шарами
-        time_span = (recent[-1] - recent[0]).total_seconds()
-        if time_span < 1:
-            time_span = 1
-        avg_time = time_span / (len(recent) - 1)
+        # ===== ИЗМЕНЕНИЕ 4: Используем медиану вместо среднего =====
+        # Рассчитываем все временные интервалы
+        time_diffs = []
+        for i in range(1, len(recent)):
+            diff = (recent[i] - recent[i - 1]).total_seconds()
+            # Игнорируем выбросы
+            if 0.01 < diff < 60:
+                time_diffs.append(diff)
 
-        TARGET_TIME_BETWEEN_SHARES = 3.0
-        TARGET_MIN = TARGET_TIME_BETWEEN_SHARES * 0.6
-        TARGET_MAX = TARGET_TIME_BETWEEN_SHARES * 1.4
+        if not time_diffs:
+            print(f"🔍 [DIFF_CALC] No valid time diffs, keeping current", flush=True)
+            return self.miner_difficulties.get(miner_address, self.min_difficulty)
+
+        # Используем медиану (устойчива к выбросам)
+        import statistics
+        avg_time = statistics.median(time_diffs)
+        print(f"🔍 [DIFF_CALC] Median time between shares: {avg_time:.2f}s", flush=True)
 
         current = self.miner_difficulties.get(miner_address, self.min_difficulty)
 
-        # =====Плавный расчет  =====
-        ADAPTATION_RATE = 0.05
+        # ===== ИЗМЕНЕНИЕ 5: Увеличил целевое время с 3с до 5с =====
+        TARGET_TIME_BETWEEN_SHARES = 5.0  # Было 3.0
+        TARGET_MIN = TARGET_TIME_BETWEEN_SHARES * 0.5  # 2.5 сек
+        TARGET_MAX = TARGET_TIME_BETWEEN_SHARES * 2.0  # 10 сек
+
+        # ===== ИЗМЕНЕНИЕ 6: Уменьшил скорость адаптации с 5% до 3% =====
+        ADAPTATION_RATE = 0.03  # Было 0.05
 
         if avg_time < TARGET_MIN:
             # Слишком часто — повышаем сложность
             ratio = TARGET_TIME_BETWEEN_SHARES / avg_time
+            # Ограничиваем максимальное повышение
+            ratio = min(ratio, 3.0)  # Не более чем в 3 раза
             new_diff = current * (1 + (ratio - 1) * ADAPTATION_RATE)
-            print(f"🔍 [DIFF_CALC] Too fast ({avg_time:.2f}s), raising: {current:.4f} -> {new_diff:.4f}", flush=True)
+            print(f"🔍 [DIFF_CALC] Too fast ({avg_time:.2f}s), raising: {current:.10f} -> {new_diff:.10f}", flush=True)
 
         elif avg_time > TARGET_MAX:
             # Слишком редко — снижаем сложность
             ratio = TARGET_TIME_BETWEEN_SHARES / avg_time
+            ratio = max(ratio, 0.33)  # Не менее чем в 3 раза
             new_diff = current * (1 - (1 - ratio) * ADAPTATION_RATE)
-            print(f"🔍 [DIFF_CALC] Too slow ({avg_time:.2f}s), lowering: {current:.4f} -> {new_diff:.4f}", flush=True)
+            print(f"🔍 [DIFF_CALC] Too slow ({avg_time:.2f}s), lowering: {current:.10f} -> {new_diff:.10f}", flush=True)
 
         else:
             # Оптимально — оставляем как есть
             new_diff = current
-            print(f"🔍 [DIFF_CALC] Optimal ({avg_time:.2f}s), keeping: {current:.4f}", flush=True)
+            print(f"🔍 [DIFF_CALC] Optimal ({avg_time:.2f}s), keeping: {current:.10f}", flush=True)
 
-        # ===== Защита от резких изменений =====
-        if new_diff > current * 1.5:
-            new_diff = current * 1.5
-            print(f"🔍 [DIFF_CALC] Capped at +50%: {new_diff:.4f}", flush=True)
-        elif new_diff < current / 1.5:
-            new_diff = current / 1.5
-            print(f"🔍 [DIFF_CALC] Capped at -33%: {new_diff:.4f}", flush=True)
+        # ===== ИЗМЕНЕНИЕ 7: Уменьшил максимальное изменение с 50% до 30% =====
+        MAX_CHANGE = 1.3  # Было 1.5
+        if new_diff > current * MAX_CHANGE:
+            new_diff = current * MAX_CHANGE
+            print(f"🔍 [DIFF_CALC] Capped at +{int((MAX_CHANGE - 1) * 100)}%: {new_diff:.10f}", flush=True)
+        elif new_diff < current / MAX_CHANGE:
+            new_diff = current / MAX_CHANGE
+            print(f"🔍 [DIFF_CALC] Capped at -{int((1 - 1 / MAX_CHANGE) * 100)}%: {new_diff:.10f}", flush=True)
 
         # Защита от микро-значений
         if new_diff < self.min_difficulty:
             new_diff = self.min_difficulty
-            print(f"🔍 [DIFF_CALC] Min difficulty: {new_diff:.4f}", flush=True)
+            print(f"🔍 [DIFF_CALC] Min difficulty: {new_diff:.10f}", flush=True)
 
+        # Сохраняем в кэш
         self.miner_difficulties[miner_address] = new_diff
         return new_diff
 
