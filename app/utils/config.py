@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     auto_register_miners: bool = True
     auto_worker_name: str = "default"
 
-    default_share_difficulty: float = 1e-10
+    default_share_difficulty: float = 0.0000000001
     default_miner_address: str = "qqxsgzrcxvwh3emhrzmgedttm3ju6ks4ec6072chl0"
     enable_share_validation: bool = True
 

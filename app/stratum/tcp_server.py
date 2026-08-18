@@ -340,28 +340,29 @@ class StratumTCPServer:
                 if client_id in self.miners:
                     miner_address = self.miners[client_id]
 
-                    # ===== ИСПРАВЛЕНИЕ: НЕ ИСПОЛЬЗУЕМ СЛОЖНОСТЬ ASIC ДЛЯ ПРОВЕРКИ =====
-                    # Сохраняем предложенную сложность как МАКСИМАЛЬНУЮ (для информации)
-                    # НО для проверки используем начальную сложность из настроек
-                    self.miner_max_difficulties = getattr(self, 'miner_max_difficulties', {})
+                    # ===== 1. Сохраняем предложенную сложность для отображения =====
                     self.miner_max_difficulties[miner_address] = suggested
-                    # Сохраняем для отображения в ASIC
                     self.miner_display_difficulties[miner_address] = suggested
                     print(f"📊 ASIC max difficulty saved: {suggested}", flush=True)
 
-                    # ===== ЛОГИРУЕМ ТЕКУЩУЮ СЛОЖНОСТЬ МАЙНЕРА =====
+                    # ===== 2. Передаем цель в difficulty_service для адаптации =====
+                    if self.difficulty_service:
+                        self.difficulty_service.set_target_difficulty(miner_address, suggested)
+                        print(f"📊 [SUGGEST_DIFF] Target sent to difficulty_service: {suggested}", flush=True)
+
+                    # ===== 3. Логируем текущую сложность майнера =====
                     current_miner_diff = self.miner_difficulties.get(miner_address, 0)
                     print(
                         f"📊 [SUGGEST_DIFF] Miner: {miner_address[:20]}... | Suggested: {suggested} | Current: {current_miner_diff}",
                         flush=True)
 
-                    # Если у майнера еще нет текущей сложности - устанавливаем начальную
+                    # ===== 4. Если у майнера еще нет текущей сложности - устанавливаем начальную =====
                     if miner_address not in self.miner_difficulties:
-                        initial_diff = getattr(settings, 'default_share_difficulty', 0.001)
+                        initial_diff = getattr(settings, 'default_share_difficulty', 1e-10)
                         self.miner_difficulties[miner_address] = initial_diff
                         print(f"📊 [SUGGEST_DIFF] Initial difficulty set: {initial_diff}", flush=True)
 
-                    # Отправляем ASIC предложенную сложность ДЛЯ ОТОБРАЖЕНИЯ
+                    # ===== 5. Отправляем ASIC предложенную сложность
                     difficulty_msg = {
                         "method": "mining.set_difficulty",
                         "params": [suggested],  #  для отображения!
@@ -580,20 +581,20 @@ class StratumTCPServer:
                         print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
 
                         # ===== ИСПРАВЛЕНИЕ 1: Отправляем ТЕКУЩУЮ сложность майнера =====
-                        if share_difficulty > 0:
+                        # if share_difficulty > 0:
                             # Получаем ТЕКУЩУЮ сложность майнера
-                            current_diff = self.miner_difficulties.get(miner_address, settings.default_share_difficulty)
+                            # current_diff = self.miner_difficulties.get(miner_address, settings.default_share_difficulty)
 
                             # Отправляем ASIC его текущую сложность (для отображения на панели ASIC)
-                            difficulty_msg = {
-                                "method": "mining.set_difficulty",
-                                "params": [current_diff],
-                                "id": None
-                            }
-                            await self._send_json(writer, difficulty_msg)
-                            print(
-                                f"📊 SENT CURRENT DIFFICULTY TO ASIC: {current_diff:.10f} (share: {share_difficulty:.10f})",
-                                flush=True)
+                            # difficulty_msg = {
+                            #     "method": "mining.set_difficulty",
+                            #     "params": [current_diff],
+                            #     "id": None
+                            # }
+                            # await self._send_json(writer, difficulty_msg)
+                            # print(
+                            #     f"📊 SENT CURRENT DIFFICULTY TO ASIC: {current_diff:.10f} (share: {share_difficulty:.10f})",
+                            #     flush=True)
 
                     else:
                         share_difficulty = 0
