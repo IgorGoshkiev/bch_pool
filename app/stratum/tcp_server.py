@@ -876,7 +876,7 @@ class StratumTCPServer:
                     real_version,
                     real_bits,
                     real_ntime,
-                    True
+                    False  # clean_jobs=False
                 ]
             }
             try:

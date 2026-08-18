@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     stratum_tcp_enabled: bool = True
 
     # Настройки заданий
-    job_broadcast_interval: int = 300
+    job_broadcast_interval: int = 300 #  5 минут
     job_cleanup_age: int = 300
     job_max_history_size: int = 100
 

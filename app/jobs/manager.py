@@ -10,7 +10,6 @@ from app.utils.config import settings
 from app.utils.logging_config import StructuredLogger
 from app.jobs.real_node_client import RealBCHNodeClient
 
-
 logger = StructuredLogger(__name__)
 
 
@@ -203,7 +202,6 @@ class JobManager:
                 )
                 return None
 
-
             # Сохраняем задание в job_service
             if miner_address:
                 self.job_service.add_job(
@@ -254,7 +252,7 @@ class JobManager:
             clean_job = self.current_job['stratum_data'].copy()
             # Устанавливаем clean_jobs = True (последний параметр)
             if len(clean_job['params']) >= 9:
-                clean_job['params'][8] = True
+                clean_job['params'][8] = True  # clean_jobs=True
 
             # Рассылаем через серверы
             if hasattr(self.stratum_server, 'broadcast_new_job'):
@@ -268,27 +266,39 @@ class JobManager:
             return
 
         try:
+            print(f"🔍 [REORG] Checking for reorg...", flush=True)
             current_best = await self.node_client.get_best_block_hash()
 
             if not current_best:
+                print(f"🔍 [REORG] No current_best hash", flush=True)
                 return
 
             if self.last_best_hash and self.last_best_hash != current_best:
+                print(f"🔍 [REORG] ⚠️ REORG DETECTED!", flush=True)
+                print(f"🔍 [REORG] old_hash: {self.last_best_hash[:16]}...", flush=True)
+                print(f"🔍 [REORG] new_hash: {current_best[:16]}...", flush=True)
+
                 logger.warning(
                     "REORG DETECTED!",
                     event="reorg_detected",
                     old_hash=self.last_best_hash[:16] + "...",
                     new_hash=current_best[:16] + "..."
                 )
-                # 1. СНАЧАЛА создаем НОВОЕ задание
+
+                # 1. Создаем НОВОЕ задание с актуальным prevhash и ntime
+                print(f"🔍 [REORG] Creating new job via broadcast...", flush=True)
                 await self.broadcast_new_job_to_all()
 
-                # 2. ПОТОМ отправляем clean_jobs=True (майнеры переключатся на новое)
-                await self._broadcast_clean_jobs()
+                # 2. НЕ отправляем clean_jobs=True (это вызывает переподключение ASIC)
+                # await self._broadcast_clean_jobs()
+                print(f"🔍 [REORG] SKIPPED _broadcast_clean_jobs (clean_jobs=True would cause ASIC reconnect)",
+                      flush=True)
+                print(f"🔍 [REORG] ✅ New job sent with clean_jobs=False", flush=True)
 
             self.last_best_hash = current_best
 
         except Exception as e:
+            print(f"🔍 [REORG] ❌ ERROR: {e}", flush=True)
             logger.error(f"Error checking for reorg: {e}")
 
     async def _create_stratum_job_from_template(
