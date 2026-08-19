@@ -948,6 +948,38 @@ class StratumTCPServer:
 
         for client_id, writer in self.connections.items():
             miner_address = self.miners.get(client_id)
+
+            # ===== ДОБАВИТЬ ПРОВЕРКУ WRITER =====
+            if writer is None:
+                print(f"🔴 [BROADCAST] Writer is None for {client_id}", flush=True)
+                failed_sends += 1
+                continue
+
+            if writer.is_closing():
+                print(f"🔴 [BROADCAST] Writer is closing for {client_id}", flush=True)
+                # Удаляем мертвое соединение
+                self.connections.pop(client_id, None)
+                self.miners.pop(client_id, None)
+                failed_sends += 1
+                continue
+
+            # Проверяем, живо ли соединение
+            try:
+                peername = writer.get_extra_info('peername')
+                if peername is None:
+                    print(f"🔴 [BROADCAST] No peername (dead connection) for {client_id}", flush=True)
+                    self.connections.pop(client_id, None)
+                    self.miners.pop(client_id, None)
+                    failed_sends += 1
+                    continue
+            except Exception as e:
+                print(f"🔴 [BROADCAST] Failed to get peername for {client_id}: {e}", flush=True)
+                self.connections.pop(client_id, None)
+                self.miners.pop(client_id, None)
+                failed_sends += 1
+                continue
+            # =================================
+
             if miner_address:
                 try:
                     # Создаем персональную копию задания
@@ -966,6 +998,9 @@ class StratumTCPServer:
                 except Exception as e:
                     failed_sends += 1
                     print(f"🔴 [BROADCAST] Failed to send to {client_id}: {e}", flush=True)
+                    # Если ошибка отправки — удаляем клиента
+                    self.connections.pop(client_id, None)
+                    self.miners.pop(client_id, None)
 
                     logger.error(
                         "Ошибка рассылки задания TCP клиенту",
@@ -974,7 +1009,9 @@ class StratumTCPServer:
                         miner_address=miner_address,
                         error=str(e)
                     )
-
+            else:
+                print(f"⚠️ [BROADCAST] No miner_address for {client_id}", flush=True)
+                failed_sends += 1
 
         if successful_sends > 0:
             print(f"📤 [BROADCAST] Done: {successful_sends}/{total_clients} successful, {failed_sends} failed",
@@ -987,9 +1024,8 @@ class StratumTCPServer:
                 total_clients=total_clients
             )
         else:
-            print(f"📤 [BROADCAST] Not: {successful_sends}/{total_clients} Не удалось разослать задание ни одному TCP клиенту , {failed_sends} failed",
+            print(f"📤 [BROADCAST] FAILED: {successful_sends}/{total_clients} successful, {failed_sends} failed",
                   flush=True)
-
             logger.warning(
                 "Не удалось разослать задание ни одному TCP клиенту",
                 event="tcp_broadcast_failed",
