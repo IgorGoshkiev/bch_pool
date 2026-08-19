@@ -6,7 +6,6 @@ from typing import Optional, Dict
 from datetime import datetime, UTC
 
 from app.utils.config import settings
-# from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
 from app.utils.logging_config import StructuredLogger
 from app.jobs.real_node_client import RealBCHNodeClient
 
@@ -394,33 +393,57 @@ class JobManager:
 
     async def broadcast_new_job_to_all(self):
         """Рассылать новое задание всем подключенным майнерам"""
+
+        print(f"\n{'=' * 60}", flush=True)
+        print(f"📤 [BROADCAST_TO_ALL] ===== START =====", flush=True)
+        print(f"📤 [BROADCAST_TO_ALL] Time: {datetime.now(UTC).strftime('%H:%M:%S')}", flush=True)
+        print(f"📤 [BROADCAST_TO_ALL] stratum_server: {self.stratum_server is not None}", flush=True)
+        print(f"📤 [BROADCAST_TO_ALL] tcp_stratum_server: {self.tcp_stratum_server is not None}", flush=True)
+
         logger.info(
             "Начинаем рассылку задания всем майнерам",
             event="job_manager_broadcast_start"
         )
 
         # Создаем общее задание для всех майнеров
+        print(f"📤 [BROADCAST_TO_ALL] Creating new job...", flush=True)
         job_data = await self.create_new_job()
+
         if not job_data:
+            print(f"🔴 [BROADCAST_TO_ALL] Failed to create job!", flush=True)
             logger.warning(
                 "Не удалось создать задание для рассылки",
                 event="job_manager_broadcast_no_job"
             )
             return
 
+        print(f"✅ [BROADCAST_TO_ALL] Job created: {job_data.get('method', 'unknown')}", flush=True)
+        print(f"📤 [BROADCAST_TO_ALL] job_data keys: {list(job_data.keys())}", flush=True)
+
         # Рассылаем через WebSocket сервер если есть
         if self.stratum_server:
+            print(f"📤 [BROADCAST_TO_ALL] Sending via WebSocket...", flush=True)
             await self.stratum_server.broadcast_new_job(job_data)
+            print(f"✅ [BROADCAST_TO_ALL] WebSocket broadcast done", flush=True)
+        else:
+            print(f"⚠️ [BROADCAST_TO_ALL] No stratum_server, skipping WebSocket", flush=True)
 
         # Рассылаем через TCP сервер если есть
         if self.tcp_stratum_server:
+            print(f"📤 [BROADCAST_TO_ALL] Sending via TCP...", flush=True)
             await self.tcp_stratum_server.broadcast_new_job(job_data)
+            print(f"✅ [BROADCAST_TO_ALL] TCP broadcast done", flush=True)
+        else:
+            print(f"⚠️ [BROADCAST_TO_ALL] No tcp_stratum_server, skipping TCP", flush=True)
 
         logger.info(
             "Broadcast задание разослано",
             event="job_manager_broadcast_job_created",
             job_id=job_data['params'][0] if 'params' in job_data else 'unknown'
         )
+
+        print(f"📤 [BROADCAST_TO_ALL] ===== DONE =====", flush=True)
+        print(f"{'=' * 60}\n", flush=True)
 
     async def send_job_to_miner(self, miner_address: str) -> bool:
         """Отправить персональное задание конкретному майнеру"""

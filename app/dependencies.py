@@ -121,12 +121,16 @@ class DependencyContainer:
         if self._job_manager is None:
             self._job_manager = JobManager(
                 job_service=self.job_service,
-                block_builder=self.block_builder
+                block_builder=self.block_builder,
+                stratum_server=self.stratum_server,
+                tcp_stratum_server=self.tcp_stratum_server
             )
             logger.info(
                 "JobManager создан",
                 event="job_manager_created",
-                has_node_client=self._job_manager.node_client is not None
+                has_node_client=self._job_manager.node_client is not None,
+                has_stratum_server=self.stratum_server is not None,
+                has_tcp_stratum_server=self.tcp_stratum_server is not None
             )
         return self._job_manager
 

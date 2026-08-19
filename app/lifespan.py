@@ -418,18 +418,23 @@ async def _periodic_job_broadcaster():
     while True:
         iteration += 1
         try:
+            print(f"\n{'=' * 60}", flush=True)
+            print(f"🔄 [BROADCASTER] ===== ITERATION {iteration} =====", flush=True)
+            print(f"🔄 [BROADCASTER] Time: {datetime.now(UTC).strftime('%H:%M:%S')}", flush=True)
+            print(f"🔄 [BROADCASTER] Sleeping for {settings.job_broadcast_interval}s...", flush=True)
+
             await asyncio.sleep(settings.job_broadcast_interval)
 
             ws_miners = len(stratum_server.active_connections)
             tcp_miners = len(tcp_stratum_server.connections)
             active_miners = ws_miners + tcp_miners
 
-            print(
-                f"🔄 BROADCAST CHECK: iteration={iteration}, active_miners={active_miners}, time={datetime.now(UTC).strftime('%H:%M:%S')}",
-                flush=True)
+            print(f"🔄 [BROADCASTER] active_miners: {active_miners} (WS: {ws_miners}, TCP: {tcp_miners})", flush=True)
+            print(f"🔄 [BROADCASTER] Calling job_manager.broadcast_new_job_to_all()...", flush=True)
 
             if active_miners > 0:
                 await job_manager.broadcast_new_job_to_all()
+                print(f"✅ [BROADCASTER] broadcast_new_job_to_all completed", flush=True)
                 logger.debug(
                     f"Задание разослано {active_miners} майнерам",
                     event="job_broadcasted",
@@ -439,6 +444,7 @@ async def _periodic_job_broadcaster():
                     tcp_miners=tcp_miners
                 )
             else:
+                print(f"⚠️ [BROADCASTER] No active miners, skipping broadcast", flush=True)
                 logger.debug(
                     "Нет активных майнеров, пропускаем рассылку",
                     event="job_broadcast_skipped",
@@ -446,7 +452,11 @@ async def _periodic_job_broadcaster():
                     reason="no_active_miners"
                 )
 
+            print(f"🔄 [BROADCASTER] ===== ITERATION {iteration} COMPLETE =====", flush=True)
+            print(f"{'=' * 60}\n", flush=True)
+
         except asyncio.CancelledError:
+            print(f"🔄 [BROADCASTER] Cancelled", flush=True)
             logger.info(
                 "Задача рассылки заданий остановлена",
                 event="job_broadcaster_stopped",
@@ -454,7 +464,9 @@ async def _periodic_job_broadcaster():
                 total_iterations=iteration
             )
             break
+
         except Exception as e:
+            print(f"🔴 [BROADCASTER] ERROR: {e}", flush=True)
             logger.error(
                 "Ошибка в периодической рассылке",
                 event="job_broadcaster_error",

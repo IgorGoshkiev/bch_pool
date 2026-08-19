@@ -935,6 +935,7 @@ class StratumTCPServer:
         print(f"📤 [BROADCAST] connections count: {len(self.connections)}", flush=True)
         print(f"📤 [BROADCAST] connections: {list(self.connections.keys())}", flush=True)
         print(f"📤 [BROADCAST] miners: {self.miners}", flush=True)
+        print(f"📤 [BROADCAST] miners count: {len(self.miners)}", flush=True)
         print(f"📤 [BROADCAST] miner_difficulties: {self.miner_difficulties}", flush=True)
 
         if not self.connections:
