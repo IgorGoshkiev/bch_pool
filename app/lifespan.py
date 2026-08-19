@@ -8,6 +8,7 @@ from datetime import datetime, UTC, timedelta, date
 from app.utils.logging_config import StructuredLogger
 from app.dependencies import job_manager, stratum_server, tcp_stratum_server, share_validator, difficulty_service
 from app.utils.config import settings
+from app.dependencies import container
 
 # Новые импорты для статистики
 from app.services.miner_stats import miner_stats_service
@@ -138,6 +139,23 @@ async def lifespan(_app):
                     host=tcp_stratum_server.host,
                     port=tcp_stratum_server.port
                 )
+
+        # ====================================================================
+        # Инициализируем JobManager с серверами (после создания всех серверов)
+        try:
+            container.initialize_job_manager_with_servers()
+            print(f"🔴🔴🔴 JobManager инициализирован с TCP сервером:", flush=True)
+            logger.info(
+                "JobManager инициализирован с TCP сервером",
+                event="job_manager_initialized_with_tcp"
+            )
+        except Exception as e:
+            logger.error(
+                "Ошибка инициализации JobManager с серверами",
+                event="job_manager_initialize_error",
+                error=str(e)
+            )
+        # ====================================================================
 
         # 5. Запускаем периодическую рассылку заданий
         try:

@@ -7,7 +7,7 @@ from app.services.difficulty_service import DifficultyService
 from app.services.auth_service import AuthService
 from app.services.database_service import DatabaseService
 from app.stratum.validator import ShareValidator
-from app.utils.protocol_helpers import  EXTRA_NONCE2_SIZE
+from app.utils.protocol_helpers import EXTRA_NONCE2_SIZE
 from app.services.job_service import JobService
 from app.jobs.manager import JobManager
 from app.stratum.websocket_server import StratumServer
@@ -30,6 +30,7 @@ class DependencyContainer:
         self._difficulty_service = None
         self._network_manager = None
         self._block_builder = None
+        self._job_manager_initialized = False  # ← ДОБАВИТЬ
 
         logger.info(
             "DependencyContainer инициализирован",
@@ -60,7 +61,7 @@ class DependencyContainer:
             )
         return self._block_builder
 
-    # === DATABASE SERVICE (не зависит от других) ===
+    # === DATABASE SERVICE ===
     @property
     def database_service(self):
         if self._database_service is None:
@@ -71,7 +72,7 @@ class DependencyContainer:
             )
         return self._database_service
 
-    # === AUTH SERVICE (зависит только от database) ===
+    # === AUTH SERVICE ===
     @property
     def auth_service(self):
         if self._auth_service is None:
@@ -115,20 +116,34 @@ class DependencyContainer:
             )
         return self._job_service
 
-    # === JOB manager ===
+    # === JOB MANAGER (БЕЗ СЕРВЕРОВ) ===
     @property
     def job_manager(self):
         if self._job_manager is None:
             self._job_manager = JobManager(
                 job_service=self.job_service,
-                block_builder=self.block_builder,
-                stratum_server=self.stratum_server,
-                tcp_stratum_server=self.tcp_stratum_server
+                block_builder=self.block_builder
             )
             logger.info(
                 "JobManager создан",
                 event="job_manager_created",
-                has_node_client=self._job_manager.node_client is not None,
+                has_node_client=self._job_manager.node_client is not None
+            )
+        return self._job_manager
+
+    # === ИНИЦИАЛИЗАЦИЯ JOB MANAGER С СЕРВЕРАМИ ===
+    def initialize_job_manager_with_servers(self):
+        """Инициализация JobManager с серверами (после создания всех зависимостей)"""
+        if not self._job_manager_initialized:
+            # Получаем job_manager (создается при первом обращении)
+            jm = self.job_manager
+            # Устанавливаем серверы
+            jm.stratum_server = self.stratum_server
+            jm.tcp_stratum_server = self.tcp_stratum_server
+            self._job_manager_initialized = True
+            logger.info(
+                "JobManager инициализирован с серверами",
+                event="job_manager_initialized_with_servers",
                 has_stratum_server=self.stratum_server is not None,
                 has_tcp_stratum_server=self.tcp_stratum_server is not None
             )
@@ -173,7 +188,7 @@ class DependencyContainer:
             )
         return self._tcp_stratum_server
 
-    # === DIFFICULTY SERVICE  ===
+    # === DIFFICULTY SERVICE ===
     @property
     def difficulty_service(self):
         if self._difficulty_service is None:
@@ -183,7 +198,6 @@ class DependencyContainer:
                 tcp_stratum_server=None
             )
 
-            # После создания difficulty_service, обновляем share_validator
             if self._share_validator:
                 self._share_validator.pool_difficulty = self._difficulty_service.current_difficulty
                 logger.info(
@@ -212,6 +226,7 @@ class DependencyContainer:
             "tcp_stratum_server": self._tcp_stratum_server is not None,
             "difficulty_service": self._difficulty_service is not None,
             "network_manager": self._network_manager is not None,
+            "job_manager_initialized": self._job_manager_initialized,
         }
 
         logger.debug(
