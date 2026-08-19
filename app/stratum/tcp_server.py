@@ -804,6 +804,26 @@ class StratumTCPServer:
 
     async def send_new_job_tcp(self, miner_address: str, writer: asyncio.StreamWriter):
         try:
+            # ===== ПРОВЕРКА: writer еще жив? =====
+            if writer is None:
+                print(f"🔴 [SEND_JOB] Writer is None for {miner_address[:20]}...", flush=True)
+                return
+
+            if writer.is_closing():
+                print(f"🔴 [SEND_JOB] Writer is closing for {miner_address[:20]}...", flush=True)
+                return
+
+            # Пробуем получить peername, чтобы проверить соединение
+            try:
+                peername = writer.get_extra_info('peername')
+                if peername is None:
+                    print(f"🔴 [SEND_JOB] No peername (connection dead?) for {miner_address[:20]}...", flush=True)
+                    return
+            except Exception as e:
+                print(f"🔴 [SEND_JOB] Failed to get peername for {miner_address[:20]}...: {e}", flush=True)
+                return
+            # =============================================
+
             if self.job_manager is None:
                 print("🔴 JOB_MANAGER IS NONE!", flush=True)
                 return
@@ -879,14 +899,28 @@ class StratumTCPServer:
                     False  # clean_jobs=False
                 ]
             }
+
+            # ===== ПЕРЕД ОТПРАВКОЙ ЕЩЕ РАЗ ПРОВЕРЯЕМ WRITER =====
+            if writer.is_closing():
+                print(f"🔴 [SEND_JOB] Writer closed before send for {miner_address[:20]}...", flush=True)
+                return
+
             try:
                 await self._send_json(writer, job_data_for_send)
                 print(f"✅ REAL JOB SENT: id={job_id}, merkle_len={len(real_merkle_branch)}", flush=True)
+            except (BrokenPipeError, ConnectionResetError) as e:
+                print(f"🔴 [SEND_JOB] Connection lost while sending to {miner_address[:20]}...: {e}", flush=True)
+                # Удаляем этого майнера из списка, так как соединение потеряно
+                for cid, addr in self.miners.items():
+                    if addr == miner_address:
+                        self.connections.pop(cid, None)
+                        self.miners.pop(cid, None)
+                        break
             except Exception as e:
-                print(f"🔴 FAILED TO SEND JOB TO ASIC: {e}", flush=True)
+                print(f"🔴 [SEND_JOB] Failed to send to {miner_address[:20]}...: {e}", flush=True)
 
         except Exception as e:
-            print(f"🔴 ERROR: {e}", flush=True)
+            print(f"🔴 [SEND_JOB] ERROR in send_new_job_tcp: {e}", flush=True)
             import traceback
             traceback.print_exc()
 
@@ -910,6 +944,8 @@ class StratumTCPServer:
             total_clients=total_clients
         )
 
+        print(f"📤 [BROADCAST] Starting broadcast to {total_clients} clients", flush=True)
+
         for client_id, writer in self.connections.items():
             miner_address = self.miners.get(client_id)
             if miner_address:
@@ -922,13 +958,15 @@ class StratumTCPServer:
                     # Сохраняем в job_service
                     self.job_service.add_job(job_id, job_data_copy, miner_address)
 
+                    print(f"📤 [BROADCAST] Sending job to {miner_address[:20]}...", flush=True)
                     # Отправляем клиенту
                     await self._send_json(writer, job_data_copy)
-
                     successful_sends += 1
 
                 except Exception as e:
                     failed_sends += 1
+                    print(f"🔴 [BROADCAST] Failed to send to {client_id}: {e}", flush=True)
+
                     logger.error(
                         "Ошибка рассылки задания TCP клиенту",
                         event="tcp_broadcast_error",
@@ -937,7 +975,10 @@ class StratumTCPServer:
                         error=str(e)
                     )
 
+
         if successful_sends > 0:
+            print(f"📤 [BROADCAST] Done: {successful_sends}/{total_clients} successful, {failed_sends} failed",
+                  flush=True)
             logger.info(
                 "Задание разослано TCP клиентам",
                 event="tcp_broadcast_completed",
@@ -946,6 +987,9 @@ class StratumTCPServer:
                 total_clients=total_clients
             )
         else:
+            print(f"📤 [BROADCAST] Not: {successful_sends}/{total_clients} Не удалось разослать задание ни одному TCP клиенту , {failed_sends} failed",
+                  flush=True)
+
             logger.warning(
                 "Не удалось разослать задание ни одному TCP клиенту",
                 event="tcp_broadcast_failed",
