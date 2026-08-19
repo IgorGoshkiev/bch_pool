@@ -45,7 +45,7 @@ class DifficultyService:
         # Глобальная сложность (для совместимости)
         network_config = self.network_manager.config
         self.current_difficulty = network_config['default_difficulty']
-        self.target_shares_per_minute = settings.target_shares_per_minute
+        self.target_shares_per_minute = getattr(settings, 'target_shares_per_minute', 15)
         self.min_difficulty = settings.min_difficulty
         self.max_difficulty = getattr(settings, 'max_difficulty', None)
 
@@ -321,36 +321,78 @@ class DifficultyService:
 
     async def calculate_difficulty(self) -> float:
         """Расчет глобальной сложности (используется для broadcast)"""
+
+        print(f"\n{'=' * 60}", flush=True)
+        print(f"📊 [DIFF_GLOBAL] ===== START =====", flush=True)
+        print(f"📊 [DIFF_GLOBAL] Time: {datetime.now(UTC).strftime('%H:%M:%S')}", flush=True)
+
         if not settings.enable_dynamic_difficulty:
+            print(f"📊 [DIFF_GLOBAL] Dynamic difficulty disabled, returning: {self.current_difficulty}", flush=True)
+            print(f"{'=' * 60}\n", flush=True)
             return self.current_difficulty
 
         try:
             shares_last_hour = self.shares_last_hour
+            print(f"📊 [DIFF_GLOBAL] shares_last_hour: {shares_last_hour}", flush=True)
+            print(f"📊 [DIFF_GLOBAL] current_difficulty: {self.current_difficulty}", flush=True)
+            print(f"📊 [DIFF_GLOBAL] target_shares_per_minute: {self.target_shares_per_minute}", flush=True)
+            print(f"📊 [DIFF_GLOBAL] min_difficulty: {self.min_difficulty}", flush=True)
+            print(f"📊 [DIFF_GLOBAL] max_difficulty: {self.max_difficulty}", flush=True)
 
             if shares_last_hour < 10:
+                print(
+                    f"📊 [DIFF_GLOBAL] Too few shares ({shares_last_hour} < 10), returning current: {self.current_difficulty}",
+                    flush=True)
+                print(f"{'=' * 60}\n", flush=True)
                 return self.current_difficulty
 
             actual_shares_per_minute = shares_last_hour / 60
+            print(f"📊 [DIFF_GLOBAL] actual_shares_per_minute: {actual_shares_per_minute:.4f}", flush=True)
+
+            # ===== ЗАЩИТА ОТ ДЕЛЕНИЯ НА НОЛЬ =====
+            if self.target_shares_per_minute <= 0:
+                print(f"⚠️ [DIFF_GLOBAL] target_shares_per_minute is {self.target_shares_per_minute}, using default 15",
+                      flush=True)
+                self.target_shares_per_minute = 15
+
             ratio = actual_shares_per_minute / self.target_shares_per_minute
+            print(f"📊 [DIFF_GLOBAL] ratio: {ratio:.6f}", flush=True)
+
             adjustment_factor = ratio ** 0.5
+            print(f"📊 [DIFF_GLOBAL] adjustment_factor: {adjustment_factor:.6f}", flush=True)
 
             new_difficulty = self.current_difficulty * adjustment_factor
-            new_difficulty = max(self.min_difficulty, min(self.max_difficulty, new_difficulty))
+            print(f"📊 [DIFF_GLOBAL] new_difficulty (before limits): {new_difficulty:.10f}", flush=True)
 
+            # Ограничиваем минимальную и максимальную сложность
+            if self.max_difficulty:
+                new_difficulty = min(new_difficulty, self.max_difficulty)
+                print(f"📊 [DIFF_GLOBAL] after max limit ({self.max_difficulty}): {new_difficulty:.10f}", flush=True)
+
+            new_difficulty = max(self.min_difficulty, new_difficulty)
+            print(f"📊 [DIFF_GLOBAL] after min limit ({self.min_difficulty}): {new_difficulty:.10f}", flush=True)
+
+            # Ограничиваем максимальное изменение
             max_change_factor = 4.0
             if new_difficulty / self.current_difficulty > max_change_factor:
                 new_difficulty = self.current_difficulty * max_change_factor
+                print(f"📊 [DIFF_GLOBAL] capped at +{max_change_factor}x: {new_difficulty:.10f}", flush=True)
             elif self.current_difficulty / new_difficulty > max_change_factor:
                 new_difficulty = self.current_difficulty / max_change_factor
+                print(f"📊 [DIFF_GLOBAL] capped at -{max_change_factor}x: {new_difficulty:.10f}", flush=True)
+
+            print(f"📊 [DIFF_GLOBAL] FINAL new_difficulty: {new_difficulty:.10f}", flush=True)
+            print(f"📊 [DIFF_GLOBAL] change: {((new_difficulty / self.current_difficulty - 1) * 100):.2f}%", flush=True)
+            print(f"{'=' * 60}\n", flush=True)
 
             return new_difficulty
 
         except Exception as e:
-            logger.error(
-                "Ошибка расчета сложности",
-                event="difficulty_calculation_error",
-                error=str(e)
-            )
+            print(f"🔴 [DIFF_GLOBAL] EXCEPTION: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            logger.error(f"Ошибка расчета сложности: {e}")
+            print(f"{'=' * 60}\n", flush=True)
             return self.current_difficulty
 
     async def update_difficulty(self) -> Tuple[bool, float, str]:

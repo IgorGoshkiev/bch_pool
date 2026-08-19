@@ -37,6 +37,7 @@ class JobManager:
 
         self.last_best_hash: Optional[str] = None
         self.reorg_check_interval = 10  # Проверка каждые 10 секунд
+        self._last_reorg_check_time: Optional[datetime] = None
 
         # Генерируем extra_nonce1 для пула (используется если нода не возвращает)
         self.pool_extra_nonce1 = secrets.token_hex(20)
@@ -262,21 +263,40 @@ class JobManager:
 
     async def check_for_reorg(self):
         """Проверка реорганизации цепочки"""
+
+        print(f"\n{'=' * 60}", flush=True)
+        print(f"🔍 [REORG] ===== CHECK START =====", flush=True)
+        print(f"🔍 [REORG] Time: {datetime.now(UTC).strftime('%H:%M:%S.%f')[:-3]}", flush=True)
+
         if not self.node_client:
+            print(f"🔍 [REORG] node_client is None, skipping", flush=True)
+            print(f"{'=' * 60}\n", flush=True)
             return
 
         try:
-            print(f"🔍 [REORG] Checking for reorg...", flush=True)
+            # Получаем текущий лучший хэш
+            print(f"🔍 [REORG] Calling get_best_block_hash()...", flush=True)
             current_best = await self.node_client.get_best_block_hash()
 
             if not current_best:
-                print(f"🔍 [REORG] No current_best hash", flush=True)
+                print(f"🔍 [REORG] current_best is None, skipping", flush=True)
+                print(f"{'=' * 60}\n", flush=True)
                 return
 
+            print(f"🔍 [REORG] current_best: {current_best[:16]}...", flush=True)
+            print(f"🔍 [REORG] last_best_hash: {self.last_best_hash[:16] if self.last_best_hash else 'None'}...",
+                  flush=True)
+
+            # Проверяем, изменился ли хэш
             if self.last_best_hash and self.last_best_hash != current_best:
-                print(f"🔍 [REORG] ⚠️ REORG DETECTED!", flush=True)
-                print(f"🔍 [REORG] old_hash: {self.last_best_hash[:16]}...", flush=True)
-                print(f"🔍 [REORG] new_hash: {current_best[:16]}...", flush=True)
+                print(f"🔍 [REORG] ⚠️ HASH CHANGED!", flush=True)
+                print(f"🔍 [REORG] old_hash: {self.last_best_hash[:32]}...", flush=True)
+                print(f"🔍 [REORG] new_hash: {current_best[:32]}...", flush=True)
+
+                # Вычисляем разницу во времени с последней проверки
+                if self._last_reorg_check_time:
+                    time_since_last = (datetime.now(UTC) - self._last_reorg_check_time).total_seconds()
+                    print(f"🔍 [REORG] time_since_last_check: {time_since_last:.2f}s", flush=True)
 
                 logger.warning(
                     "REORG DETECTED!",
@@ -285,21 +305,35 @@ class JobManager:
                     new_hash=current_best[:16] + "..."
                 )
 
-                # 1. Создаем НОВОЕ задание с актуальным prevhash и ntime
+                # 1. Создаем НОВОЕ задание
                 print(f"🔍 [REORG] Creating new job via broadcast...", flush=True)
+                broadcast_start = datetime.now(UTC)
                 await self.broadcast_new_job_to_all()
+                broadcast_duration = (datetime.now(UTC) - broadcast_start).total_seconds() * 1000
+                print(f"🔍 [REORG] broadcast_new_job_to_all took {broadcast_duration:.1f}ms", flush=True)
 
-                # 2. НЕ отправляем clean_jobs=True (это вызывает переподключение ASIC)
+                # 2. НЕ отправляем clean_jobs=True
                 # await self._broadcast_clean_jobs()
                 print(f"🔍 [REORG] SKIPPED _broadcast_clean_jobs (clean_jobs=True would cause ASIC reconnect)",
                       flush=True)
                 print(f"🔍 [REORG] ✅ New job sent with clean_jobs=False", flush=True)
 
+            else:
+                print(f"🔍 [REORG] No change (last_best == current_best)", flush=True)
+
+            # Сохраняем текущий хэш
             self.last_best_hash = current_best
+            self._last_reorg_check_time = datetime.now(UTC)
+
+            print(f"🔍 [REORG] ===== CHECK COMPLETE =====", flush=True)
+            print(f"{'=' * 60}\n", flush=True)
 
         except Exception as e:
-            print(f"🔍 [REORG] ❌ ERROR: {e}", flush=True)
+            print(f"🔍 [REORG] ❌ EXCEPTION: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
             logger.error(f"Error checking for reorg: {e}")
+            print(f"{'=' * 60}\n", flush=True)
 
     async def _create_stratum_job_from_template(
             self,

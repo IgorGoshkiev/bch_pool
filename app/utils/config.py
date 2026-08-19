@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     difficulty_update_interval: int = 300
     min_difficulty: float = 0.001
     max_difficulty: Optional[float] = None
-    target_shares_per_minute: int = 60
+    target_shares_per_minute: int = 15
 
     # Stratum серверы
     stratum_host: str = "0.0.0.0"
