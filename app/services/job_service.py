@@ -97,19 +97,16 @@ class JobService:
             self.active_jobs[job_id] = job_data
 
             if self.validator:
-                # Добавляем задание в валидатор
                 self.validator.add_job(job_id, job_data)
                 print(f"✅ JOB_SERVICE: added job {job_id} to validator", flush=True)
             else:
                 print(f"⚠️ JOB_SERVICE: no validator to add job {job_id}", flush=True)
 
-            # Если это персональное задание, добавляем в подписки майнера
             if miner_address:
                 if miner_address not in self.miner_subscriptions:
                     self.miner_subscriptions[miner_address] = set()
                 self.miner_subscriptions[miner_address].add(job_id)
 
-            # Добавляем в историю
             job_record = {
                 "id": job_id,
                 "created_at": datetime.now(UTC),
@@ -119,22 +116,16 @@ class JobService:
             }
             self.job_history.append(job_record)
 
-            # Ограничиваем размер истории
             if len(self.job_history) > self.max_history_size:
                 self.job_history = self.job_history[-self.max_history_size:]
 
-            logger.info(
-                "Задание добавлено в систему",
-                event="job_added",
-                job_id=job_id,
-                miner_address=miner_address or "broadcast",
-                job_type="personal" if miner_address else "broadcast",
-                total_active_jobs=len(self.active_jobs),
-                total_subscribed_miners=len(self.miner_subscriptions)
-            )
-
+            logger.info(...)
 
         except Exception as e:
+            print(f"🔴🔴🔴 JOB_SERVICE.add_job EXCEPTION: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+
             logger.error(
                 "Ошибка добавления задания",
                 event="job_add_error",

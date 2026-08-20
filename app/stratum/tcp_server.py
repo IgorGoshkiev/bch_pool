@@ -1004,8 +1004,18 @@ class StratumTCPServer:
                     job_data_copy["params"][0] = job_id
                     print(f"📤 [BROADCAST] job_id: {job_id}", flush=True)
 
+                    # ===== ПОЛУЧАЕМ extra_nonce1 =====
+                    extra_nonce1 = job_data.get('extra_nonce1')
+                    print(f"📤 [BROADCAST] get extra_nonce1: {extra_nonce1}", flush=True)
+                    # ================================
+
                     # Сохраняем в job_service
-                    self.job_service.add_job(job_id, job_data_copy, miner_address)
+                    self.job_service.add_job(
+                        job_id,
+                        job_data_copy,
+                        miner_address,
+                        extra_nonce1=extra_nonce1
+                    )
                     print(f"📤 [BROADCAST] Job added to job_service", flush=True)
 
                     # ===== ПРОВЕРКА ПЕРЕД ОТПРАВКОЙ =====
