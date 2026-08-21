@@ -924,13 +924,14 @@ class StratumTCPServer:
             import traceback
             traceback.print_exc()
 
-    async def broadcast_new_job(self, job_data: dict):
+    async def broadcast_new_job(self, job_data: dict, clean_jobs: bool = False):
         """Рассылка нового задания всем TCP клиентам"""
 
         # ===== РАСШИРЕННАЯ ОТЛАДКА =====
         print(f"\n{'=' * 60}", flush=True)
         print(f"📤 [BROADCAST] ===== START =====", flush=True)
         print(f"📤 [BROADCAST] Time: {datetime.now(UTC).strftime('%H:%M:%S')}", flush=True)
+        print(f"📤 [BROADCAST] clean_jobs: {clean_jobs}", flush=True)
         print(f"📤 [BROADCAST] job_data keys: {list(job_data.keys()) if job_data else 'None'}", flush=True)
         print(f"📤 [BROADCAST] connections count: {len(self.connections)}", flush=True)
         print(f"📤 [BROADCAST] connections: {list(self.connections.keys())}", flush=True)
@@ -992,7 +993,6 @@ class StratumTCPServer:
                 self.miners.pop(client_id, None)
                 failed_sends += 1
                 continue
-            # =================================
 
             if miner_address:
                 try:
@@ -1004,10 +1004,15 @@ class StratumTCPServer:
                     job_data_copy["params"][0] = job_id
                     print(f"📤 [BROADCAST] job_id: {job_id}", flush=True)
 
+                    # ===== УСТАНАВЛИВАЕМ clean_jobs =====
+                    if len(job_data_copy["params"]) >= 9:
+                        job_data_copy["params"][8] = clean_jobs
+                        print(f"📤 [BROADCAST] set clean_jobs to: {clean_jobs}", flush=True)
+                    # ===================================
+
                     # ===== ПОЛУЧАЕМ extra_nonce1 =====
                     extra_nonce1 = job_data.get('extra_nonce1')
                     print(f"📤 [BROADCAST] get extra_nonce1: {extra_nonce1}", flush=True)
-                    # ================================
 
                     # Сохраняем в job_service
                     self.job_service.add_job(
@@ -1055,6 +1060,7 @@ class StratumTCPServer:
 
         print(f"\n📤 [BROADCAST] ===== DONE =====", flush=True)
         print(f"📤 [BROADCAST] Results: {successful_sends}/{total_clients} success, {failed_sends} failed", flush=True)
+        print(f"📤 [BROADCAST] clean_jobs was: {clean_jobs}", flush=True)
         print(f"{'=' * 60}\n", flush=True)
 
         if successful_sends > 0:

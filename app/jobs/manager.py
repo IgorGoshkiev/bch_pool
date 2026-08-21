@@ -261,7 +261,7 @@ class JobManager:
                 await self.tcp_stratum_server.broadcast_new_job(clean_job)
 
     async def check_for_reorg(self):
-        """Проверка реорганизации цепочки и актуальности ntime"""
+        """Проверка реорганизации цепочки"""
 
         print(f"\n{'=' * 60}", flush=True)
         print(f"🔍 [REORG] ===== CHECK START =====", flush=True)
@@ -304,48 +304,42 @@ class JobManager:
                 )
                 reorg_detected = True
 
-            # ===== ПРОВЕРКА ntime (ВСЕГДА) =====
-            ntime_expired = False
-            if self.current_job:
-                try:
-                    stratum_data = self.current_job.get('stratum_data')
-                    if stratum_data and 'params' in stratum_data:
-                        params = stratum_data['params']
-                        if len(params) >= 8:
-                            ntime_hex = params[7]
-                            ntime_int = int(ntime_hex, 16)
-                            current_time = int(datetime.now(UTC).timestamp())
-                            age = current_time - ntime_int
-
-                            print(f"🔍 [REORG] ntime age: {age}s", flush=True)
-
-                            # Если ntime старше 10 минут → обновить задание
-                            if age > 600:  # 10 минут
-                                print(f"🔍 [REORG] ⚠️ ntime is old ({age}s), sending new job", flush=True)
-                                logger.info(
-                                    "ntime устарел, создаем новое задание",
-                                    event="ntime_expired",
-                                    age_seconds=age,
-                                    ntime=ntime_hex
-                                )
-                                ntime_expired = True
-                except Exception as e:
-                    print(f"🔍 [REORG] ntime check error: {e}", flush=True)
-
             # ===== СОЗДАЕМ НОВОЕ ЗАДАНИЕ ЕСЛИ НУЖНО =====
-            if reorg_detected or ntime_expired:
-                print(f"🔍 [REORG] Creating new job via broadcast...", flush=True)
+            if reorg_detected:
+                print(f"🔍 [REORG] Creating new job via broadcast with clean_jobs=True...", flush=True)  # ← ИЗМЕНИТЬ
+                print(f"🔍 [REORG] reason: reorg={reorg_detected}", flush=True)
+
                 broadcast_start = datetime.now(UTC)
-                await self.broadcast_new_job_to_all()
+                await self.broadcast_new_job_to_all(clean_jobs=True)  # ← clean_jobs=True!
                 broadcast_duration = (datetime.now(UTC) - broadcast_start).total_seconds() * 1000
                 print(f"🔍 [REORG] broadcast_new_job_to_all took {broadcast_duration:.1f}ms", flush=True)
 
-                # НЕ отправляем clean_jobs=True
-                print(f"🔍 [REORG] SKIPPED _broadcast_clean_jobs", flush=True)
-                print(f"🔍 [REORG] ✅ New job sent with clean_jobs=False", flush=True)
+                # ===== ОБНОВЛЯЕМ current_job =====
+                if self.job_service and self.job_service.last_broadcast_job:
+                    last_job = self.job_service.last_broadcast_job
+                    if last_job:
+                        self.current_job = {
+                            "id": last_job['params'][0] if 'params' in last_job else 'unknown',
+                            "stratum_data": last_job,
+                            "created_at": datetime.now(UTC),
+                            "miner_address": None
+                        }
+                        print(f"🔍 [REORG] ✅ current_job updated to: {self.current_job['id']}", flush=True)
+                    else:
+                        print(f"🔍 [REORG] ⚠️ last_job is None, current_job NOT updated", flush=True)
+                else:
+                    print(f"🔍 [REORG] ⚠️ job_service or last_broadcast_job is None!", flush=True)
+                    print(f"🔍 [REORG]    job_service: {self.job_service is not None}", flush=True)
+                    print(
+                        f"🔍 [REORG]    last_broadcast_job: {self.job_service.last_broadcast_job is not None if self.job_service else 'N/A'}",
+                        flush=True)
+
+                # НЕ отправляем clean_jobs=True через отдельный метод (уже отправлено)
+                print(f"🔍 [REORG] SKIPPED _broadcast_clean_jobs (clean_jobs already sent via broadcast)", flush=True)
+                print(f"🔍 [REORG] ✅ New job sent with clean_jobs=True", flush=True)
 
             else:
-                print(f"🔍 [REORG] No action needed", flush=True)
+                print(f"🔍 [REORG] No action needed (reorg={reorg_detected})", flush=True)
 
             self.last_best_hash = current_best
             self._last_reorg_check_time = datetime.now(UTC)
@@ -417,12 +411,13 @@ class JobManager:
             # Пробрасываем ошибку дальше, а не создаем fallback
             raise
 
-    async def broadcast_new_job_to_all(self):
+    async def broadcast_new_job_to_all(self, clean_jobs: bool = False):
         """Рассылать новое задание всем подключенным майнерам"""
 
         print(f"\n{'=' * 60}", flush=True)
         print(f"📤 [BROADCAST_TO_ALL] ===== START =====", flush=True)
         print(f"📤 [BROADCAST_TO_ALL] Time: {datetime.now(UTC).strftime('%H:%M:%S')}", flush=True)
+        print(f"📤 [BROADCAST_TO_ALL] clean_jobs: {clean_jobs}", flush=True)  # ← ДОБАВИТЬ
         print(f"📤 [BROADCAST_TO_ALL] stratum_server: {self.stratum_server is not None}", flush=True)
         print(f"📤 [BROADCAST_TO_ALL] tcp_stratum_server: {self.tcp_stratum_server is not None}", flush=True)
 
@@ -446,18 +441,34 @@ class JobManager:
         print(f"✅ [BROADCAST_TO_ALL] Job created: {job_data.get('method', 'unknown')}", flush=True)
         print(f"📤 [BROADCAST_TO_ALL] job_data keys: {list(job_data.keys())}", flush=True)
 
+        # ===== СОХРАНЯЕМ ПОСЛЕДНЕЕ ЗАДАНИЕ =====
+        if self.job_service:
+            self.job_service.last_broadcast_job = job_data
+            print(f"📤 [BROADCAST_TO_ALL] Saved last_broadcast_job", flush=True)
+        else:
+            print(f"⚠️ [BROADCAST_TO_ALL] job_service is None, cannot save last_broadcast_job", flush=True)
+
+        # ===== ОБНОВЛЯЕМ current_job =====
+        self.current_job = {
+            "id": job_data['params'][0] if 'params' in job_data and job_data['params'] else 'unknown',
+            "stratum_data": job_data,
+            "created_at": datetime.now(UTC),
+            "miner_address": None
+        }
+        print(f"📤 [BROADCAST_TO_ALL] current_job updated to: {self.current_job['id']}", flush=True)
+
         # Рассылаем через WebSocket сервер если есть
         if self.stratum_server:
-            print(f"📤 [BROADCAST_TO_ALL] Sending via WebSocket...", flush=True)
-            await self.stratum_server.broadcast_new_job(job_data)
+            print(f"📤 [BROADCAST_TO_ALL] Sending via WebSocket with clean_jobs={clean_jobs}...", flush=True)
+            await self.stratum_server.broadcast_new_job(job_data, clean_jobs=clean_jobs)
             print(f"✅ [BROADCAST_TO_ALL] WebSocket broadcast done", flush=True)
         else:
             print(f"⚠️ [BROADCAST_TO_ALL] No stratum_server, skipping WebSocket", flush=True)
 
         # Рассылаем через TCP сервер если есть
         if self.tcp_stratum_server:
-            print(f"📤 [BROADCAST_TO_ALL] Sending via TCP...", flush=True)
-            await self.tcp_stratum_server.broadcast_new_job(job_data)
+            print(f"📤 [BROADCAST_TO_ALL] Sending via TCP with clean_jobs={clean_jobs}...", flush=True)
+            await self.tcp_stratum_server.broadcast_new_job(job_data, clean_jobs=clean_jobs)
             print(f"✅ [BROADCAST_TO_ALL] TCP broadcast done", flush=True)
         else:
             print(f"⚠️ [BROADCAST_TO_ALL] No tcp_stratum_server, skipping TCP", flush=True)
