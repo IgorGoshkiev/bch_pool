@@ -509,10 +509,10 @@ class StratumTCPServer:
         # 1. Отправляем задание этому майнеру
         await self.send_new_job_tcp(miner_address, writer)
 
-        # 2. Дополнительный broadcast для всех майнеров
-        if self.job_manager:
-            await self.job_manager.broadcast_new_job_to_all()
-            print(f"📤 BROADCAST NEW JOB TO ALL MINERS", flush=True)
+        #2. Дополнительный broadcast для всех майнеров
+        # if self.job_manager:
+        #     await self.job_manager.broadcast_new_job_to_all()
+        #     print(f"📤 BROADCAST NEW JOB TO ALL MINERS", flush=True)
 
     async def _send_result(self, writer: asyncio.StreamWriter, msg_id: int, result):
         """Отправка простого результата"""
@@ -580,22 +580,6 @@ class StratumTCPServer:
                         share_difficulty = target_for_diff_1 / hash_int
                         print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
 
-                        # ===== ИСПРАВЛЕНИЕ 1: Отправляем ТЕКУЩУЮ сложность майнера =====
-                        # if share_difficulty > 0:
-                            # Получаем ТЕКУЩУЮ сложность майнера
-                            # current_diff = self.miner_difficulties.get(miner_address, settings.default_share_difficulty)
-
-                            # Отправляем ASIC его текущую сложность (для отображения на панели ASIC)
-                            # difficulty_msg = {
-                            #     "method": "mining.set_difficulty",
-                            #     "params": [current_diff],
-                            #     "id": None
-                            # }
-                            # await self._send_json(writer, difficulty_msg)
-                            # print(
-                            #     f"📊 SENT CURRENT DIFFICULTY TO ASIC: {current_diff:.10f} (share: {share_difficulty:.10f})",
-                            #     flush=True)
-
                     else:
                         share_difficulty = 0
                         print(f"🔥 WARNING: hash_int is 0, cannot calculate difficulty", flush=True)
@@ -611,9 +595,9 @@ class StratumTCPServer:
                 await self._send_error(writer, msg_id, "Failed to calculate hash")
                 return
 
-            # 5. СЛОЖНОСТЬ ДЛЯ ПРОВЕРКИ
-            # Это гарантирует, что ВСЕ шары будут проходить проверку
-            miner_diff = settings.default_share_difficulty
+            # 5. СЛОЖНОСТЬ ДЛЯ ПРОВЕРКИ - ВСЕГДА МИНИМАЛЬНАЯ!
+            validation_difficulty = settings.default_share_difficulty  # 1e-10
+            # ==========================================================
 
             # 6. ВАЛИДАЦИЯ
             print(f"🔍 enable_share_validation={settings.enable_share_validation}", flush=True)
@@ -627,7 +611,7 @@ class StratumTCPServer:
                         ntime=ntime,
                         nonce=nonce,
                         miner_address=miner_address,
-                        pool_difficulty=miner_diff
+                        pool_difficulty=validation_difficulty
                     )
 
                     profiler['validate'] = (time.time() - t0) * 1000
@@ -828,11 +812,25 @@ class StratumTCPServer:
                 print("🔴 JOB_MANAGER IS NONE!", flush=True)
                 return
 
-            print(f"🔍 SEND_JOB: getting job for {miner_address}", flush=True)
-            job_data = await self.job_manager.create_new_job(miner_address)
+            # ===== ✅ ИСПОЛЬЗУЕМ СУЩЕСТВУЮЩЕЕ ЗАДАНИЕ, ЕСЛИ ОНО ЕСТЬ =====
+            job_data = None
+
+            # Проверяем, есть ли текущее задание в job_manager
+            if self.job_manager and self.job_manager.current_job:
+                # Берем существующее задание
+                job_data = self.job_manager.current_job.get('stratum_data')
+                if job_data:
+                    print(f"🔍 SEND_JOB: using existing job from job_manager.current_job", flush=True)
+                else:
+                    print(f"🔍 SEND_JOB: current_job exists but stratum_data is None", flush=True)
+
+            # Если нет задания - создаем новое
+            if not job_data:
+                print(f"🔍 SEND_JOB: no existing job, creating new one for {miner_address}", flush=True)
+                job_data = await self.job_manager.create_new_job(miner_address)
 
             if not job_data:
-                print("🔴 Failed to create real job from node", flush=True)
+                print("🔴 Failed to get job data", flush=True)
                 return
 
             print(f"🔍 SEND_JOB: job_data keys = {job_data.keys()}", flush=True)
@@ -853,8 +851,8 @@ class StratumTCPServer:
             print(f"🔍 SEND_JOB: coinb1 length = {len(real_coinb1)}", flush=True)
             print(f"🔍 SEND_JOB: coinb2 length = {len(real_coinb2)}", flush=True)
             print(f"🔍 SEND_JOB: merkle_branch length = {len(real_merkle_branch)}", flush=True)
-            print(f"🔍 SEND_JOB: bits = {real_bits}, ntime = {real_bits}", flush=True)
-            print(f"🔍 SEND_JOB: ntime = {real_ntime}, ntime = {real_ntime}", flush=True)
+            print(f"🔍 SEND_JOB: bits = {real_bits}", flush=True)
+            print(f"🔍 SEND_JOB: ntime = {real_ntime}", flush=True)
 
             job_id = f"{int(time.time()) & 0xFFFF:04x}"
 
@@ -923,6 +921,7 @@ class StratumTCPServer:
             print(f"🔴 [SEND_JOB] ERROR in send_new_job_tcp: {e}", flush=True)
             import traceback
             traceback.print_exc()
+
 
     async def broadcast_new_job(self, job_data: dict, clean_jobs: bool = False):
         """Рассылка нового задания всем TCP клиентам"""

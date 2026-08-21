@@ -261,7 +261,7 @@ class JobManager:
                 await self.tcp_stratum_server.broadcast_new_job(clean_job)
 
     async def check_for_reorg(self):
-        """Проверка реорганизации цепочки"""
+        """Проверка реорганизации цепочки - ТОЛЬКО РЕОРГ!"""
 
         print(f"\n{'=' * 60}", flush=True)
         print(f"🔍 [REORG] ===== CHECK START =====", flush=True)
@@ -285,16 +285,12 @@ class JobManager:
             print(f"🔍 [REORG] last_best_hash: {self.last_best_hash[:16] if self.last_best_hash else 'None'}...",
                   flush=True)
 
-            # ===== ПРОВЕРКА РЕОРГА =====
+            # ===== ТОЛЬКО ПРОВЕРКА РЕОРГА =====
             reorg_detected = False
             if self.last_best_hash and self.last_best_hash != current_best:
                 print(f"🔍 [REORG] ⚠️ HASH CHANGED!", flush=True)
                 print(f"🔍 [REORG] old_hash: {self.last_best_hash[:32]}...", flush=True)
                 print(f"🔍 [REORG] new_hash: {current_best[:32]}...", flush=True)
-
-                if self._last_reorg_check_time:
-                    time_since_last = (datetime.now(UTC) - self._last_reorg_check_time).total_seconds()
-                    print(f"🔍 [REORG] time_since_last_check: {time_since_last:.2f}s", flush=True)
 
                 logger.warning(
                     "REORG DETECTED!",
@@ -304,13 +300,12 @@ class JobManager:
                 )
                 reorg_detected = True
 
-            # ===== СОЗДАЕМ НОВОЕ ЗАДАНИЕ ЕСЛИ НУЖНО =====
+            # ===== СОЗДАЕМ НОВОЕ ЗАДАНИЕ ТОЛЬКО ПРИ РЕОРГЕ =====
             if reorg_detected:
-                print(f"🔍 [REORG] Creating new job via broadcast with clean_jobs=True...", flush=True)  # ← ИЗМЕНИТЬ
-                print(f"🔍 [REORG] reason: reorg={reorg_detected}", flush=True)
+                print(f"🔍 [REORG] Creating new job via broadcast with clean_jobs=True...", flush=True)
 
                 broadcast_start = datetime.now(UTC)
-                await self.broadcast_new_job_to_all(clean_jobs=True)  # ← clean_jobs=True!
+                await self.broadcast_new_job_to_all(clean_jobs=True)
                 broadcast_duration = (datetime.now(UTC) - broadcast_start).total_seconds() * 1000
                 print(f"🔍 [REORG] broadcast_new_job_to_all took {broadcast_duration:.1f}ms", flush=True)
 
@@ -325,17 +320,7 @@ class JobManager:
                             "miner_address": None
                         }
                         print(f"🔍 [REORG] ✅ current_job updated to: {self.current_job['id']}", flush=True)
-                    else:
-                        print(f"🔍 [REORG] ⚠️ last_job is None, current_job NOT updated", flush=True)
-                else:
-                    print(f"🔍 [REORG] ⚠️ job_service or last_broadcast_job is None!", flush=True)
-                    print(f"🔍 [REORG]    job_service: {self.job_service is not None}", flush=True)
-                    print(
-                        f"🔍 [REORG]    last_broadcast_job: {self.job_service.last_broadcast_job is not None if self.job_service else 'N/A'}",
-                        flush=True)
 
-                # НЕ отправляем clean_jobs=True через отдельный метод (уже отправлено)
-                print(f"🔍 [REORG] SKIPPED _broadcast_clean_jobs (clean_jobs already sent via broadcast)", flush=True)
                 print(f"🔍 [REORG] ✅ New job sent with clean_jobs=True", flush=True)
 
             else:

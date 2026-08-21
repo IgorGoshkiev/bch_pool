@@ -492,75 +492,80 @@ class StratumServer:
         }
         await websocket.send_json(error_response)
 
-    async def broadcast_new_job(self, job_data: dict):
-        """Рассылка нового задания всем подключенным майнерам"""
+    # websocket_server.py
+    async def broadcast_new_job(self, job_data: dict, clean_jobs: bool = False):
+        """
+        Рассылка нового задания всем WebSocket клиентам
+
+        Args:
+            job_data: Данные задания для рассылки
+            clean_jobs: Флаг очистки старых заданий (для совместимости с TCP)
+                       В WebSocket этот параметр не используется
+        """
         if not self.active_connections:
             logger.debug(
-                "Нет активных подключений для рассылки",
-                event="stratum_broadcast_skipped",
-                reason="no_active_connections"
+                "Нет активных WebSocket подключений для рассылки",
+                event="ws_broadcast_skipped",
+                reason="no_connections"
             )
             return
 
         successful_sends = 0
         failed_sends = 0
-        total_miners = len(self.active_connections)
+        total_clients = len(self.active_connections)
 
         logger.info(
-            f"Начинаем рассылку задания {len(self.active_connections)} майнерам",
-            event="stratum_broadcast_started",
-            total_miners=total_miners
+            "Начинаем рассылку задания WebSocket клиентам",
+            event="ws_broadcast_started",
+            total_clients=total_clients,
+            clean_jobs=clean_jobs
         )
 
         for connection_id, websocket in self.active_connections.items():
-            miner_address = self.miner_addresses.get(connection_id)
-            if miner_address:
-                try:
-                    # Создаем персональную копию задания
-                    job_data_copy = job_data.copy()
-                    job_id = self.job_service.create_job_id(miner_address)
-                    job_data_copy["params"][0] = job_id
+            miner_address = self.miner_addresses.get(connection_id, "unknown")
+            try:
+                # Копируем данные задания для каждого клиента
+                job_copy = job_data.copy()
+                if "params" in job_copy and len(job_copy["params"]) >= 9:
+                    # Устанавливаем clean_jobs для WebSocket если поддерживается
+                    job_copy["params"][8] = clean_jobs
 
-                    # Сохраняем в job_service
-                    self.job_service.add_job(
-                        job_id,
-                        job_data,
-                        miner_address,
-                        extra_nonce1=extra_nonce1
-                    )
+                await websocket.send_json(job_copy)
+                successful_sends += 1
 
-                    # Отправляем майнеру
-                    await websocket.send_json(job_data_copy)
+                logger.debug(
+                    "Задание отправлено WebSocket клиенту",
+                    event="ws_job_sent",
+                    connection_id=connection_id,
+                    miner_address=miner_address,
+                    job_id=job_copy.get("params", [None])[0] if "params" in job_copy else None
+                )
 
-                    # Обновляем подписки
-                    if miner_address in self.subscriptions:
-                        self.subscriptions[miner_address].add(job_id)
-                    else:
-                        self.subscriptions[miner_address] = {job_id}
-
-                    successful_sends += 1
-
-                except Exception as e:
-                    failed_sends += 1
-                    logger.error(
-                        f"Ошибка рассылки задания майнеру {miner_address}",
-                        event="stratum_broadcast_error",
-                        connection_id=connection_id,
-                        miner_address=miner_address,
-                        error=str(e)
-                    )
+            except Exception as e:
+                failed_sends += 1
+                logger.error(
+                    "Ошибка отправки задания WebSocket клиенту",
+                    event="ws_broadcast_error",
+                    connection_id=connection_id,
+                    miner_address=miner_address,
+                    error=str(e)
+                )
 
         if successful_sends > 0:
             logger.info(
-                f"Рассылка задания завершена",
-                event="stratum_broadcast_completed",
+                "Задание разослано WebSocket клиентам",
+                event="ws_broadcast_completed",
                 successful_sends=successful_sends,
                 failed_sends=failed_sends,
-                total_miners=total_miners,
-                success_rate=f"{successful_sends / total_miners * 100:.1f}%" if total_miners > 0 else "0%"
+                total_clients=total_clients,
+                clean_jobs=clean_jobs
             )
         else:
-            logger.warning("Не удалось разослать задание ни одному майнеру")
+            logger.warning(
+                "Не удалось разослать задание ни одному WebSocket клиенту",
+                event="ws_broadcast_failed",
+                total_clients=total_clients
+            )
 
     def cleanup_old_jobs(self, max_age_seconds: int = 300):
         """Очистка старых заданий из локальных подписок"""
