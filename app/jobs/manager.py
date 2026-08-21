@@ -261,7 +261,7 @@ class JobManager:
                 await self.tcp_stratum_server.broadcast_new_job(clean_job)
 
     async def check_for_reorg(self):
-        """Проверка реорганизации цепочки"""
+        """Проверка реорганизации цепочки и актуальности ntime"""
 
         print(f"\n{'=' * 60}", flush=True)
         print(f"🔍 [REORG] ===== CHECK START =====", flush=True)
@@ -273,7 +273,6 @@ class JobManager:
             return
 
         try:
-            # Получаем текущий лучший хэш
             print(f"🔍 [REORG] Calling get_best_block_hash()...", flush=True)
             current_best = await self.node_client.get_best_block_hash()
 
@@ -286,13 +285,13 @@ class JobManager:
             print(f"🔍 [REORG] last_best_hash: {self.last_best_hash[:16] if self.last_best_hash else 'None'}...",
                   flush=True)
 
-            # Проверяем, изменился ли хэш
+            # ===== ПРОВЕРКА РЕОРГА =====
+            reorg_detected = False
             if self.last_best_hash and self.last_best_hash != current_best:
                 print(f"🔍 [REORG] ⚠️ HASH CHANGED!", flush=True)
                 print(f"🔍 [REORG] old_hash: {self.last_best_hash[:32]}...", flush=True)
                 print(f"🔍 [REORG] new_hash: {current_best[:32]}...", flush=True)
 
-                # Вычисляем разницу во времени с последней проверки
                 if self._last_reorg_check_time:
                     time_since_last = (datetime.now(UTC) - self._last_reorg_check_time).total_seconds()
                     print(f"🔍 [REORG] time_since_last_check: {time_since_last:.2f}s", flush=True)
@@ -303,24 +302,51 @@ class JobManager:
                     old_hash=self.last_best_hash[:16] + "...",
                     new_hash=current_best[:16] + "..."
                 )
+                reorg_detected = True
 
-                # 1. Создаем НОВОЕ задание
+            # ===== ПРОВЕРКА ntime (ВСЕГДА) =====
+            ntime_expired = False
+            if self.current_job:
+                try:
+                    stratum_data = self.current_job.get('stratum_data')
+                    if stratum_data and 'params' in stratum_data:
+                        params = stratum_data['params']
+                        if len(params) >= 8:
+                            ntime_hex = params[7]
+                            ntime_int = int(ntime_hex, 16)
+                            current_time = int(datetime.now(UTC).timestamp())
+                            age = current_time - ntime_int
+
+                            print(f"🔍 [REORG] ntime age: {age}s", flush=True)
+
+                            # Если ntime старше 10 минут → обновить задание
+                            if age > 600:  # 10 минут
+                                print(f"🔍 [REORG] ⚠️ ntime is old ({age}s), sending new job", flush=True)
+                                logger.info(
+                                    "ntime устарел, создаем новое задание",
+                                    event="ntime_expired",
+                                    age_seconds=age,
+                                    ntime=ntime_hex
+                                )
+                                ntime_expired = True
+                except Exception as e:
+                    print(f"🔍 [REORG] ntime check error: {e}", flush=True)
+
+            # ===== СОЗДАЕМ НОВОЕ ЗАДАНИЕ ЕСЛИ НУЖНО =====
+            if reorg_detected or ntime_expired:
                 print(f"🔍 [REORG] Creating new job via broadcast...", flush=True)
                 broadcast_start = datetime.now(UTC)
                 await self.broadcast_new_job_to_all()
                 broadcast_duration = (datetime.now(UTC) - broadcast_start).total_seconds() * 1000
                 print(f"🔍 [REORG] broadcast_new_job_to_all took {broadcast_duration:.1f}ms", flush=True)
 
-                # 2. НЕ отправляем clean_jobs=True
-                # await self._broadcast_clean_jobs()
-                print(f"🔍 [REORG] SKIPPED _broadcast_clean_jobs (clean_jobs=True would cause ASIC reconnect)",
-                      flush=True)
+                # НЕ отправляем clean_jobs=True
+                print(f"🔍 [REORG] SKIPPED _broadcast_clean_jobs", flush=True)
                 print(f"🔍 [REORG] ✅ New job sent with clean_jobs=False", flush=True)
 
             else:
-                print(f"🔍 [REORG] No change (last_best == current_best)", flush=True)
+                print(f"🔍 [REORG] No action needed", flush=True)
 
-            # Сохраняем текущий хэш
             self.last_best_hash = current_best
             self._last_reorg_check_time = datetime.now(UTC)
 

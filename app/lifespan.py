@@ -158,21 +158,21 @@ async def lifespan(_app):
         # ====================================================================
 
         # 5. Запускаем периодическую рассылку заданий
-        try:
-            broadcast_task = asyncio.create_task(_periodic_job_broadcaster())
-            background_tasks.append(broadcast_task)
-            logger.info(
-                "Периодическая рассылка заданий запущена",
-                event="job_broadcaster_started",
-                interval_seconds=settings.job_broadcast_interval,
-                task_id=id(broadcast_task)
-            )
-        except Exception as e:
-            logger.error(
-                "Ошибка запуска рассылки заданий",
-                event="job_broadcaster_start_failed",
-                error=str(e)
-            )
+        # try:
+        #     broadcast_task = asyncio.create_task(_periodic_job_broadcaster())
+        #     background_tasks.append(broadcast_task)
+        #     logger.info(
+        #         "Периодическая рассылка заданий запущена",
+        #         event="job_broadcaster_started",
+        #         interval_seconds=settings.job_broadcast_interval,
+        #         task_id=id(broadcast_task)
+        #     )
+        # except Exception as e:
+        #     logger.error(
+        #         "Ошибка запуска рассылки заданий",
+        #         event="job_broadcaster_start_failed",
+        #         error=str(e)
+        #     )
 
         # 6. Запускаем очистку старых заданий
         try:
