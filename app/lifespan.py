@@ -158,7 +158,22 @@ async def lifespan(_app):
         # ====================================================================
 
         # 5. Запускаем периодическую рассылку заданий
-
+        try:
+            broadcaster_task = asyncio.create_task(_periodic_job_broadcaster())
+            background_tasks.append(broadcaster_task)
+            print(f"🔴🔴🔴 Периодическая рассылка заданий запущена job_broadcaster_started:", flush=True)
+            logger.info(
+                "Периодическая рассылка заданий запущена",
+                event="job_broadcaster_started",
+                interval_seconds=settings.job_broadcast_interval
+            )
+        except Exception as e:
+            print(f"🔴 Ошибка запуска рассылки заданий job_broadcaster_start_failed:", flush=True)
+            logger.error(
+                "Ошибка запуска рассылки заданий",
+                event="job_broadcaster_start_failed",
+                error=str(e)
+            )
 
         # 6. Запускаем очистку старых заданий
         try:
@@ -429,16 +444,24 @@ async def _periodic_job_broadcaster():
 
             await asyncio.sleep(settings.job_broadcast_interval)
 
-            ws_miners = len(stratum_server.active_connections)
-            tcp_miners = len(tcp_stratum_server.connections)
+            # Проверяем активных майнеров
+            ws_miners = 0
+            tcp_miners = 0
+
+            if stratum_server and hasattr(stratum_server, 'active_connections'):
+                ws_miners = len(stratum_server.active_connections)
+
+            if tcp_stratum_server and hasattr(tcp_stratum_server, 'connections'):
+                tcp_miners = len(tcp_stratum_server.connections)
+
             active_miners = ws_miners + tcp_miners
 
             print(f"🔄 [BROADCASTER] active_miners: {active_miners} (WS: {ws_miners}, TCP: {tcp_miners})", flush=True)
             print(f"🔄 [BROADCASTER] Calling job_manager.broadcast_new_job_to_all()...", flush=True)
 
             if active_miners > 0:
-                await job_manager.broadcast_new_job_to_all()
-                print(f"✅ [BROADCASTER] broadcast_new_job_to_all completed", flush=True)
+                await job_manager.broadcast_new_job_to_all(clean_jobs=False)
+                print(f"✅ [BROADCASTER] broadcast_new_job_to_all completed  clean_jobs=False", flush=True)
                 logger.debug(
                     f"Задание разослано {active_miners} майнерам",
                     event="job_broadcasted",

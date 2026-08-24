@@ -596,7 +596,13 @@ class StratumTCPServer:
                 return
 
             # 5. СЛОЖНОСТЬ ДЛЯ ПРОВЕРКИ - ВСЕГДА МИНИМАЛЬНАЯ!
-            validation_difficulty = settings.default_share_difficulty  # 1e-10
+            # validation_difficulty = settings.default_share_difficulty  # 1e-10
+
+            validation_difficulty = self.miner_difficulties.get(
+                miner_address,
+                settings.default_share_difficulty
+            )
+            print(f"🔍 VALIDATION difficulty from miner_difficulties: {validation_difficulty:.10f}", flush=True)
             # ==========================================================
 
             # 6. ВАЛИДАЦИЯ
