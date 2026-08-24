@@ -46,6 +46,7 @@ class StratumTCPServer:
         self._ip_connections: Dict[str, int] = {}
         self.max_per_ip = 10
         self._client_ips: Dict[str, str] = {}
+        self._last_diff_update: Dict[str, float] = {}  # Время последнего обновления сложности
 
         logger.info(
             "TCP Stratum сервер инициализирован",
@@ -350,30 +351,35 @@ class StratumTCPServer:
                         self.difficulty_service.set_target_difficulty(miner_address, suggested)
                         print(f"📊 [SUGGEST_DIFF] Target sent to difficulty_service: {suggested}", flush=True)
 
-                    # ===== 3. Логируем текущую сложность майнера =====
-                    current_miner_diff = self.miner_difficulties.get(miner_address, 0)
-                    print(
-                        f"📊 [SUGGEST_DIFF] Miner: {miner_address[:20]}... | Suggested: {suggested} | Current: {current_miner_diff}",
-                        flush=True)
-
-                    # ===== 4. Если у майнера еще нет текущей сложности - устанавливаем начальную =====
+                    # ===== 3. ГАРАНТИРУЕМ, ЧТО miner_difficulties УСТАНОВЛЕН! =====
                     if miner_address not in self.miner_difficulties:
                         initial_diff = getattr(settings, 'default_share_difficulty', 1e-10)
                         self.miner_difficulties[miner_address] = initial_diff
                         print(f"📊 [SUGGEST_DIFF] Initial difficulty set: {initial_diff}", flush=True)
 
-                    # ===== 5. Отправляем ASIC предложенную сложность
+                    # ===== 4. Логируем текущую сложность майнера =====
+                    current_miner_diff = self.miner_difficulties.get(miner_address, 0)
+                    print(
+                        f"📊 [SUGGEST_DIFF] Miner: {miner_address[:20]}... | Suggested: {suggested} | Current: {current_miner_diff}",
+                        flush=True)
+
+                    # ===== 5. Вычисляем отображаемую сложность (целое число >= 1) =====
+                    current_diff = self.miner_difficulties[miner_address]
+                    display_diff = max(1.0, float(int(current_diff)))
+                    print(f"📊 [SUGGEST_DIFF] Display difficulty (rounded): {display_diff}", flush=True)
+
+                    # ===== 6. Отправляем ASIC целую сложность для отображения =====
                     difficulty_msg = {
                         "method": "mining.set_difficulty",
-                        "params": [suggested],  #  для отображения!
+                        "params": [display_diff],  # ← ЦЕЛОЕ ЧИСЛО!
                         "id": None
                     }
                     await self._send_json(writer, difficulty_msg)
-                    print(f"📊 [SUGGEST_DIFF] SENT TO ASIC: {suggested}", flush=True)
+                    print(f"📊 [SUGGEST_DIFF] SENT TO ASIC (display): {display_diff}", flush=True)
                 else:
                     print(f"⚠️ [SUGGEST_DIFF] Client {client_id} not authorized, ignoring", flush=True)
 
-                # Подтверждаем
+                # ===== 7. Подтверждаем =====
                 response = {"id": msg_id, "result": True, "error": None}
                 await self._send_json(writer, response)
                 print(f"📊 [SUGGEST_DIFF] Confirmed", flush=True)
@@ -720,54 +726,61 @@ class StratumTCPServer:
                 print(f"🔥 ERROR sending response: {e}", flush=True)
 
             # 12. АДАПТИВНАЯ СЛОЖНОСТЬ
-            if self.difficulty_service and is_valid:
+            # ✅ ДОБАВЛЯЕМ ШАР В СТАТИСТИКУ ТОЛЬКО ЕСЛИ ОН ПРИНЯТ!
+            if self.difficulty_service and is_valid:  # ← is_valid = True только для принятых шаров!
                 difficulty_for_stats = share_difficulty if share_difficulty is not None else settings.default_share_difficulty
 
                 try:
                     t0 = time.time()
-                    await self.difficulty_service.add_share(miner_address, difficulty_for_stats)
-                    new_difficulty = await self.difficulty_service.calculate_difficulty_for_miner(miner_address)
 
-                    current_difficulty = self.miner_difficulties.get(miner_address, settings.default_share_difficulty)
+                    # ✅ ДОБАВЛЯЕМ ПРОВЕРКУ ВРЕМЕНИ - НЕ ПЕРЕСЧИТЫВАТЬ ЧАЩЕ РАЗА В 10 СЕКУНД!
+                    last_update = self._last_diff_update.get(miner_address, 0)
+                    if time.time() - last_update > 10:  # Минимум 10 секунд между пересчетами
 
-                    if current_difficulty == 0:
-                        # Первый шар - всегда обновляем
-                        should_update = True
-                        change_ratio = 1.0
-                    else:
-                        # Рассчитываем изменение
-                        change_ratio = abs(new_difficulty - current_difficulty) / current_difficulty
+                        # ✅ ТОЛЬКО ПРИНЯТЫЕ ШАРЫ ИДУТ В РАСЧЕТ СЛОЖНОСТИ!
+                        await self.difficulty_service.add_share(miner_address, difficulty_for_stats)
+                        new_difficulty = await self.difficulty_service.calculate_difficulty_for_miner(miner_address)
+
+                        current_difficulty = self.miner_difficulties.get(miner_address,
+                                                                         settings.default_share_difficulty)
+
                         # Обновляем только если изменение > 10%
+                        change_ratio = abs(
+                            new_difficulty - current_difficulty) / current_difficulty if current_difficulty > 0 else 1.0
                         should_update = change_ratio > 0.1
 
-                    # ===== РАСШИРЕННОЕ ЛОГИРОВАНИЕ =====
-                    print(f"📊 [DIFF_DEBUG] ========================================", flush=True)
-                    print(f"📊 [DIFF_DEBUG] miner: {miner_address[:20]}...", flush=True)
-                    print(f"📊 [DIFF_DEBUG] current_difficulty: {current_difficulty:.10f}", flush=True)
-                    print(f"📊 [DIFF_DEBUG] new_difficulty:     {new_difficulty:.10f}", flush=True)
-                    if current_difficulty > 0:
-                        print(f"📊 [DIFF_DEBUG] change_ratio:       {change_ratio:.6f}", flush=True)
-                        print(f"📊 [DIFF_DEBUG] threshold:          0.1", flush=True)
-                        print(f"📊 [DIFF_DEBUG] change_ratio > threshold: {change_ratio > 0.1}", flush=True)
-                    else:
-                        print(f"📊 [DIFF_DEBUG] status:            INITIAL (first share)", flush=True)
-
-                    if should_update:
-                        print(f"📊 [DIFF_DEBUG] ✅ UPDATE! Sending new difficulty...", flush=True)
-                        await self.update_miner_difficulty(miner_address, new_difficulty)
-                        self.miner_difficulties[miner_address] = new_difficulty
-
+                        print(f"📊 [DIFF_DEBUG] ========================================", flush=True)
+                        print(f"📊 [DIFF_DEBUG] miner: {miner_address[:20]}...", flush=True)
+                        print(f"📊 [DIFF_DEBUG] current_difficulty: {current_difficulty:.10f}", flush=True)
+                        print(f"📊 [DIFF_DEBUG] new_difficulty:     {new_difficulty:.10f}", flush=True)
                         if current_difficulty > 0:
-                            print(
-                                f"📊 DIFFICULTY UPDATED: {current_difficulty:.10f} -> {new_difficulty:.10f} (change: {change_ratio:.1%})",
-                                flush=True)
+                            print(f"📊 [DIFF_DEBUG] change_ratio:       {change_ratio:.6f}", flush=True)
+                            print(f"📊 [DIFF_DEBUG] threshold:          0.1", flush=True)
+                            print(f"📊 [DIFF_DEBUG] change_ratio > threshold: {change_ratio > 0.1}", flush=True)
                         else:
-                            print(f"📊 DIFFICULTY UPDATED: 0.0000000000 -> {new_difficulty:.10f} (INITIAL)", flush=True)
-                    else:
-                        print(f"📊 [DIFF_DEBUG] ⏸️  SKIP: change_ratio {change_ratio:.6f} <= threshold 0.1", flush=True)
+                            print(f"📊 [DIFF_DEBUG] status:            INITIAL (first share)", flush=True)
 
-                    profiler['difficulty'] = (time.time() - t0) * 1000
-                    print(f"⏱️ difficulty: {profiler['difficulty']:.1f}ms", flush=True)
+                        if should_update:
+                            print(f"📊 [DIFF_DEBUG] ✅ UPDATE! Sending new difficulty...", flush=True)
+                            await self.update_miner_difficulty(miner_address, new_difficulty)
+                            self.miner_difficulties[miner_address] = new_difficulty
+
+                            if current_difficulty > 0:
+                                print(
+                                    f"📊 DIFFICULTY UPDATED: {current_difficulty:.10f} -> {new_difficulty:.10f} (change: {change_ratio:.1%})",
+                                    flush=True)
+                            else:
+                                print(f"📊 DIFFICULTY UPDATED: 0.0000000000 -> {new_difficulty:.10f} (INITIAL)",
+                                      flush=True)
+                        else:
+                            print(f"📊 [DIFF_DEBUG] ⏸️  SKIP: change_ratio {change_ratio:.6f} <= threshold 0.1",
+                                  flush=True)
+
+                        # ✅ ЗАПОМИНАЕМ ВРЕМЯ ПОСЛЕДНЕГО ПЕРЕСЧЕТА
+                        self._last_diff_update[miner_address] = time.time()
+
+                        profiler['difficulty'] = (time.time() - t0) * 1000
+                        print(f"⏱️ difficulty: {profiler['difficulty']:.1f}ms", flush=True)
 
                 except Exception as e:
                     print(f"🔥 ERROR updating difficulty: {e}", flush=True)
