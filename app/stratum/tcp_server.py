@@ -296,9 +296,10 @@ class StratumTCPServer:
                 print(f"✅ *************  username (combined): {username}", flush=True)
 
                 success, authorized_address, error_msg = await self.auth_service.authorize_miner(username, "")
+
                 if success:
                     # Начальная сложность
-                    initial_diff = getattr(settings, 'default_share_difficulty', 0.001)
+                    initial_diff = getattr(settings, 'start_difficulty', 1)
 
                     async with self._lock:
                         self.miners[client_id] = authorized_address
@@ -353,7 +354,7 @@ class StratumTCPServer:
 
                     # ===== 3. ГАРАНТИРУЕМ, ЧТО miner_difficulties УСТАНОВЛЕН! =====
                     if miner_address not in self.miner_difficulties:
-                        initial_diff = getattr(settings, 'default_share_difficulty', 1e-10)
+                        initial_diff = getattr(settings, 'start_difficulty', 1)
                         self.miner_difficulties[miner_address] = initial_diff
                         print(f"📊 [SUGGEST_DIFF] Initial difficulty set: {initial_diff}", flush=True)
 
@@ -365,7 +366,7 @@ class StratumTCPServer:
 
                     # ===== 5. Вычисляем отображаемую сложность (целое число >= 1) =====
                     current_diff = self.miner_difficulties[miner_address]
-                    display_diff = max(1.0, float(int(current_diff)))
+                    display_diff = max(1.0, float(int(current_diff)))  # Округляем для отображения
                     print(f"📊 [SUGGEST_DIFF] Display difficulty (rounded): {display_diff}", flush=True)
 
                     # ===== 6. Отправляем ASIC целую сложность для отображения =====
@@ -515,7 +516,7 @@ class StratumTCPServer:
         # 1. Отправляем задание этому майнеру
         await self.send_new_job_tcp(miner_address, writer)
 
-        #2. Дополнительный broadcast для всех майнеров
+        # 2. Дополнительный broadcast для всех майнеров
         # if self.job_manager:
         #     await self.job_manager.broadcast_new_job_to_all()
         #     print(f"📤 BROADCAST NEW JOB TO ALL MINERS", flush=True)
@@ -601,9 +602,7 @@ class StratumTCPServer:
                 await self._send_error(writer, msg_id, "Failed to calculate hash")
                 return
 
-            # 5. СЛОЖНОСТЬ ДЛЯ ПРОВЕРКИ - ВСЕГДА МИНИМАЛЬНАЯ!
-            # validation_difficulty = settings.default_share_difficulty  # 1e-10
-
+            # 5. СЛОЖНОСТЬ ДЛЯ ПРОВЕРКИ
             validation_difficulty = self.miner_difficulties.get(
                 miner_address,
                 settings.default_share_difficulty
@@ -941,7 +940,6 @@ class StratumTCPServer:
             import traceback
             traceback.print_exc()
 
-
     async def broadcast_new_job(self, job_data: dict, clean_jobs: bool = False):
         """Рассылка нового задания всем TCP клиентам"""
 
@@ -1186,21 +1184,25 @@ class StratumTCPServer:
             return
 
         try:
+            # ОКРУГЛЯЕМ ДО ЦЕЛОГО ЧИСЛА ДЛЯ ОТОБРАЖЕНИЯ В ASIC!
+            display_difficulty = max(1.0, float(int(difficulty)))
+
             method_data = {
                 "method": "mining.set_difficulty",
-                "params": [difficulty],
+                "params": [display_difficulty],  # ЦЕЛОЕ ЧИСЛО
                 "id": None
             }
 
             await self._send_json(writer, method_data)
-            print(f"📊 REAL DIFFICULTY SENT: {difficulty}", flush=True)
+            print(f"📊 REAL DIFFICULTY SENT (display): {display_difficulty}", flush=True)
 
             logger.info(
                 "Персональная сложность отправлена TCP майнеру",
                 event="tcp_miner_difficulty_updated",
                 client_id=client_id,
                 miner_address=miner_address,
-                difficulty=difficulty
+                difficulty=difficulty,
+                display_difficulty=display_difficulty
             )
 
         except Exception as e:

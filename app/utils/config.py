@@ -29,9 +29,10 @@ class Settings(BaseSettings):
     # Динамическая сложность
     enable_dynamic_difficulty: bool = True
     difficulty_update_interval: int = 300
-    min_difficulty: float = 0.001
+    min_difficulty: float = 1.0
     max_difficulty: Optional[float] = None
     target_shares_per_minute: int = 15
+    start_difficulty: float = 16384.0
 
     # Stratum серверы
     stratum_host: str = "0.0.0.0"
