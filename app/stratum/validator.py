@@ -324,58 +324,69 @@ class ShareValidator:
             return False, f"Ошибка валидации: {str(e)}", None
 
     def _check_pool_difficulty(self, hash_result: str, pool_difficulty: float) -> bool:
-        """Проверка сложности пула"""
+        """
+        Проверка сложности пула (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+
+        Основное исправление:
+        - Используем float деление вместо целочисленного
+        - Правильно рассчитываем target = TARGET_FOR_DIFFICULTY_1 / difficulty
+        """
         try:
             if pool_difficulty <= 0:
                 return False
 
+            # Конвертируем хэш в число для сравнения
             hash_int = int(hash_result, 16)
 
-            # Для сложности < 1 используем обратную логику
-            if pool_difficulty < 1.0:
-                target = int(self.TARGET_FOR_DIFFICULTY_1 * (1.0 / pool_difficulty))
-            else:
-                target = self.TARGET_FOR_DIFFICULTY_1 // int(pool_difficulty)
+            # ===== ПРАВИЛЬНЫЙ РАСЧЕТ TARGET =====
+            # target = TARGET_FOR_DIFFICULTY_1 / difficulty
+            # Для difficulty = 1: target = TARGET_FOR_DIFFICULTY_1
+            # Для difficulty = 65536: target = TARGET_FOR_DIFFICULTY_1 / 65536
+            target = int(self.TARGET_FOR_DIFFICULTY_1 / pool_difficulty)
 
+            # ===== ПОДРОБНАЯ ДИАГНОСТИКА =====
             print(f"🔍 ========================================", flush=True)
             print(f"🔍 POOL CHECK DETAILS:", flush=True)
             print(f"🔍 hash_result: {hash_result}", flush=True)
             print(f"🔍 hash_int: {hash_int}", flush=True)
-            print(f"🔍 target: {target}", flush=True)
-            print(f"🔍 target hex: {target:#066x}", flush=True)
+            print(f"🔍 pool_difficulty: {pool_difficulty}", flush=True)
+            print(f"🔍 TARGET_FOR_DIFFICULTY_1: {self.TARGET_FOR_DIFFICULTY_1:#066x}", flush=True)
+            print(f"🔍 target (calculated): {target:#066x}", flush=True)
             print(f"🔍 hash_int <= target: {hash_int <= target}", flush=True)
-            print(f"🔍 DIFF: {hash_int - target}", flush=True)
             print(f"🔍 ========================================", flush=True)
 
             return hash_int <= target
 
         except Exception as e:
-            logger.error(f"check_difficulty error: {e}")
+            print(f"❌ _check_pool_difficulty error: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
             return False
 
     def calculate_hash(self, job_data: dict, extra_nonce2: str, ntime: str, nonce: str,
                        version: Optional[str] = None) -> str:
-        """Расчет хэша заголовка блока (альтернативная версия с принтами)"""
+        """
+        Расчет хэша заголовка блока (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+
+        Основные исправления:
+        1. Правильно берем merkle_root из job_data (рассчитан в block_builder)
+        2. Правильная сборка заголовка (все поля в LE)
+        3. Двойной SHA256 и конвертация в BE для отображения
+        """
         try:
             # ===== ДИАГНОСТИКА =====
             print(f"\n{'=' * 60}", flush=True)
-            print(f"🔍 ДИАГНОСТИКА VALIDATOR", flush=True)
+            print(f"🔍 ДИАГНОСТИКА VALIDATOR (calculate_hash)", flush=True)
             print(f"{'=' * 60}", flush=True)
-            print(f"extra_nonce1 from self: {self.extra_nonce1}", flush=True)
-            print(f"extra_nonce1 from job_data: {job_data.get('extra_nonce1', 'NOT FOUND')}", flush=True)
-            print(f"extra_nonce2 from param: {extra_nonce2}", flush=True)
 
+            # ===== ИЗВЛЕКАЕМ ДАННЫЕ ИЗ ЗАДАНИЯ =====
             params = job_data["params"]
-            prevhash = params[1]
-            print(f"prevhash from params (BE): {prevhash}", flush=True)
-            print(f"prevhash LE (для заголовка): {bytes.fromhex(prevhash)[::-1].hex()}", flush=True)
-            print(f"{'=' * 60}\n", flush=True)
-            # =========================
+            prevhash = params[1]  # предыдущий хэш блока (BE)
+            coinb1 = params[2]  # первая часть coinbase
+            coinb2 = params[3]  # вторая часть coinbase
+            merkle_branch = params[4]  # ветки Merkle для построения root
 
-            coinb1 = params[2]
-            coinb2 = params[3]
-            merkle_branch = params[4]
-
+            # Определяем версию блока
             if version:
                 version_hex = version
                 print(f"🔍 USING VERSION FROM ASIC: {version_hex}", flush=True)
@@ -383,68 +394,61 @@ class ShareValidator:
                 version_hex = params[5]
                 print(f"🔍 USING VERSION FROM JOB: {version_hex}", flush=True)
 
-            nbits = params[6]
-            extra_nonce1 = self.extra_nonce1
+            nbits = params[6]  # сложность (bits)
+            extra_nonce1 = self.extra_nonce1  # extra_nonce1 из пула
 
-            print(f"\n🔍🔍🔍 ПОЛНЫЕ ДАННЫЕ В VALIDATOR 🔍🔍🔍", flush=True)
-            print(f"prevhash (оригинал): {prevhash}", flush=True)
-            print(f"coinb1: {coinb1[:50]}...", flush=True)
-            print(f"coinb2: {coinb2[:50]}...", flush=True)
-            print(f"merkle_branch: {len(merkle_branch)} элементов", flush=True)
-            print(f"version: {version_hex}", flush=True)
-            print(f"nbits: {nbits}", flush=True)
-            print(f"ntime: {ntime}", flush=True)
-            print(f"nonce: {nonce}", flush=True)
-            print(f"extra_nonce2: {extra_nonce2}", flush=True)
-            print(f"==========================================\n", flush=True)
+            print(f"extra_nonce1 from self: {extra_nonce1}", flush=True)
+            print(f"extra_nonce1 from job_data: {job_data.get('extra_nonce1', 'NOT FOUND')}", flush=True)
+            print(f"extra_nonce2 from param: {extra_nonce2}", flush=True)
+            print(f"prevhash from params (BE): {prevhash}", flush=True)
+            print(f"prevhash LE (для заголовка): {bytes.fromhex(prevhash)[::-1].hex()}", flush=True)
+            print(f"{'=' * 60}\n", flush=True)
 
             # ===== 1. СБОРКА COINBASE =====
+            # Формат: coinb1 + extra_nonce1 + extra_nonce2 + coinb2
             coinbase = coinb1 + extra_nonce1 + extra_nonce2 + coinb2
             print(f"🔍 COINBASE: {coinbase[:100]}...", flush=True)
 
             coinbase_bytes = bytes.fromhex(coinbase)
             print(f"🔍 COINBASE BYTES LENGTH: {len(coinbase_bytes)} байт", flush=True)
 
-            # ===== 2. ХЭШ COINBASE =====
-            # Двойной SHA256
+            # ===== 2. ХЭШ COINBASE (ДВОЙНОЙ SHA256) =====
+            # Сначала SHA256, потом еще раз SHA256
             coinbase_hash = hashlib.sha256(hashlib.sha256(coinbase_bytes).digest()).digest()
-            coinbase_hash_hex = coinbase_hash.hex()
-            coinbase_hash_le = coinbase_hash[::-1].hex()
+            coinbase_hash_hex = coinbase_hash.hex()  # BE для Merkle
+            coinbase_hash_le = coinbase_hash[::-1].hex()  # LE для заголовка
             print(f"🔍 COINBASE HASH (BE): {coinbase_hash_hex}", flush=True)
             print(f"🔍 COINBASE HASH (LE): {coinbase_hash_le}", flush=True)
 
             # ===== 3. РАСЧЕТ MERKLE ROOT =====
-            # Собираем список хэшей транзакций
-            # Сначала проверяем, есть ли готовый Merkle root в job_data
+            # Берем готовый merkle_root из job_data (рассчитан в block_builder)
+            # Это гарантирует правильность Merkle root
             merkle_root = job_data.get('merkle_root')
 
             if not merkle_root:
-                # Если нет готового, считаем через block_builder
-                tx_hashes = [coinbase_hash_hex]  # BE хэш coinbase
-                for branch in merkle_branch:
-                    tx_hashes.append(branch)
-
+                # Если нет готового, вычисляем сами (fallback)
+                print(f"⚠️ merkle_root не найден в job_data, вычисляем сами", flush=True)
+                tx_hashes = [coinbase_hash_hex] + merkle_branch
                 print(f"\n🔍 СПИСОК ХЭШЕЙ ДЛЯ MERKLE (BE):", flush=True)
                 print(f"  [0] coinbase: {tx_hashes[0][:32]}...", flush=True)
                 for i, h in enumerate(tx_hashes[1:], 1):
                     print(f"  [{i}] branch:   {h[:32]}...", flush=True)
 
-                if self.block_builder:
-                    merkle_root = self.block_builder.calculate_merkle_root(tx_hashes)
-                else:
-                    from app.stratum.block_builder import BlockBuilder
-                    merkle_root = BlockBuilder.calculate_merkle_root(tx_hashes)
+                from app.stratum.block_builder import BlockBuilder
+                merkle_root = BlockBuilder.calculate_merkle_root(tx_hashes)
+            else:
+                print(f"✅ merkle_root взят из job_data: {merkle_root[:32]}...", flush=True)
 
             print(f"🔍 MERKLE ROOT: {merkle_root}", flush=True)
 
-            # ===== 4. СБОРКА ЗАГОЛОВКА =====
-            # Конвертируем все поля в LE для заголовка
-            version_bytes = bytes.fromhex(version_hex)[::-1]
+            # ===== 4. СБОРКА ЗАГОЛОВКА БЛОКА (80 байт) =====
+            # ВАЖНО: Все поля в little-endian (LE) для заголовка!
+            version_bytes = bytes.fromhex(version_hex)[::-1]  # LE
             prevhash_bytes = bytes.fromhex(prevhash)[::-1]  # BE -> LE
-            merkle_bytes = bytes.fromhex(merkle_root)[::-1]
-            ntime_bytes = bytes.fromhex(ntime)[::-1]
-            nbits_bytes = bytes.fromhex(nbits)[::-1]
-            nonce_bytes = bytes.fromhex(nonce)[::-1]
+            merkle_bytes = bytes.fromhex(merkle_root)[::-1]  # BE -> LE
+            ntime_bytes = bytes.fromhex(ntime)[::-1]  # LE
+            nbits_bytes = bytes.fromhex(nbits)[::-1]  # LE
+            nonce_bytes = bytes.fromhex(nonce)[::-1]  # LE
 
             # Собираем заголовок
             header = (
@@ -456,6 +460,7 @@ class ShareValidator:
                     nonce_bytes
             )
 
+            # Проверяем длину заголовка (должна быть 80 байт)
             if len(header) != 80:
                 print(f"🔴 ОШИБКА: длина header {len(header)}, должно быть 80", flush=True)
                 return "0" * 64
@@ -476,10 +481,13 @@ class ShareValidator:
             print(f"  HEADER LENGTH: {len(header)} байт", flush=True)
             print(f"  HEADER HEX: {header.hex()[:100]}...", flush=True)
 
-            # ===== 5. ДВОЙНОЙ SHA256 =====
+            # ===== 5. ДВОЙНОЙ SHA256 (ВЫЧИСЛЯЕМ ХЭШ БЛОКА) =====
+            # Первый SHA256
             first_hash = hashlib.sha256(header).digest()
+            # Второй SHA256
             block_hash = hashlib.sha256(first_hash).digest()
-            result = block_hash[::-1].hex()  # BE для отображения
+            # Конвертируем в big-endian для отображения
+            result = block_hash[::-1].hex()
             print(f"🔍 BLOCK HASH: {result}", flush=True)
 
             return result
