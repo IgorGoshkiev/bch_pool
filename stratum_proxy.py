@@ -293,6 +293,24 @@ class StratumProxy:
         addr = writer.get_extra_info('peername')
         self.log(f"\n🔌 ASIC подключился: {addr}")
 
+        # ===== ПОДКЛЮЧАЕМСЯ К ПУЛУ ЗАНОВО =====
+        self.log("🔄 Переподключение к пулу...")
+        try:
+            self.pool_reader, self.pool_writer = await asyncio.wait_for(
+                asyncio.open_connection(self.pool_host, self.pool_port),
+                timeout=10.0
+            )
+            self.connected_to_pool = True
+            self.log("✅ Подключение к пулу восстановлено!")
+
+            # Запускаем слушатель сообщений от пула
+            asyncio.create_task(self.read_from_pool())
+
+        except Exception as e:
+            self.log(f"❌ Ошибка подключения к пулу: {e}")
+            writer.close()
+            return
+
         try:
             # Читаем сообщения от ASIC и пересылаем в пул
             while True:
@@ -302,7 +320,6 @@ class StratumProxy:
                         self.log("🔌 ASIC отключился (нет данных)")
                         break
 
-                    # Парсим JSON
                     try:
                         message = json.loads(data.decode().strip())
                         await self.handle_asic_message(message)
@@ -322,6 +339,11 @@ class StratumProxy:
             self.log(f"❌ Ошибка в handle_asic: {e}")
         finally:
             self.log("🔌 ASIC отключен")
+            # Закрываем соединение с пулом
+            if self.pool_writer:
+                self.pool_writer.close()
+                await self.pool_writer.wait_closed()
+                self.connected_to_pool = False
 
     async def handle_asic_message(self, message: dict):
         """Обработка сообщения от ASIC"""
@@ -329,20 +351,22 @@ class StratumProxy:
         method = message.get("method")
         _msg_id = message.get("id")
 
-        # Логируем входящее сообщение
         if SHOW_ASIC_TO_POOL:
             self.log_message("ASIC→POOL", message)
 
-        # Пересылаем в пул
-        if self.pool_writer:
+        # ===== ПЕРЕСЫЛАЕМ В ПУЛ =====
+        if self.pool_writer and self.connected_to_pool:
             try:
-                # Добавляем задержку для отладки? Нет, пересылаем сразу
                 self.pool_writer.write((json.dumps(message) + "\n").encode())
                 await self.pool_writer.drain()
+                self.log(f"📤 Переслано в пул: {method}")
             except Exception as e:
                 self.log(f"❌ Ошибка отправки в пул: {e}")
+                self.connected_to_pool = False
+        else:
+            self.log(f"⚠️ Нет соединения с пулом, сообщение {method} не отправлено")
 
-        # Логируем дополнительные данные для важных сообщений
+        # Логируем важные сообщения
         if method == "mining.authorize":
             if message.get("params"):
                 username = message["params"][0] if message["params"] else "unknown"
@@ -361,24 +385,22 @@ class StratumProxy:
             if len(params) >= 5:
                 job_id = params[1]
                 nonce = params[4]
-                # Запоминаем время шара для анализа
                 self.share_timestamps.append(datetime.now(UTC))
                 if len(self.share_timestamps) > 1000:
                     self.share_timestamps = self.share_timestamps[-1000:]
 
-                # Рассчитываем частоту шаров
                 if len(self.share_timestamps) > 1:
                     last_10 = self.share_timestamps[-10:]
                     if len(last_10) >= 2:
                         intervals = []
                         for i in range(1, len(last_10)):
-                            diff = (last_10[i] - last_10[i-1]).total_seconds()
+                            diff = (last_10[i] - last_10[i - 1]).total_seconds()
                             if 0.01 < diff < 60:
                                 intervals.append(diff)
                         if intervals:
                             avg_interval = sum(intervals) / len(intervals)
                             self.log(f"⛏️ ШАР #{self.share_counter}: job={job_id}, nonce={nonce}, "
-                                   f"средний интервал={avg_interval:.3f}s, сложность={self.current_difficulty}")
+                                     f"средний интервал={avg_interval:.3f}s, сложность={self.current_difficulty}")
 
         elif method == "mining.subscribe":
             self.log(f"📡 ASIC подписался на уведомления")
@@ -391,10 +413,12 @@ class StratumProxy:
             try:
                 data = await self.pool_reader.readline()
                 if not data:
-                    self.log("🔌 Пул закрыл соединение")
+                    self.log("🔌 Пул закрыл соединение (EOF)")
+                    # ===== ДОБАВЛЯЕМ =====
+                    self.log("⚠️ Возможно пул не поддерживает mining.configure")
+                    self.log("⚠️ Попробуйте отключить mining.configure в ASIC")
                     break
 
-                # Парсим JSON
                 try:
                     message = json.loads(data.decode().strip())
                     await self.handle_pool_message(message)
@@ -422,32 +446,36 @@ class StratumProxy:
         if SHOW_POOL_TO_ASIC:
             self.log_message("POOL→ASIC", message)
 
-        # Отслеживаем важные сообщения от пула
-        if method == "mining.set_difficulty":
-            if message.get("params"):
-                difficulty = message["params"][0]
-                self.current_difficulty = difficulty
-                self.last_difficulty_update = datetime.now(UTC)
-                self.difficulty_history.append({
-                    "timestamp": self.last_difficulty_update.isoformat(),
-                    "difficulty": difficulty
-                })
-                if len(self.difficulty_history) > 100:
-                    self.difficulty_history = self.difficulty_history[-100:]
-                self.log(f"📊 ПУЛ УСТАНОВИЛ СЛОЖНОСТЬ: {difficulty}")
-
-        elif method == "mining.notify":
-            if message.get("params"):
-                params = message["params"]
-                job_id = params[0] if params else "unknown"
-                prev_hash = params[1][:16] + "..." if len(params) > 1 and params[1] else "unknown"
-                self.log(f"📤 ПУЛ ОТПРАВИЛ ЗАДАНИЕ: job={job_id}, prev_hash={prev_hash}")
-
-        elif method == "mining.authorize" and result is True:
-            self.log("🔐 ПУЛ ПОДТВЕРДИЛ АВТОРИЗАЦИЮ")
-
-        elif error is not None:
+        # ===== ДОБАВЛЯЕМ ДИАГНОСТИКУ =====
+        # Если пул закрывает соединение - логируем причину
+        if error is not None:
             self.log(f"❌ ПУЛ ВЕРНУЛ ОШИБКУ: {error}")
+        if result is not None:
+            self.log(f"✅ ПУЛ ВЕРНУЛ РЕЗУЛЬТАТ: {result}")
+
+        # ===== ВАЖНО: ЕСЛИ ПУЛ НЕ ОТВЕЧАЕТ НА configure =====
+        # Некоторые пулы не поддерживают mining.configure
+        # В этом случае нужно ответить ASIC самим
+        if method == "mining.configure" and result is None and error is None:
+            # Пул не ответил на configure, отправляем стандартный ответ сами
+            self.log("⚙️ Пул не ответил на configure, отправляем ответ от прокси")
+            response = {
+                "id": _msg_id,
+                "result": {
+                    "version-rolling": True,
+                    "version-rolling.mask": "1fffe000",
+                    "minimum-difficulty": 1
+                },
+                "error": None
+            }
+            if self.asic_writer:
+                try:
+                    self.asic_writer.write((json.dumps(response) + "\n").encode())
+                    await self.asic_writer.drain()
+                    self.log("✅ Ответ на configure отправлен ASIC от прокси")
+                except Exception as e:
+                    self.log(f"❌ Ошибка отправки ответа ASIC: {e}")
+            return  # Не пересылаем в пул, так как он уже закрыл соединение
 
         # Пересылаем ASIC
         if self.asic_writer:
@@ -456,6 +484,8 @@ class StratumProxy:
                 await self.asic_writer.drain()
             except Exception as e:
                 self.log(f"❌ Ошибка отправки ASIC: {e}")
+
+
 
     def get_stats(self) -> dict:
         """Получить статистику прокси"""

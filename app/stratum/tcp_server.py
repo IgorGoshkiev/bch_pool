@@ -299,12 +299,12 @@ class StratumTCPServer:
 
                 if success:
                     # Начальная сложность
-                    initial_diff = getattr(settings, 'start_difficulty', 1)
+                    initial_diff = getattr(settings, 'start_difficulty', 65536)
 
                     async with self._lock:
                         self.miners[client_id] = authorized_address
                         self.miner_difficulties[authorized_address] = initial_diff
-                        print(f"✅ СЛОЖНОСТЬ initial_diff:  -> {initial_diff}", flush=True)
+                        print(f"✅ СЛОЖНОСТЬ initial_diff: {initial_diff} -> {initial_diff}", flush=True)
 
                     # 1. Ответ на авторизацию
                     response = {"id": msg_id, "result": True, "error": None}
@@ -335,58 +335,26 @@ class StratumTCPServer:
 
 
         elif method == "mining.suggest_difficulty":
+            # ============================================================
+            # MOLEHOLE ИГНОРИРУЕТ suggest_difficulty!
+            # Мы просто логируем и подтверждаем.
+            # ВСЮ СЛОЖНОСТЬ УСТАНАВЛИВАЕТ ПУЛ САМ!
+            # ============================================================
             if params and len(params) >= 1:
                 suggested = float(params[0])
-                print(f"📊 ASIC suggested difficulty: {suggested}", flush=True)
+                print(f"📊 ASIC suggested difficulty: {suggested} (IGNORED - pool will decide)", flush=True)
 
+                # Только для статистики (не используется в расчетах)
                 if client_id in self.miners:
                     miner_address = self.miners[client_id]
-
-                    # ===== 1. Сохраняем предложенную сложность для отображения =====
                     self.miner_max_difficulties[miner_address] = suggested
-                    self.miner_display_difficulties[miner_address] = suggested
-                    print(f"📊 ASIC max difficulty saved: {suggested}", flush=True)
-
-                    # ===== 2. Передаем цель в difficulty_service для адаптации =====
-                    if self.difficulty_service:
-                        self.difficulty_service.set_target_difficulty(miner_address, suggested)
-                        print(f"📊 [SUGGEST_DIFF] Target sent to difficulty_service: {suggested}", flush=True)
-
-                    # ===== 3. ГАРАНТИРУЕМ, ЧТО miner_difficulties УСТАНОВЛЕН! =====
-                    if miner_address not in self.miner_difficulties:
-                        initial_diff = getattr(settings, 'start_difficulty', 1)
-                        self.miner_difficulties[miner_address] = initial_diff
-                        print(f"📊 [SUGGEST_DIFF] Initial difficulty set: {initial_diff}", flush=True)
-
-                    # ===== 4. Логируем текущую сложность майнера =====
-                    current_miner_diff = self.miner_difficulties.get(miner_address, 0)
-                    print(
-                        f"📊 [SUGGEST_DIFF] Miner: {miner_address[:20]}... | Suggested: {suggested} | Current: {current_miner_diff}",
-                        flush=True)
-
-                    # ===== 5. Вычисляем отображаемую сложность (целое число >= 1) =====
-                    current_diff = self.miner_difficulties[miner_address]
-                    display_diff = max(1.0, float(int(current_diff)))  # Округляем для отображения
-                    print(f"📊 [SUGGEST_DIFF] Display difficulty (rounded): {display_diff}", flush=True)
-
-                    # ===== 6. Отправляем ASIC целую сложность для отображения =====
-                    difficulty_msg = {
-                        "method": "mining.set_difficulty",
-                        "params": [display_diff],  # ← ЦЕЛОЕ ЧИСЛО!
-                        "id": None
-                    }
-                    await self._send_json(writer, difficulty_msg)
-                    print(f"📊 [SUGGEST_DIFF] SENT TO ASIC (display): {display_diff}", flush=True)
-                else:
-                    print(f"⚠️ [SUGGEST_DIFF] Client {client_id} not authorized, ignoring", flush=True)
-
-                # ===== 7. Подтверждаем =====
-                response = {"id": msg_id, "result": True, "error": None}
-                await self._send_json(writer, response)
-                print(f"📊 [SUGGEST_DIFF] Confirmed", flush=True)
             else:
                 print(f"⚠️ [SUGGEST_DIFF] Invalid params: {params}", flush=True)
-                await self._send_error(writer, msg_id, "Invalid suggest_difficulty parameters")
+
+            # Просто подтверждаем получение
+            response = {"id": msg_id, "result": True, "error": None}
+            await self._send_json(writer, response)
+            print(f"📊 [SUGGEST_DIFF] Confirmed (ignored)", flush=True)
 
         elif method == "mining.extranonce.subscribe":
             await self._handle_extranonce_subscribe(msg_id, writer)

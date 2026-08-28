@@ -29,13 +29,13 @@ class Settings(BaseSettings):
     # Динамическая сложность
     enable_dynamic_difficulty: bool = True
     difficulty_update_interval: int = 300
-    difficulty_adaptation_rate: float = 0.5
-    difficulty_target_time: float = 3.0
-    difficulty_min_change: float = 0.5
+    difficulty_adaptation_rate: float = 0.3
+    difficulty_target_time: float = 4.0
+    difficulty_min_change: float = 0.2
     min_difficulty: float = 1.0
     max_difficulty: Optional[float] = None
     target_shares_per_minute: int = 30
-    start_difficulty: float = 4096.0
+    start_difficulty: float = 65536.0
 
     # Stratum серверы
     stratum_host: str = "0.0.0.0"
@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     auto_register_miners: bool = True
     auto_worker_name: str = "default"
 
-    default_share_difficulty: float = 0.0000000001
+    default_share_difficulty: float = 65536.0
     default_miner_address: str = "qqxsgzrcxvwh3emhrzmgedttm3ju6ks4ec6072chl0"
     enable_share_validation: bool = True
 
