@@ -29,10 +29,13 @@ class Settings(BaseSettings):
     # Динамическая сложность
     enable_dynamic_difficulty: bool = True
     difficulty_update_interval: int = 300
+    difficulty_adaptation_rate: float = 0.5
+    difficulty_target_time: float = 3.0
+    difficulty_min_change: float = 0.5
     min_difficulty: float = 1.0
     max_difficulty: Optional[float] = None
-    target_shares_per_minute: int = 15
-    start_difficulty: float = 16384.0
+    target_shares_per_minute: int = 30
+    start_difficulty: float = 4096.0
 
     # Stratum серверы
     stratum_host: str = "0.0.0.0"
@@ -41,7 +44,7 @@ class Settings(BaseSettings):
     stratum_tcp_enabled: bool = True
 
     # Настройки заданий
-    job_broadcast_interval: int = 300 #  5 минут
+    job_broadcast_interval: int = 30 #  30 секунд
     job_cleanup_age: int = 300
     job_max_history_size: int = 100
 

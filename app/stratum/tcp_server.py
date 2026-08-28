@@ -725,66 +725,122 @@ class StratumTCPServer:
                 print(f"🔥 ERROR sending response: {e}", flush=True)
 
             # 12. АДАПТИВНАЯ СЛОЖНОСТЬ
-            # ✅ ДОБАВЛЯЕМ ШАР В СТАТИСТИКУ ТОЛЬКО ЕСЛИ ОН ПРИНЯТ!
+            # ============================================================
+            # КЛЮЧЕВОЙ МОМЕНТ: здесь мы динамически адаптируем сложность
+            # для каждого майнера на основе частоты поступления шаров
+            # ============================================================
             if self.difficulty_service and is_valid:  # ← is_valid = True только для принятых шаров!
-                difficulty_for_stats = share_difficulty if share_difficulty is not None else settings.default_share_difficulty
-
                 try:
                     t0 = time.time()
 
-                    # ✅ ДОБАВЛЯЕМ ПРОВЕРКУ ВРЕМЕНИ - НЕ ПЕРЕСЧИТЫВАТЬ ЧАЩЕ РАЗА В 10 СЕКУНД!
+                    # ===== 1. Добавляем шар в статистику для расчета сложности =====
+                    # Используем difficulty_to_save (сложность самого шара)
+                    # Это нужно для статистики, но для расчета частоты используются ТОЛЬКО временные метки
+                    await self.difficulty_service.add_share(miner_address, difficulty_to_save)
+                    print(f"📊 [DIFF] Share added to difficulty_service", flush=True)
+
+                    # ===== 2. Рассчитываем новую сложность для майнера =====
+                    # Метод calculate_difficulty_for_miner анализирует частоту шаров
+                    # и возвращает оптимальную сложность
+                    new_difficulty = await self.difficulty_service.calculate_difficulty_for_miner(miner_address)
+                    print(f"📊 [DIFF] New difficulty calculated: {new_difficulty:.10f}", flush=True)
+
+                    # ===== 3. Получаем текущую сложность майнера =====
+                    current_difficulty = self.miner_difficulties.get(miner_address,
+                                                                     settings.default_share_difficulty)
+                    print(f"📊 [DIFF] Current difficulty: {current_difficulty:.10f}", flush=True)
+
+                    # ===== 4. Проверяем, нужно ли обновлять сложность =====
+                    # Вычисляем изменение в процентах
+                    if current_difficulty > 0:
+                        change_ratio = abs(new_difficulty - current_difficulty) / current_difficulty
+                    else:
+                        change_ratio = 1.0  # Если текущая сложность 0, всегда обновляем
+
+                    # Минимальное изменение для отправки (из настроек)
+                    min_change = getattr(settings, 'difficulty_min_change', 0.5)
+
+                    # Время с последнего обновления (не чаще чем раз в 3 секунды)
                     last_update = self._last_diff_update.get(miner_address, 0)
-                    if time.time() - last_update > 10:  # Минимум 10 секунд между пересчетами
+                    time_since_update = time.time() - last_update
 
-                        # ✅ ТОЛЬКО ПРИНЯТЫЕ ШАРЫ ИДУТ В РАСЧЕТ СЛОЖНОСТИ!
-                        await self.difficulty_service.add_share(miner_address, difficulty_for_stats)
-                        new_difficulty = await self.difficulty_service.calculate_difficulty_for_miner(miner_address)
+                    # Условия для обновления:
+                    # 1. Изменение больше минимального порога ИЛИ это первый шар (current_difficulty <= 1.0)
+                    # 2. Прошло больше 3 секунд с последнего обновления (чтобы не спамить ASIC)
+                    should_update = (
+                            (change_ratio > min_change or current_difficulty <= 1.0) and
+                            time_since_update > 3.0  # Не чаще чем раз в 3 секунды
+                    )
 
-                        current_difficulty = self.miner_difficulties.get(miner_address,
-                                                                         settings.default_share_difficulty)
+                    print(f"📊 [DIFF_DEBUG] ========================================", flush=True)
+                    print(f"📊 [DIFF_DEBUG] miner: {miner_address[:20]}...", flush=True)
+                    print(f"📊 [DIFF_DEBUG] current_difficulty: {current_difficulty:.10f}", flush=True)
+                    print(f"📊 [DIFF_DEBUG] new_difficulty:     {new_difficulty:.10f}", flush=True)
+                    if current_difficulty > 0:
+                        print(f"📊 [DIFF_DEBUG] change_ratio:       {change_ratio:.6f}", flush=True)
+                        print(f"📊 [DIFF_DEBUG] min_change:         {min_change}", flush=True)
+                        print(f"📊 [DIFF_DEBUG] change_ratio > min_change: {change_ratio > min_change}", flush=True)
+                    else:
+                        print(f"📊 [DIFF_DEBUG] status:            INITIAL (first share)", flush=True)
+                    print(f"📊 [DIFF_DEBUG] time_since_update:  {time_since_update:.1f}s", flush=True)
+                    print(f"📊 [DIFF_DEBUG] should_update:      {should_update}", flush=True)
 
-                        # Обновляем только если изменение > 10%
-                        change_ratio = abs(
-                            new_difficulty - current_difficulty) / current_difficulty if current_difficulty > 0 else 1.0
-                        should_update = change_ratio > 0.1
+                    # ===== 5. Если нужно обновить - отправляем новую сложность =====
+                    if should_update:
+                        print(f"📊 [DIFF_DEBUG] ✅ UPDATE! Sending new difficulty to ASIC...", flush=True)
 
-                        print(f"📊 [DIFF_DEBUG] ========================================", flush=True)
-                        print(f"📊 [DIFF_DEBUG] miner: {miner_address[:20]}...", flush=True)
-                        print(f"📊 [DIFF_DEBUG] current_difficulty: {current_difficulty:.10f}", flush=True)
-                        print(f"📊 [DIFF_DEBUG] new_difficulty:     {new_difficulty:.10f}", flush=True)
+                        # Округляем до целого числа для ASIC (майнеры ожидают целое число)
+                        rounded_diff = max(1.0, float(int(new_difficulty)))
+                        print(f"📊 [DIFF_DEBUG] Rounded difficulty: {rounded_diff:.0f}", flush=True)
+
+                        # Отправляем новую сложность майнеру через mining.set_difficulty
+                        await self.update_miner_difficulty(miner_address, rounded_diff)
+                        print(f"📊 [DIFF_DEBUG] update_miner_difficulty called with {rounded_diff:.0f}", flush=True)
+
+                        # Сохраняем новую сложность в словаре
+                        self.miner_difficulties[miner_address] = rounded_diff
+                        print(f"📊 [DIFF_DEBUG] miner_difficulties updated: {rounded_diff:.0f}", flush=True)
+
+                        # Запоминаем время последнего обновления
+                        self._last_diff_update[miner_address] = time.time()
+                        print(
+                            f"📊 [DIFF_DEBUG] last_update time set to: {self._last_diff_update[miner_address]:.1f}",
+                            flush=True)
+
+                        # Логируем изменение сложности
                         if current_difficulty > 0:
-                            print(f"📊 [DIFF_DEBUG] change_ratio:       {change_ratio:.6f}", flush=True)
-                            print(f"📊 [DIFF_DEBUG] threshold:          0.1", flush=True)
-                            print(f"📊 [DIFF_DEBUG] change_ratio > threshold: {change_ratio > 0.1}", flush=True)
+                            change_pct = ((rounded_diff / current_difficulty - 1) * 100)
+                            print(
+                                f"📊 DIFFICULTY UPDATED: {current_difficulty:.10f} -> {rounded_diff:.0f} (change: {change_pct:+.1f}%)",
+                                flush=True)
                         else:
-                            print(f"📊 [DIFF_DEBUG] status:            INITIAL (first share)", flush=True)
-
-                        if should_update:
-                            print(f"📊 [DIFF_DEBUG] ✅ UPDATE! Sending new difficulty...", flush=True)
-                            await self.update_miner_difficulty(miner_address, new_difficulty)
-                            self.miner_difficulties[miner_address] = new_difficulty
-
-                            if current_difficulty > 0:
-                                print(
-                                    f"📊 DIFFICULTY UPDATED: {current_difficulty:.10f} -> {new_difficulty:.10f} (change: {change_ratio:.1%})",
-                                    flush=True)
-                            else:
-                                print(f"📊 DIFFICULTY UPDATED: 0.0000000000 -> {new_difficulty:.10f} (INITIAL)",
-                                      flush=True)
-                        else:
-                            print(f"📊 [DIFF_DEBUG] ⏸️  SKIP: change_ratio {change_ratio:.6f} <= threshold 0.1",
+                            print(f"📊 DIFFICULTY UPDATED: 0.0000000000 -> {rounded_diff:.0f} (INITIAL)", flush=True)
+                    else:
+                        # Если изменение слишком маленькое или прошло мало времени
+                        print(f"📊 [DIFF_DEBUG] ⏸️  SKIP: no update needed", flush=True)
+                        if change_ratio <= min_change:
+                            print(
+                                f"📊 [DIFF_DEBUG] Reason: change_ratio {change_ratio:.6f} <= min_change {min_change}",
+                                flush=True)
+                        if time_since_update <= 3.0:
+                            print(f"📊 [DIFF_DEBUG] Reason: time_since_update {time_since_update:.1f}s <= 3.0s",
                                   flush=True)
 
-                        # ✅ ЗАПОМИНАЕМ ВРЕМЯ ПОСЛЕДНЕГО ПЕРЕСЧЕТА
-                        self._last_diff_update[miner_address] = time.time()
-
-                        profiler['difficulty'] = (time.time() - t0) * 1000
-                        print(f"⏱️ difficulty: {profiler['difficulty']:.1f}ms", flush=True)
+                    # Замеряем время выполнения
+                    profiler['difficulty'] = (time.time() - t0) * 1000
+                    print(f"⏱️ difficulty: {profiler['difficulty']:.1f}ms", flush=True)
 
                 except Exception as e:
+                    # Ошибка в расчете сложности не должна блокировать работу пула
                     print(f"🔥 ERROR updating difficulty: {e}", flush=True)
                     import traceback
                     traceback.print_exc()
+                    logger.error(
+                        "Ошибка обновления сложности",
+                        event="difficulty_update_error",
+                        miner_address=miner_address[:20] + "...",
+                        error=str(e)
+                    )
 
             # ===== ВЫВОД ПРОФАЙЛИНГА =====
             total_ms = (time.time() - start_total) * 1000
