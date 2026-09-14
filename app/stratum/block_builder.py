@@ -297,15 +297,37 @@ class BlockBuilder:
 
     @staticmethod
     def _calculate_merkle_branch(tx_hashes: List[str]) -> List[str]:
-        """Вычисление Merkle branch для конкретной транзакции"""
+        """
+        Вычисление Merkle branch для конкретной транзакции (coinbase).
+
+        ВАЖНО:
+        - Первый элемент (coinbase_txid) — уже в LE (little-endian)
+        - Остальные tx_hashes — в BE (big-endian, как отдаёт BCH нода)
+
+        Для построения merkle tree ВСЕ хэши должны быть в LE.
+        - coinbase_txid остаётся как есть (уже LE)
+        - остальные переворачиваются (BE -> LE)
+        - branch хэши возвращаются в BE (потому что ASIC ожидает BE)
+        """
         if not tx_hashes or len(tx_hashes) <= 1:
             return []
 
         # Находим индекс coinbase транзакции (она всегда первая)
         target_index = 0
 
-        # Конвертируем хэши в бинарный формат
-        hashes = [bytes.fromhex(h)[::-1] for h in tx_hashes]
+        # ===== ПРАВИЛЬНАЯ КОНВЕРТАЦИЯ В LE =====
+        # Первый элемент (coinbase_txid_le) — УЖЕ в LE, не переворачиваем!
+        # Остальные (tx['hash']) — в BE, переворачиваем в LE.
+        hashes = []
+        for idx, h in enumerate(tx_hashes):
+            h_bytes = bytes.fromhex(h)
+            if idx == 0:
+                # coinbase_txid уже в LE (из build_coinbase_transaction)
+                hashes.append(h_bytes)
+            else:
+                # tx['hash'] в BE -> LE
+                hashes.append(h_bytes[::-1])
+
         merkle_branch = []
 
         while len(hashes) > 1:
@@ -317,15 +339,14 @@ class BlockBuilder:
 
             for i in range(0, len(hashes), 2):
                 if i == target_index:
-                    # Добавляем хэш-партнера в branch
+                    # Добавляем хэш-партнера в branch (в BE для ASIC)
                     merkle_branch.append(hashes[i + 1][::-1].hex())
                 elif i + 1 == target_index:
-                    # Добавляем хэш-партнера в branch
+                    # Добавляем хэш-партнера в branch (в BE для ASIC)
                     merkle_branch.append(hashes[i][::-1].hex())
 
                 # Вычисляем родительский хэш
                 concat = hashes[i] + hashes[i + 1]
-                # Двойной SHA256 с явным созданием объектов
                 hash1: hashlib._Hash = hashlib.sha256(concat)
                 intermediate_hash: bytes = hash1.digest()
                 hash2: hashlib._Hash = hashlib.sha256(intermediate_hash)
@@ -781,7 +802,8 @@ class BlockBuilder:
                 raise ValueError("extra_nonce1 is required and must be provided by JobManager")
 
             # Создаем coinbase транзакцию
-            coinbase_hex, coinbase_txid, merkle_branch_json = self.build_coinbase_transaction(
+            # ВАЖНО: build_coinbase_transaction возвращает coinbase_txid УЖЕ В LE!
+            coinbase_hex, coinbase_txid_le, merkle_branch_json = self.build_coinbase_transaction(
                 template, miner_address, extra_nonce1, "00000000"
             )
 
@@ -882,10 +904,45 @@ class BlockBuilder:
             print(f"🔍 JOB COINB2: {coinb2[:50]}...", flush=True)
             print(f"🔍 JOB BITS: {template.get('bits', '1d00ffff')}", flush=True)
 
-            # Добавляем merkle_root в job_data для валидатора
-            # Рассчитываем Merkle root из coinbase_txid и merkle_branch
-            tx_hashes = [coinbase_txid] + merkle_branch
-            merkle_root = self.calculate_merkle_root(tx_hashes)
+            # ====================================================================
+            # ===== ПРАВИЛЬНЫЙ РАСЧЁТ MERKLE ROOT ДЛЯ STRATUM =====
+            # ВАЖНО: merkle_branch — это ГОТОВЫЕ хэши-партнёры, а НЕ полный список транзакций!
+            # Поэтому НЕЛЬЗЯ использовать calculate_merkle_root (он строит дерево попарно).
+            #
+            # Правильный алгоритм Stratum:
+            #   root = coinbase_hash (в LE)
+            #   for branch_hash in merkle_branch:
+            #       root = SHA256(SHA256(root + branch_hash))  (branch тоже в LE)
+            #
+            # Это ТОЧНО ТО ЖЕ, что делает ASIC!
+            # ====================================================================
+
+            print(f"\n🔍 РАСЧЕТ MERKLE ROOT ДЛЯ JOB_DATA (стандарт Stratum):", flush=True)
+            print(f"  coinbase_txid_le (УЖЕ LE): {coinbase_txid_le}", flush=True)
+
+            # ===== КРИТИЧНО: coinbase_txid_le УЖЕ в LE! =====
+            # build_coinbase_transaction возвращает coinbase_txid_le (уже LE)
+            # Поэтому НЕ переворачиваем его!
+            current_hash = bytes.fromhex(coinbase_txid_le)  # УЖЕ LE!
+            print(f"  current_hash (LE): {current_hash.hex()[:32]}...", flush=True)
+
+            for i, branch_hash_hex in enumerate(merkle_branch, 1):
+                # branch в LE (переворачиваем из BE)
+                # ASIC отдаёт branch в BE, а SHA256 работает с LE
+                branch_hash = bytes.fromhex(branch_hash_hex)[::-1]  # BE -> LE
+                print(f"  [{i}] branch (LE):   {branch_hash.hex()[:32]}...", flush=True)
+
+                # Конкатенация + двойной SHA256
+                concat = current_hash + branch_hash
+                first = hashlib.sha256(concat).digest()
+                current_hash = hashlib.sha256(first).digest()
+                print(f"      -> new root:     {current_hash.hex()[:32]}...", flush=True)
+
+            # Результат в BE
+            merkle_root = current_hash[::-1].hex()  # LE -> BE
+            print(f"  MERKLE ROOT (job_data): {merkle_root}", flush=True)
+            # ====================================================================
+
             job_data['merkle_root'] = merkle_root
 
             logger.info(
@@ -897,8 +954,6 @@ class BlockBuilder:
                 coinb2_length=len(coinb2),
                 merkle_branch_length=len(merkle_branch)
             )
-
-
 
             return job_data
 
@@ -971,4 +1026,3 @@ class BlockBuilder:
                 error_type=type(e).__name__
             )
             return False, f"Node verification error: {str(e)}", None
-

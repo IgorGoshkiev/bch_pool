@@ -440,27 +440,74 @@ class ShareValidator:
             coinbase_hash_hex = coinbase_hash.hex()  # BE для Merkle
             print(f"🔍 COINBASE HASH (BE): {coinbase_hash_hex}", flush=True)
 
-            # ===== 3. РАСЧЕТ MERKLE ROOT (ВСЕГДА, из coinbase_hash + merkle_branch!) =====
-            # НЕ используем закешированный merkle_root из job_data,
-            # потому что он посчитан для extra_nonce2=00000000,
-            # а ASIC прислал свой extra_nonce2!
-            tx_hashes = [coinbase_hash_hex] + list(merkle_branch)
+            # ===== 3. РАСЧЕТ MERKLE ROOT (СТАНДАРТ STRATUM) =====
+            # Официальный алгоритм Stratum:
+            #   root = coinbase_hash (в LE)
+            #   for branch_hash in merkle_branch (BE):
+            #       root = SHA256(SHA256(root + branch_hash[::-1]))
+            #       (branch переворачиваем в LE, потому что SHA256 работает с LE)
 
-            print(f"\n🔍 СПИСОК ХЭШЕЙ ДЛЯ MERKLE (BE):", flush=True)
-            print(f"  [0] coinbase: {tx_hashes[0][:32]}...", flush=True)
-            for i, h in enumerate(tx_hashes[1:], 1):
-                print(f"  [{i}] branch:   {h[:32]}...", flush=True)
+            # coinbase_hash в LE (переворачиваем из BE, потому что .hex() возвращает BE)
+            current_hash = bytes.fromhex(coinbase_hash_hex)[::-1]  # BE -> LE
 
-            # Используем block_builder для расчета (он умеет правильно)
-            if self.block_builder:
-                merkle_root = self.block_builder.calculate_merkle_root(tx_hashes)
-            else:
-                # Fallback: импортируем BlockBuilder напрямую
-                from app.stratum.block_builder import BlockBuilder
-                merkle_root = BlockBuilder.calculate_merkle_root(tx_hashes)
+            print(f"\n🔍 РАСЧЕТ MERKLE ROOT (вручную, стандарт Stratum):", flush=True)
+            print(f"  [0] coinbase_hash (LE): {current_hash.hex()[:32]}...", flush=True)
 
+            for i, branch_hash_hex in enumerate(merkle_branch, 1):
+                # ===== branch в LE (переворачиваем из BE) =====
+                # ASIC отдаёт branch в BE, а SHA256 работает с LE
+                branch_hash = bytes.fromhex(branch_hash_hex)[::-1]  # BE -> LE
+                print(f"  [{i}] branch (LE):       {branch_hash.hex()[:32]}...", flush=True)
+
+                # Конкатенация + двойной SHA256
+                concat = current_hash + branch_hash
+                first = hashlib.sha256(concat).digest()
+                current_hash = hashlib.sha256(first).digest()
+                print(f"      -> new root:         {current_hash.hex()[:32]}...", flush=True)
+
+            # Результат в BE для заголовка
+            merkle_root = current_hash[::-1].hex()  # LE -> BE
             print(f"🔍 MERKLE ROOT (вычислен): {merkle_root}", flush=True)
-            print(f"🔍 MERKLE ROOT (из job_data): {job_data.get('merkle_root', 'NOT FOUND')}", flush=True)
+
+            # ===== ДИАГНОСТИКА: СРАВНЕНИЕ С JOB_DATA =====
+            merkle_root_from_job = job_data.get('merkle_root', 'NOT FOUND')
+            print(f"🔍 MERKLE ROOT (из job_data): {merkle_root_from_job}", flush=True)
+
+            if merkle_root == merkle_root_from_job:
+                print(f"✅ MERKLE ROOT СОВПАДАЕТ с job_data!", flush=True)
+            else:
+                print(f"⚠️ MERKLE ROOT НЕ СОВПАДАЕТ (это нормально для extra_nonce2 != '00000000')", flush=True)
+            # ==============================================
+
+            # ===== ДИАГНОСТИКА: ПРОВЕРКА АЛГОРИТМА С extra_nonce2 = "00000000" =====
+            # Если подставить extra_nonce2 = "00000000", merkle_root должен совпасть с job_data!
+            # Это проверит правильность алгоритма.
+
+            # Собираем coinbase с fake extra_nonce2 = "00000000"
+            coinbase_test = coinb1 + extra_nonce1 + "00000000" + coinb2
+            coinbase_test_bytes = bytes.fromhex(coinbase_test)
+            coinbase_test_hash = hashlib.sha256(hashlib.sha256(coinbase_test_bytes).digest()).digest()
+            coinbase_test_hash_hex = coinbase_test_hash.hex()
+
+            # Ручной расчёт merkle root с extra_nonce2 = "00000000"
+            test_hash = bytes.fromhex(coinbase_test_hash_hex)[::-1]  # coinbase в LE
+            for branch_hash_hex in merkle_branch:
+                branch_hash = bytes.fromhex(branch_hash_hex)[::-1]  # branch BE -> LE
+                concat = test_hash + branch_hash
+                first = hashlib.sha256(concat).digest()
+                test_hash = hashlib.sha256(first).digest()
+            test_merkle_root = test_hash[::-1].hex()  # LE -> BE
+
+            print(f"\n🔍 ТЕСТ АЛГОРИТМА (extra_nonce2='00000000'):", flush=True)
+            print(f"  MERKLE ROOT (тест):        {test_merkle_root}", flush=True)
+            print(f"  MERKLE ROOT (из job_data): {merkle_root_from_job}", flush=True)
+
+            if test_merkle_root == merkle_root_from_job:
+                print(f"  ✅ АЛГОРИТМ ПРАВИЛЬНЫЙ! Merkle root совпадает при extra_nonce2=00000000", flush=True)
+            else:
+                print(f"  ❌ АЛГОРИТМ НЕПРАВИЛЬНЫЙ! Merkle root НЕ совпадает даже при extra_nonce2=00000000", flush=True)
+                print(f"     Это значит: неправильный порядок байт в merkle_branch или в coinbase_hash", flush=True)
+            # ====================================================================
 
             # ===== 4. СБОРКА ЗАГОЛОВКА БЛОКА (80 байт) =====
             # ВАЖНО: Все поля в little-endian (LE) для заголовка!
