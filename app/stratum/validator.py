@@ -138,6 +138,7 @@ class ShareValidator:
         print(f"🔍 VALIDATE_SHARE: looking for {job_id}", flush=True)
         print(f"🔍 VALIDATE_SHARE: cache keys = {list(self.jobs_cache.keys())}", flush=True)
 
+
         if job_id not in self.jobs_cache:
             self.invalid_shares += 1
             logger.warning(
@@ -160,6 +161,10 @@ class ShareValidator:
 
         try:
             expected_extra_nonce2_len = self.extra_nonce2_size * 2
+
+            # ===== ДИАГНОСТИКА: проверяем version на входе =====
+            print(f"🔍 [VALIDATOR] validate_share: version = {version}", flush=True)
+            # ==================================================
 
             # 1. Проверка форматов
             if not self._validate_hex_format(extra_nonce2, expected_extra_nonce2_len):
@@ -366,18 +371,29 @@ class ShareValidator:
     def calculate_hash(self, job_data: dict, extra_nonce2: str, ntime: str, nonce: str,
                        version: Optional[str] = None) -> str:
         """
-        Расчет хэша заголовка блока (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+        Расчет хэша заголовка блока (ИСПРАВЛЕННАЯ ВЕРСИЯ - v3)
 
-        Основные исправления:
-        1. Правильно берем merkle_root из job_data (рассчитан в block_builder)
-        2. Правильная сборка заголовка (все поля в LE)
-        3. Двойной SHA256 и конвертация в BE для отображения
+        КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ:
+        - Merkle root ВСЕГДА вычисляется из coinbase_hash + merkle_branch
+        - Учитывается extra_nonce2 от ASIC (он меняет coinbase!)
+        - НЕ используем закешированный merkle_root из job_data
+          (он посчитан для extra_nonce2=00000000)
+
+        ПОЧЕМУ ЭТО ВАЖНО:
+        - ASIC присылает свой extra_nonce2 (например c4a50000)
+        - Этот extra_nonce2 вставляется в coinbase
+        - Из-за этого coinbase_hash меняется
+        - Значит merkle_root ТОЖЕ должен меняться
+        - Если использовать старый merkle_root — хэш будет неправильный
         """
         try:
-            # ===== ДИАГНОСТИКА =====
+            # ===== ДИАГНОСТИКА: НАЧАЛО РАСЧЕТА =====
             print(f"\n{'=' * 60}", flush=True)
-            print(f"🔍 ДИАГНОСТИКА VALIDATOR (calculate_hash)", flush=True)
+            print(f"🔍 ДИАГНОСТИКА VALIDATOR (calculate_hash v3)", flush=True)
             print(f"{'=' * 60}", flush=True)
+            # ===== ДИАГНОСТИКА: проверяем version на входе =====
+            print(f"🔍 [VALIDATOR] validate_share получил: version = {version}", flush=True)
+            # ==================================================
 
             # ===== ИЗВЛЕКАЕМ ДАННЫЕ ИЗ ЗАДАНИЯ =====
             params = job_data["params"]
@@ -397,14 +413,20 @@ class ShareValidator:
             nbits = params[6]  # сложность (bits)
             extra_nonce1 = self.extra_nonce1  # extra_nonce1 из пула
 
+            # ===== ДИАГНОСТИКА: ВСЕ ВХОДНЫЕ ДАННЫЕ =====
             print(f"extra_nonce1 from self: {extra_nonce1}", flush=True)
             print(f"extra_nonce1 from job_data: {job_data.get('extra_nonce1', 'NOT FOUND')}", flush=True)
             print(f"extra_nonce2 from param: {extra_nonce2}", flush=True)
             print(f"prevhash from params (BE): {prevhash}", flush=True)
             print(f"prevhash LE (для заголовка): {bytes.fromhex(prevhash)[::-1].hex()}", flush=True)
+            print(f"ntime: {ntime}", flush=True)
+            print(f"nonce: {nonce}", flush=True)
+            print(f"nbits: {nbits}", flush=True)
+            print(f"merkle_branch: {len(merkle_branch)} элементов", flush=True)
             print(f"{'=' * 60}\n", flush=True)
 
-            # ===== 1. СБОРКА COINBASE =====
+            # ===== 1. СБОРКА COINBASE (С УЧЁТОМ extra_nonce2 ОТ ASIC!) =====
+            # КРИТИЧНО: extra_nonce2 приходит от ASIC и меняет coinbase!
             # Формат: coinb1 + extra_nonce1 + extra_nonce2 + coinb2
             coinbase = coinb1 + extra_nonce1 + extra_nonce2 + coinb2
             print(f"🔍 COINBASE: {coinbase[:100]}...", flush=True)
@@ -416,30 +438,29 @@ class ShareValidator:
             # Сначала SHA256, потом еще раз SHA256
             coinbase_hash = hashlib.sha256(hashlib.sha256(coinbase_bytes).digest()).digest()
             coinbase_hash_hex = coinbase_hash.hex()  # BE для Merkle
-            coinbase_hash_le = coinbase_hash[::-1].hex()  # LE для заголовка
             print(f"🔍 COINBASE HASH (BE): {coinbase_hash_hex}", flush=True)
-            print(f"🔍 COINBASE HASH (LE): {coinbase_hash_le}", flush=True)
 
-            # ===== 3. РАСЧЕТ MERKLE ROOT =====
-            # Берем готовый merkle_root из job_data (рассчитан в block_builder)
-            # Это гарантирует правильность Merkle root
-            merkle_root = job_data.get('merkle_root')
+            # ===== 3. РАСЧЕТ MERKLE ROOT (ВСЕГДА, из coinbase_hash + merkle_branch!) =====
+            # НЕ используем закешированный merkle_root из job_data,
+            # потому что он посчитан для extra_nonce2=00000000,
+            # а ASIC прислал свой extra_nonce2!
+            tx_hashes = [coinbase_hash_hex] + list(merkle_branch)
 
-            if not merkle_root:
-                # Если нет готового, вычисляем сами (fallback)
-                print(f"⚠️ merkle_root не найден в job_data, вычисляем сами", flush=True)
-                tx_hashes = [coinbase_hash_hex] + merkle_branch
-                print(f"\n🔍 СПИСОК ХЭШЕЙ ДЛЯ MERKLE (BE):", flush=True)
-                print(f"  [0] coinbase: {tx_hashes[0][:32]}...", flush=True)
-                for i, h in enumerate(tx_hashes[1:], 1):
-                    print(f"  [{i}] branch:   {h[:32]}...", flush=True)
+            print(f"\n🔍 СПИСОК ХЭШЕЙ ДЛЯ MERKLE (BE):", flush=True)
+            print(f"  [0] coinbase: {tx_hashes[0][:32]}...", flush=True)
+            for i, h in enumerate(tx_hashes[1:], 1):
+                print(f"  [{i}] branch:   {h[:32]}...", flush=True)
 
+            # Используем block_builder для расчета (он умеет правильно)
+            if self.block_builder:
+                merkle_root = self.block_builder.calculate_merkle_root(tx_hashes)
+            else:
+                # Fallback: импортируем BlockBuilder напрямую
                 from app.stratum.block_builder import BlockBuilder
                 merkle_root = BlockBuilder.calculate_merkle_root(tx_hashes)
-            else:
-                print(f"✅ merkle_root взят из job_data: {merkle_root[:32]}...", flush=True)
 
-            print(f"🔍 MERKLE ROOT: {merkle_root}", flush=True)
+            print(f"🔍 MERKLE ROOT (вычислен): {merkle_root}", flush=True)
+            print(f"🔍 MERKLE ROOT (из job_data): {job_data.get('merkle_root', 'NOT FOUND')}", flush=True)
 
             # ===== 4. СБОРКА ЗАГОЛОВКА БЛОКА (80 байт) =====
             # ВАЖНО: Все поля в little-endian (LE) для заголовка!
@@ -450,7 +471,7 @@ class ShareValidator:
             nbits_bytes = bytes.fromhex(nbits)[::-1]  # LE
             nonce_bytes = bytes.fromhex(nonce)[::-1]  # LE
 
-            # Собираем заголовок
+            # Собираем заголовок (80 байт)
             header = (
                     version_bytes +
                     prevhash_bytes +
@@ -466,7 +487,6 @@ class ShareValidator:
                 return "0" * 64
 
             print(f"🔍 HEADER LENGTH: {len(header)} (должно быть 80)", flush=True)
-            print(f"🔍 HEADER HEX: {header.hex()[:100]}...", flush=True)
 
             # ===== ОТЛАДОЧНЫЕ ПРИНТЫ ПОСЛЕ СБОРКИ =====
             print(f"\n🔍 СБОРКА ЗАГОЛОВКА (все поля в LE):", flush=True)

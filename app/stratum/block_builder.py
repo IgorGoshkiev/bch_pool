@@ -8,9 +8,9 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime, UTC
 
 from app.utils.logging_config import StructuredLogger
-# from app.utils.protocol_helpers import STRATUM_EXTRA_NONCE1
 from app.utils.bch_address import create_coinbase_script
 from app.utils.config import settings
+from app.utils.protocol_helpers import EXTRA_NONCE2_SIZE
 
 logger = StructuredLogger(__name__)
 
@@ -800,14 +800,34 @@ class BlockBuilder:
                 pos_extra = coinbase_bytes.find(extra_nonce1_bytes)
 
                 if pos_extra != -1:
-                    # coinb1 = все ДО extra_nonce1 (БЕЗ extra_nonce1)
+                    # ===== ПРАВИЛЬНОЕ РАЗДЕЛЕНИЕ COINBASE ДЛЯ STRATUM =====
+                    # Stratum протокол требует: coinbase = coinb1 + extra_nonce1 + extra_nonce2 + coinb2
+                    # Где extra_nonce2 - приходит от ASIC и ПОДСТАВЛЯЕТСЯ МЕЖДУ coinb1+extra_nonce1 и coinb2
+                    #
+                    # Значит:
+                    #   coinb1 = всё ДО extra_nonce1
+                    #   coinb2 = всё ПОСЛЕ fake extra_nonce2 ("00000000"), а НЕ после extra_nonce1!
+                    #
+                    # Fake extra_nonce2 = 4 байта = 8 hex символов (EXTRA_NONCE2_SIZE)
+
+                    # Используем константу EXTRA_NONCE2_SIZE (4 байта)
+                    extra_nonce2_size_bytes = EXTRA_NONCE2_SIZE  # = 4
+
+                    # Позиция, где начинается extra_nonce2 после extra_nonce1
+                    pos_after_extra_nonce1 = pos_extra + len(extra_nonce1_bytes)
+                    # Позиция, где заканчивается fake extra_nonce2 (=начало coinb2)
+                    pos_coinb2_start = pos_after_extra_nonce1 + extra_nonce2_size_bytes
+
+                    # coinb1 = всё ДО extra_nonce1
                     coinb1 = coinbase_bytes[:pos_extra].hex()
-                    # coinb2 = все ПОСЛЕ extra_nonce1 (включая extra_nonce2 и все остальное)
-                    coinb2 = coinbase_bytes[pos_extra + len(extra_nonce1_bytes):].hex()
+                    # coinb2 = всё ПОСЛЕ fake extra_nonce2 (реальный extra_nonce2 вставит ASIC!)
+                    coinb2 = coinbase_bytes[pos_coinb2_start:].hex()
 
                     print(f"🔍 COINB1 (до extra_nonce1): {coinb1[:100]}...", flush=True)
-                    print(f"🔍 COINB2 (после extra_nonce1): {coinb2[:100]}...", flush=True)
+                    print(f"🔍 COINB2 (после fake extra_nonce2): {coinb2[:100]}...", flush=True)
                     print(f"🔍 extra_nonce1 находится на позиции {pos_extra}", flush=True)
+                    print(f"🔍 fake extra_nonce2 находится на позиции {pos_after_extra_nonce1}", flush=True)
+                    print(f"🔍 coinb2 начинается с позиции {pos_coinb2_start}", flush=True)
                 else:
                     # fallback: ищем sequence
                     seq_pos = coinbase_bytes.find(b'\xff\xff\xff\xff')

@@ -579,10 +579,17 @@ class StratumTCPServer:
             # ==========================================================
 
             # 6. ВАЛИДАЦИЯ
+            print(f"🔍 [TCP] Перед вызовом validate_and_process_share: version_from_asic = {version_from_asic}",
+                  flush=True)
             print(f"🔍 enable_share_validation={settings.enable_share_validation}", flush=True)
 
             if settings.enable_share_validation:
                 try:
+                    # ===== ДИАГНОСТИКА: проверяем version_from_asic перед вызовом =====
+                    print(f"🔍 [TCP] Перед validate_and_process_share: version_from_asic = {version_from_asic}",
+                          flush=True)
+                    print(f"🔍 [TCP] len(params) = {len(params)}, params = {params}", flush=True)
+                    # ================================================================
                     t0 = time.time()
                     is_valid, error_msg, extra_data = self.job_service.validate_and_process_share(
                         job_id=job_id,
@@ -590,6 +597,7 @@ class StratumTCPServer:
                         ntime=ntime,
                         nonce=nonce,
                         miner_address=miner_address,
+                        version=version_from_asic,
                         pool_difficulty=validation_difficulty
                     )
 

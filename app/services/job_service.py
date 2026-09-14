@@ -413,6 +413,9 @@ class JobService:
         pool_difficulty: Персональная сложность майнера (если None - используется глобальная)
         """
         try:
+            # ===== ДИАГНОСТИКА: проверяем version на входе =====
+            print(f"🔍 [JOB_SERVICE] validate_and_process_share: version = {version}", flush=True)
+            # ==================================================
             # Получаем задание
             job_data = self.get_job(job_id)
 
@@ -427,6 +430,8 @@ class JobService:
                 return False, "Validator not initialized", None
 
             # Валидируем шар - validator теперь возвращает 3 значения
+            print(f"🔍 [JOB_SERVICE] Передаю в validate_share: version = {version}", flush=True)
+
             is_valid, error_msg, extra_data = self.validator.validate_share(
                 job_id=job_id,
                 extra_nonce2=extra_nonce2,
