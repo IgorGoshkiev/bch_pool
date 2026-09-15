@@ -5,7 +5,7 @@ import time
 from typing import Tuple
 
 # ========== КОНСТАНТЫ STRATUM ПРОТОКОЛА ==========
-EXTRA_NONCE2_SIZE = 4  # 4 байта = 8 hex символов
+EXTRA_NONCE2_SIZE = 8  # 8 байт = 16 hex символов
 BLOCK_HEADER_SIZE = 80  # байт
 
 # ========== КОНСТАНТЫ BCH АДРЕСОВ ==========

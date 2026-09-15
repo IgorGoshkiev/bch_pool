@@ -377,7 +377,7 @@ class ShareValidator:
         - Merkle root ВСЕГДА вычисляется из coinbase_hash + merkle_branch
         - Учитывается extra_nonce2 от ASIC (он меняет coinbase!)
         - НЕ используем закешированный merkle_root из job_data
-          (он посчитан для extra_nonce2=00000000)
+          (он посчитан для extra_nonce2=0000000000000000 8 байт)
 
         ПОЧЕМУ ЭТО ВАЖНО:
         - ASIC присылает свой extra_nonce2 (например c4a50000)
@@ -476,20 +476,17 @@ class ShareValidator:
             if merkle_root == merkle_root_from_job:
                 print(f"✅ MERKLE ROOT СОВПАДАЕТ с job_data!", flush=True)
             else:
-                print(f"⚠️ MERKLE ROOT НЕ СОВПАДАЕТ (это нормально для extra_nonce2 != '00000000')", flush=True)
+                print(f"⚠️ MERKLE ROOT НЕ СОВПАДАЕТ (это нормально для extra_nonce2 != '0000000000000000')", flush=True)
             # ==============================================
 
-            # ===== ДИАГНОСТИКА: ПРОВЕРКА АЛГОРИТМА С extra_nonce2 = "00000000" =====
-            # Если подставить extra_nonce2 = "00000000", merkle_root должен совпасть с job_data!
-            # Это проверит правильность алгоритма.
-
-            # Собираем coinbase с fake extra_nonce2 = "00000000"
-            coinbase_test = coinb1 + extra_nonce1 + "00000000" + coinb2
+            # ===== ДИАГНОСТИКА: ПРОВЕРКА АЛГОРИТМА С extra_nonce2 = "0000000000000000" =====
+            # ВАЖНО: extra_nonce2 в job_data посчитан для "0000000000000000" (8 байт)!
+            coinbase_test = coinb1 + extra_nonce1 + "0000000000000000" + coinb2
             coinbase_test_bytes = bytes.fromhex(coinbase_test)
             coinbase_test_hash = hashlib.sha256(hashlib.sha256(coinbase_test_bytes).digest()).digest()
             coinbase_test_hash_hex = coinbase_test_hash.hex()
 
-            # Ручной расчёт merkle root с extra_nonce2 = "00000000"
+            # Ручной расчёт merkle root с extra_nonce2 = "0000000000000000"
             test_hash = bytes.fromhex(coinbase_test_hash_hex)[::-1]  # coinbase в LE
             for branch_hash_hex in merkle_branch:
                 branch_hash = bytes.fromhex(branch_hash_hex)[::-1]  # branch BE -> LE
@@ -498,14 +495,14 @@ class ShareValidator:
                 test_hash = hashlib.sha256(first).digest()
             test_merkle_root = test_hash[::-1].hex()  # LE -> BE
 
-            print(f"\n🔍 ТЕСТ АЛГОРИТМА (extra_nonce2='00000000'):", flush=True)
+            print(f"\n🔍 ТЕСТ АЛГОРИТМА (extra_nonce2='0000000000000000'(8 байт)):", flush=True)
             print(f"  MERKLE ROOT (тест):        {test_merkle_root}", flush=True)
             print(f"  MERKLE ROOT (из job_data): {merkle_root_from_job}", flush=True)
 
             if test_merkle_root == merkle_root_from_job:
-                print(f"  ✅ АЛГОРИТМ ПРАВИЛЬНЫЙ! Merkle root совпадает при extra_nonce2=00000000", flush=True)
+                print(f"  ✅ АЛГОРИТМ ПРАВИЛЬНЫЙ! Merkle root совпадает при extra_nonce2=0000000000000000 (8 байт)", flush=True)
             else:
-                print(f"  ❌ АЛГОРИТМ НЕПРАВИЛЬНЫЙ! Merkle root НЕ совпадает даже при extra_nonce2=00000000", flush=True)
+                print(f"  ❌ АЛГОРИТМ НЕПРАВИЛЬНЫЙ! Merkle root НЕ совпадает даже при extra_nonce2=0000000000000000 (8 байт)", flush=True)
                 print(f"     Это значит: неправильный порядок байт в merkle_branch или в coinbase_hash", flush=True)
             # ====================================================================
 

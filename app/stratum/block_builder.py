@@ -661,8 +661,9 @@ class BlockBuilder:
                 miner_address=miner_address[:20] + "..."
             )
 
-            # 1. Создаем coinbase транзакцию
-            coinbase_hex, coinbase_txid, merkle_branch_json = self.build_coinbase_transaction(
+            # ===== 1. Создаем coinbase транзакцию =====
+            # ВАЖНО: build_coinbase_transaction возвращает coinbase_txid_le (УЖЕ в LE!)
+            coinbase_hex, coinbase_txid_le, merkle_branch_json = self.build_coinbase_transaction(
                 template, miner_address, extra_nonce1, extra_nonce2
             )
 
@@ -674,18 +675,25 @@ class BlockBuilder:
                 )
                 return None
 
-            # 2. Собираем хэши транзакций для Merkle root
-            tx_hashes = [coinbase_txid]
+            # ===== 2. Собираем хэши транзакций для Merkle root =====
+            # ============================================================
+            # ВАЖНО: calculate_merkle_root ОЖИДАЕТ хэши в BE!
+            # А build_coinbase_transaction возвращает coinbase_txid_le (в LE!)
+            # Поэтому переворачиваем LE -> BE для calculate_merkle_root!
+            # ============================================================
+            coinbase_txid_be = bytes.fromhex(coinbase_txid_le)[::-1].hex()  # LE -> BE
+            tx_hashes = [coinbase_txid_be]
 
-            # Добавляем хэши других транзакций из шаблона
+            # Добавляем хэши других транзакций из шаблона (они уже в BE)
             for tx in template.get('transactions', []):
                 if 'hash' in tx:
                     tx_hashes.append(tx['hash'])
 
-            # 3. Рассчитываем Merkle root
+            # ===== 3. Рассчитываем Merkle root =====
+            # calculate_merkle_root сам перевернёт BE -> LE внутри, посчитает и вернёт BE
             merkle_root = self.calculate_merkle_root(tx_hashes)
 
-            # 4. Собираем заголовок
+            # ===== 4. Собираем заголовок =====
             header, header_hash = self.build_block_header(
                 template, merkle_root, ntime, nonce
             )
@@ -698,7 +706,7 @@ class BlockBuilder:
                 )
                 return None
 
-            # 5. Собираем остальные транзакции в hex
+            # ===== 5. Собираем остальные транзакции в hex =====
             other_transactions = []
             for tx in template.get('transactions', []):
                 if 'data' in tx:
@@ -706,7 +714,7 @@ class BlockBuilder:
                 elif 'hex' in tx:
                     other_transactions.append(tx['hex'])
 
-            # 6. Собираем полный блок
+            # ===== 6. Собираем полный блок =====
             block_hex = self.assemble_full_block(
                 template, header, coinbase_hex, other_transactions
             )
@@ -719,16 +727,17 @@ class BlockBuilder:
                 )
                 return None
 
-            # 7. Рассчитываем размер блока
+            # ===== 7. Рассчитываем размер блока =====
             block_size = len(block_hex) // 2  # hex -> bytes
 
-            # 8. Создаем результат
+            # ===== 8. Создаем результат =====
+            # ВАЖНО: в результате используем coinbase_txid (BE) — для отображения
             result = {
                 "block_hex": block_hex,
                 "header_hash": header_hash,
                 "height": height,
                 "merkle_root": merkle_root,
-                "coinbase_txid": coinbase_txid,
+                "coinbase_txid": coinbase_txid_be,  # ← BE для отображения!
                 "merkle_branch": merkle_branch_json,
                 "transaction_count": len(tx_hashes),
                 "timestamp": int(ntime, 16) if len(ntime) == 8 else int(ntime),
@@ -804,7 +813,7 @@ class BlockBuilder:
             # Создаем coinbase транзакцию
             # ВАЖНО: build_coinbase_transaction возвращает coinbase_txid УЖЕ В LE!
             coinbase_hex, coinbase_txid_le, merkle_branch_json = self.build_coinbase_transaction(
-                template, miner_address, extra_nonce1, "00000000"
+                template, miner_address, extra_nonce1, "0000000000000000" # ← 16 hex = 8 байт
             )
 
             if not coinbase_hex:

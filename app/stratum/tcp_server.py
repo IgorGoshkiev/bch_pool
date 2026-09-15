@@ -298,13 +298,19 @@ class StratumTCPServer:
                 success, authorized_address, error_msg = await self.auth_service.authorize_miner(username, "")
 
                 if success:
-                    # Начальная сложность
-                    initial_diff = getattr(settings, 'start_difficulty', 65536)
+                    # ===== НАЧАЛЬНАЯ СЛОЖНОСТЬ =====
+                    # ВАЖНО: ASIC ожидает ЦЕЛОЕ число в mining.set_difficulty!
+                    # Если отправить float (например, 65536.0) — некоторые ASIC не применяют сложность!
+                    initial_diff_float = getattr(settings, 'start_difficulty', 65536)
+                    # Округляем до целого числа
+                    initial_diff = max(1, int(initial_diff_float))
+                    print(f"✅ СЛОЖНОСТЬ initial_diff: {initial_diff_float} -> {initial_diff} (int)", flush=True)
 
                     async with self._lock:
                         self.miners[client_id] = authorized_address
-                        self.miner_difficulties[authorized_address] = initial_diff
-                        print(f"✅ СЛОЖНОСТЬ initial_diff: {initial_diff} -> {initial_diff}", flush=True)
+                        # Храним как float для расчетов, но отправляем как int
+                        self.miner_difficulties[authorized_address] = float(initial_diff)
+                        print(f"✅ СЛОЖНОСТЬ сохранена: {initial_diff}", flush=True)
 
                     # 1. Ответ на авторизацию
                     response = {"id": msg_id, "result": True, "error": None}
@@ -315,16 +321,21 @@ class StratumTCPServer:
                     if self.share_validator:
                         self.share_validator.pool_difficulty = initial_diff
 
-                    # 3. ОТПРАВЛЯЕМ НАЧАЛЬНУЮ СЛОЖНОСТЬ ASIC
+                    # 3. ОТПРАВЛЯЕМ НАЧАЛЬНУЮ СЛОЖНОСТЬ ASIC (ЦЕЛОЕ ЧИСЛО!)
                     difficulty_msg = {
                         "method": "mining.set_difficulty",
-                        "params": [initial_diff],
+                        "params": [initial_diff],  # ← int!
                         "id": None
                     }
                     await self._send_json(writer, difficulty_msg)
-                    print(f"📊 SENT INITIAL DIFFICULTY: {initial_diff}", flush=True)
+                    print(f"📊 SENT INITIAL DIFFICULTY (int): {initial_diff}", flush=True)
+                    # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: тип данных
+                    print(f"📊 DIFFICULTY TYPE: {type(initial_diff)}, VALUE: {initial_diff}", flush=True)
 
-                    # 3. ОТПРАВЛЯЕМ ЗАДАНИЕ
+                    # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: что реально отправлено
+                    print(f"📊 ACTUAL MSG: {difficulty_msg}", flush=True)
+
+                    # 4. ОТПРАВЛЯЕМ ЗАДАНИЕ
                     await self.send_new_job_tcp(authorized_address, writer)
                     print(f"📤 SENT INITIAL JOB TO: {authorized_address}", flush=True)
 
@@ -438,20 +449,23 @@ class StratumTCPServer:
         print(f"📤 SENT EXTRANONCE: {extra_nonce1}", flush=True)
 
     async def _handle_configure(self, msg_id: int, writer: asyncio.StreamWriter, params: list):
-        """Обработка mining.configure от WhatsMiner"""
+        """Обработка mining.configure от WhatsMiner (как Molehole!)"""
         print(f"🔵 ENTER _handle_configure", flush=True)
         logger.info(f"=== CONFIGURE REQUEST: {params} ===")
 
+        # ===== ОТВЕТ КАК У MOLEHOLE =====
+        # Molehole НЕ отправляет "minimum-difficulty" в ответе.
+        # Оставляем только "version-rolling" и "version-rolling.mask".
         response = {
             "id": msg_id,
             "result": {
                 "version-rolling": True,
-                "version-rolling.mask": "1fffe000",
-                "minimum-difficulty": 1
+                "version-rolling.mask": "1fffe000"
             },
             "error": None
         }
         await self._send_json(writer, response)
+        print(f"🔵 CONFIGURE RESPONSE (as Molehole): {response['result']}", flush=True)
         logger.info("=== CONFIGURE RESPONSE SENT ===")
 
     async def _handle_extranonce_subscribe(self, msg_id: int, writer: asyncio.StreamWriter):
@@ -953,6 +967,19 @@ class StratumTCPServer:
                 print(f"🔴 [SEND_JOB] Writer closed before send for {miner_address[:20]}...", flush=True)
                 return
 
+            # ===== ОТПРАВЛЯЕМ СЛОЖНОСТЬ ПЕРЕД ЗАДАНИЕМ (как Molehole!) =====
+            # Некоторые ASIC "забывают" сложность после получения нового задания.
+            current_diff = self.miner_difficulties.get(miner_address, settings.start_difficulty)
+            current_diff_int = max(1, int(current_diff))
+            difficulty_msg = {
+                "method": "mining.set_difficulty",
+                "params": [current_diff_int],  # ← ЦЕЛОЕ ЧИСЛО
+                "id": None
+            }
+            await self._send_json(writer, difficulty_msg)
+            print(f"📊 SENT DIFFICULTY BEFORE JOB: {current_diff_int}", flush=True)
+            # ================================================================
+
             try:
                 await self._send_json(writer, job_data_for_send)
                 print(f"✅ REAL JOB SENT: id={job_id}, merkle_len={len(real_merkle_branch)}", flush=True)
@@ -1078,7 +1105,20 @@ class StratumTCPServer:
                         continue
 
                     print(f"📤 [BROADCAST] Sending job to {miner_address[:20]}...", flush=True)
-                    print(f"📤 [BROADCAST] job_data_copy preview: {str(job_data_copy)[:200]}...", flush=True)
+
+                    # ===== ОТПРАВЛЯЕМ СЛОЖНОСТЬ ПЕРЕД ЗАДАНИЕМ (как Molehole!) =====
+                    # отправляем mining.set_difficulty ПЕРЕД каждым mining.notify.
+                    # Это заставляет ASIC "перечитать" сложность.
+                    current_diff = self.miner_difficulties.get(miner_address, settings.start_difficulty)
+                    current_diff_int = max(1, int(current_diff))
+                    difficulty_msg = {
+                        "method": "mining.set_difficulty",
+                        "params": [current_diff_int],  # ← ЦЕЛОЕ ЧИСЛО
+                        "id": None
+                    }
+                    await self._send_json(writer, difficulty_msg)
+                    print(f"📊 [BROADCAST] SENT DIFFICULTY BEFORE JOB: {current_diff_int}", flush=True)
+                    # ============================================================
 
                     # Отправляем клиенту
                     await self._send_json(writer, job_data_copy)
@@ -1217,11 +1257,10 @@ class StratumTCPServer:
 
         try:
             # ОКРУГЛЯЕМ ДО ЦЕЛОГО ЧИСЛА ДЛЯ ОТОБРАЖЕНИЯ В ASIC!
-            display_difficulty = max(1.0, float(int(difficulty)))
-
+            display_difficulty = max(1, int(difficulty))  # ← int
             method_data = {
                 "method": "mining.set_difficulty",
-                "params": [display_difficulty],  # ЦЕЛОЕ ЧИСЛО
+                "params": [display_difficulty],  # ← int
                 "id": None
             }
 
