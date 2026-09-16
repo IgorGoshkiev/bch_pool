@@ -89,7 +89,7 @@ class DifficultyService:
             timestamp = datetime.now(UTC)
 
             if miner_address not in self.share_timestamps:
-                self.share_timestamps[miner_address] = deque(maxlen=100)
+                self.share_timestamps[miner_address] = deque(maxlen=500)
 
             self.share_timestamps[miner_address].append(timestamp)
 
@@ -130,16 +130,19 @@ class DifficultyService:
     # ===== РАСЧЕТ ПЕРСОНАЛЬНОЙ СЛОЖНОСТИ =====
     async def calculate_difficulty_for_miner(self, miner_address: str) -> float:
         """
-        Расчет оптимальной сложности для конкретного майнера на основе частоты шаров.
+        Расчет оптимальной сложности для конкретного майнера.
 
-        АДАПТИВНЫЙ АЛГОРИТМ:
-        1. Анализируем частоту шаров
-        2. Рассчитываем хэшрейт майнера
-        3. Вычисляем оптимальную сложность = хэшрейт * target_time / 2^32
-        4. Не поднимаем выше оптимальной сложности
-        5. Не опускаем ниже min_difficulty
+        АЛГОРИТМ (как у Molehole):
+        1. Берём текущую сложность ИЗ tcp_stratum_server (источник истины).
+        2. Считаем медианный интервал между шарами.
+        3. Сравниваем с target_time (6.0 сек).
+        4. Если интервал меньше — поднимаем сложность.
+        5. Если больше — опускаем, но НЕ НИЖЕ START_DIFFICULTY.
+        6. Ограничиваем изменение в 2 раза за шаг.
+        7. Округляем до целого и синхронизируем с tcp_stratum_server.
         """
-        print(f"🔍 [DIFF_CALC] START for {miner_address[:20]}...", flush=True)
+        print(f"\n{'=' * 60}", flush=True)
+        print(f"🔍 [DIFF_CALC] ===== START for {miner_address[:20]}... =====", flush=True)
 
         # Проверяем наличие данных о шарах
         if miner_address not in self.share_timestamps:
@@ -155,9 +158,18 @@ class DifficultyService:
             print(f"🔍 [DIFF_CALC] Too few timestamps ({len(timestamps)} < 3), keeping: {current:.10f}", flush=True)
             return current
 
-        # Получаем текущую сложность майнера
-        current_diff = self.miner_difficulties.get(miner_address, self.min_difficulty)
-        print(f"🔍 [DIFF_CALC] Current difficulty: {current_diff:.10f}", flush=True)
+        # ===== КЛЮЧЕВОЕ: берём текущую сложность ИЗ tcp_stratum_server =====
+        current_diff = None
+
+        if self.tcp_stratum_server:
+            current_diff = self.tcp_stratum_server.miner_difficulties.get(miner_address)
+            if current_diff is not None:
+                print(f"🔍 [DIFF_CALC] ✅ Current difficulty from tcp_stratum_server: {current_diff}", flush=True)
+
+        # Fallback — своя копия
+        if current_diff is None:
+            current_diff = self.miner_difficulties.get(miner_address, self.min_difficulty)
+            print(f"🔍 [DIFF_CALC] ⚠️ Fallback to difficulty_service: {current_diff}", flush=True)
 
         # Анализируем последние шары (берем последние 20)
         recent = timestamps[-20:] if len(timestamps) > 20 else timestamps
@@ -178,8 +190,8 @@ class DifficultyService:
         median_interval = statistics.median(intervals)
         print(f"🔍 [DIFF_CALC] Median interval between shares: {median_interval:.3f}s", flush=True)
 
-        # Целевое время между шарами (из настроек)
-        target_time = getattr(settings, 'difficulty_target_time', 4.0)
+        # Целевое время между шарами
+        target_time = getattr(settings, 'difficulty_target_time', 6.0)
         print(f"🔍 [DIFF_CALC] Target time: {target_time:.1f}s", flush=True)
 
         # Защита от деления на ноль
@@ -187,21 +199,20 @@ class DifficultyService:
             median_interval = 0.01
             print(f"🔍 [DIFF_CALC] Interval too small, clamped to 0.01s", flush=True)
 
-        # ===== ОСНОВНОЙ РАСЧЕТ =====
-        # Коэффициент изменения сложности
+        # ===== ОСНОВНОЙ РАСЧЕТ ПО ЧАСТОТЕ ШАРОВ =====
         ratio = target_time / median_interval
         print(f"🔍 [DIFF_CALC] Raw ratio (target/median): {ratio:.3f}", flush=True)
 
         # Ограничиваем изменение в 2 раза за шаг
         if ratio > 2.0:
             ratio = 2.0
-            print(f"🔍 [DIFF_CALC] Ratio capped at 2.0", flush=True)
+            print(f"🔍 [DIFF_CALC] Ratio capped at 2.0 (max increase 2x)", flush=True)
         elif ratio < 0.5:
             ratio = 0.5
-            print(f"🔍 [DIFF_CALC] Ratio capped at 0.5", flush=True)
+            print(f"🔍 [DIFF_CALC] Ratio capped at 0.5 (max decrease 2x)", flush=True)
 
         # Применяем коэффициент адаптации
-        adaptation_rate = getattr(settings, 'difficulty_adaptation_rate', 0.3)
+        adaptation_rate = getattr(settings, 'difficulty_adaptation_rate', 0.5)
         print(f"🔍 [DIFF_CALC] Adaptation rate: {adaptation_rate:.2f}", flush=True)
 
         if ratio > 1.0:
@@ -211,39 +222,44 @@ class DifficultyService:
             new_diff = current_diff * (1 - (1 - ratio) * adaptation_rate * 1.5)
             print(f"🔍 [DIFF_CALC] Decreasing difficulty (ratio < 1)", flush=True)
 
-        print(f"🔍 [DIFF_CALC] New diff before limits: {new_diff:.10f}", flush=True)
+        print(f"🔍 [DIFF_CALC] New diff by frequency: {new_diff:.10f}", flush=True)
 
-        # ===== РАССЧИТЫВАЕМ ОПТИМАЛЬНУЮ СЛОЖНОСТЬ НА ОСНОВЕ ХЭШРЕЙТА =====
-        # Хэшрейт за последние 5 минут
+        # ===== ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ ХЭШРЕЙТ =====
         hashrate = await self.get_miner_hashrate(miner_address, period_minutes=5)
-        print(f"🔍 [DIFF_CALC] Hashrate: {hashrate:.2f} H/s", flush=True)
+        print(f"🔍 [DIFF_CALC] Hashrate: {hashrate:.2f} H/s ({hashrate / 1e12:.2f} TH/s)", flush=True)
 
-        # Оптимальная сложность = хэшрейт * target_time / 2^32
-        # Это дает ~1 шар в target_time секунд
         if hashrate > 0:
             optimal_difficulty = (hashrate * target_time) / (2 ** 32)
             optimal_difficulty = max(1.0, float(int(optimal_difficulty)))
-            print(f"🔍 [DIFF_CALC] Optimal difficulty: {optimal_difficulty:.0f}", flush=True)
+            print(f"🔍 [DIFF_CALC] Optimal difficulty (from hashrate): {optimal_difficulty:.0f}", flush=True)
 
-            # НЕ ПОДНИМАЕМ ВЫШЕ ОПТИМАЛЬНОЙ СЛОЖНОСТИ
-            if new_diff > optimal_difficulty:
-                new_diff = optimal_difficulty
-                print(f"🔍 [DIFF_CALC] Capped at optimal difficulty: {optimal_difficulty:.0f}", flush=True)
+            # Мягкое ограничение: не больше 2x от optimal
+            if new_diff > optimal_difficulty * 2.0:
+                new_diff = optimal_difficulty * 2.0
+                print(f"🔍 [DIFF_CALC] Soft-capped at 2x optimal: {new_diff:.0f}", flush=True)
+            elif new_diff < optimal_difficulty * 0.5:
+                new_diff = optimal_difficulty * 0.5
+                print(f"🔍 [DIFF_CALC] Soft-raised to 0.5x optimal: {new_diff:.0f}", flush=True)
         else:
-            print(f"🔍 [DIFF_CALC] Cannot calculate optimal difficulty (hashrate=0)", flush=True)
-        # ============================================================
+            print(f"🔍 [DIFF_CALC] Cannot calculate optimal (hashrate=0)", flush=True)
 
-        # ===== ПРИМЕНЯЕМ ОГРАНИЧЕНИЯ =====
-        # Минимальная сложность
+        # ===== ЖЁСТКИЕ ОГРАНИЧЕНИЯ =====
+        # НИЖНЯЯ ГРАНИЦА — START_DIFFICULTY (для ASIC)
+        start_diff = getattr(settings, 'start_difficulty', 16384.0)
+        if new_diff < start_diff:
+            print(f"🔍 [DIFF_CALC] ⚠️ new_diff {new_diff:.0f} < START_DIFFICULTY {start_diff:.0f}, capping", flush=True)
+            new_diff = start_diff
+
+        # Минимальная сложность (абсолютная)
         if new_diff < self.min_difficulty:
             new_diff = self.min_difficulty
-            print(f"🔍 [DIFF_CALC] Capped by min: {self.min_difficulty}", flush=True)
+            print(f"🔍 [DIFF_CALC] Capped by min_difficulty: {self.min_difficulty}", flush=True)
 
         if new_diff < 1.0:
             new_diff = 1.0
             print(f"🔍 [DIFF_CALC] Capped at 1.0", flush=True)
 
-        # Максимальная сложность из настроек (защита от дурака)
+        # Максимальная сложность из настроек
         if self.max_difficulty and new_diff > self.max_difficulty:
             new_diff = self.max_difficulty
             print(f"🔍 [DIFF_CALC] Capped at max_difficulty: {self.max_difficulty}", flush=True)
@@ -258,43 +274,90 @@ class DifficultyService:
 
         print(f"🔍 [DIFF_CALC] FINAL new_diff: {new_diff_rounded:.0f}", flush=True)
 
+        # ===== СИНХРОНИЗАЦИЯ С tcp_stratum_server =====
         self.miner_difficulties[miner_address] = new_diff_rounded
 
+        if self.tcp_stratum_server:
+            self.tcp_stratum_server.miner_difficulties[miner_address] = new_diff_rounded
+            print(f"🔍 [DIFF_CALC] ✅ Synced to tcp_stratum_server: {new_diff_rounded}", flush=True)
+        else:
+            print(f"🔍 [DIFF_CALC] ⚠️ No tcp_stratum_server to sync", flush=True)
+
         print(f"🔍 [DIFF_CALC] ===== END =====", flush=True)
+        print(f"{'=' * 60}\n", flush=True)
+
         return new_diff_rounded
 
     # ===== РАСЧЕТ ХЭШРЕЙТА =====
     async def get_miner_hashrate(self, miner_address: str, period_minutes: int = 5) -> float:
-        """Расчет хэшрейта майнера за период"""
+        """
+        Расчет хэшрейта майнера за период.
+        ВАЖНО: текущая сложность берётся ИЗ tcp_stratum_server (источник истины),
+        потому что именно там хранится то, что мы ОТПРАВИЛИ ASIC через mining.set_difficulty.
+        ВАЖНО: учитываем текущую сложность майнера!
+        Каждый шар при сложности D соответствует D * 2^32 хэшей.
+        """
+        print(f"🔍 [HASHRATE] ===== START for {miner_address[:20]}... =====", flush=True)
+
         try:
             if miner_address not in self.share_timestamps:
+                print(f"🔍 [HASHRATE] No timestamps for {miner_address[:20]}..., returning 0", flush=True)
                 return 0.0
 
             timestamps = list(self.share_timestamps[miner_address])
+            print(f"🔍 [HASHRATE] Total timestamps: {len(timestamps)}", flush=True)
+
             if not timestamps:
                 return 0.0
 
+            # Отбираем шары за последние period_minutes минут
             cutoff_time = datetime.now(UTC) - timedelta(minutes=period_minutes)
             recent_timestamps = [ts for ts in timestamps if ts > cutoff_time]
+            print(f"🔍 [HASHRATE] Recent timestamps (last {period_minutes}min): {len(recent_timestamps)}", flush=True)
 
             if len(recent_timestamps) < 2:
+                print(f"🔍 [HASHRATE] Not enough recent shares, returning 0", flush=True)
                 return 0.0
 
+            # Считаем среднее время между шарами
             time_diffs = []
             for i in range(1, len(recent_timestamps)):
                 diff = (recent_timestamps[i] - recent_timestamps[i - 1]).total_seconds()
-                time_diffs.append(diff)
+                if 0.05 < diff < 300:  # игнорируем выбросы
+                    time_diffs.append(diff)
 
             if not time_diffs:
-                avg_time_between_shares = 1.0
-            else:
-                avg_time_between_shares = statistics.mean(time_diffs)
-                if avg_time_between_shares < 0.1:
-                    avg_time_between_shares = 0.1
+                print(f"🔍 [HASHRATE] No valid time diffs, returning 0", flush=True)
+                return 0.0
 
-            # Каждый шар при сложности 1.0 соответствует 2^32 хэшей
-            hashes_per_share = 2 ** 32
+            avg_time_between_shares = statistics.mean(time_diffs)
+            if avg_time_between_shares < 0.1:
+                avg_time_between_shares = 0.1
+
+            print(f"🔍 [HASHRATE] avg_time_between_shares: {avg_time_between_shares:.3f}s", flush=True)
+
+            # ===== КЛЮЧЕВОЕ: берём сложность ИЗ tcp_stratum_server =====
+            current_diff = None
+
+            if self.tcp_stratum_server:
+                current_diff = self.tcp_stratum_server.miner_difficulties.get(miner_address)
+                if current_diff:
+                    print(f"🔍 [HASHRATE] ✅ Using difficulty from tcp_stratum_server: {current_diff}", flush=True)
+                else:
+                    print(f"🔍 [HASHRATE] ⚠️ tcp_stratum_server has no difficulty for this miner", flush=True)
+
+            # Fallback — своя копия
+            if current_diff is None:
+                current_diff = self.miner_difficulties.get(miner_address, 1.0)
+                print(f"🔍 [HASHRATE] ⚠️ Fallback to difficulty_service: {current_diff}", flush=True)
+
+            # Каждый шар при сложности D = D * 2^32 хэшей
+            hashes_per_share = current_diff * (2 ** 32)
             hashrate = hashes_per_share / avg_time_between_shares
+
+            print(f"🔍 [HASHRATE] hashes_per_share = {hashes_per_share:.2e}", flush=True)
+            print(f"🔍 [HASHRATE] hashrate = {hashrate:.2f} H/s ({hashrate / 1e12:.2f} TH/s)", flush=True)
+            print(f"🔍 [HASHRATE] ===== END =====", flush=True)
 
             return hashrate
 
@@ -305,23 +368,25 @@ class DifficultyService:
                 miner_address=miner_address[:20] + "..." if miner_address else "unknown",
                 error=str(e)
             )
+            print(f"🔥 [HASHRATE] EXCEPTION: {e}", flush=True)
             return 0.0
 
+
     async def get_pool_hashrate(self, period_minutes: int = 5) -> float:
-        """Расчет общего хэшрейта пула"""
-        try:
-            total_hashrate = 0.0
-            for miner_address in self.share_timestamps.keys():
-                hashrate = await self.get_miner_hashrate(miner_address, period_minutes)
-                total_hashrate += hashrate
-            return total_hashrate
-        except Exception as e:
-            logger.error(
-                "Ошибка расчета хэшрейта пула",
-                event="difficulty_pool_hashrate_error",
-                error=str(e)
-            )
-            return 0.0
+            """Расчет общего хэшрейта пула"""
+            try:
+                total_hashrate = 0.0
+                for miner_address in self.share_timestamps.keys():
+                    hashrate = await self.get_miner_hashrate(miner_address, period_minutes)
+                    total_hashrate += hashrate
+                return total_hashrate
+            except Exception as e:
+                logger.error(
+                    "Ошибка расчета хэшрейта пула",
+                    event="difficulty_pool_hashrate_error",
+                    error=str(e)
+                )
+                return 0.0
 
     # ===== ГЛОБАЛЬНАЯ СЛОЖНОСТЬ (для совместимости) =====
 

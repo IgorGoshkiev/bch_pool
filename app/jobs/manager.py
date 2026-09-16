@@ -39,7 +39,8 @@ class JobManager:
         self._last_reorg_check_time: Optional[datetime] = None
 
         # Генерируем extra_nonce1 для пула (используется если нода не возвращает)
-        self.pool_extra_nonce1 = secrets.token_hex(20)
+        # ВАЖНО: 4 байта (8 hex) — как у Molehole! ASIC ожидает именно это.
+        self.pool_extra_nonce1 = secrets.token_hex(4)
         print(f"🔑 POOL EXTRANONCE1 GENERATED: {self.pool_extra_nonce1}", flush=True)
 
         logger.info(

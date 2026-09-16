@@ -299,16 +299,15 @@ class StratumTCPServer:
 
                 if success:
                     # ===== НАЧАЛЬНАЯ СЛОЖНОСТЬ =====
-                    # ВАЖНО: ASIC ожидает ЦЕЛОЕ число в mining.set_difficulty!
-                    # Если отправить float (например, 65536.0) — некоторые ASIC не применяют сложность!
-                    initial_diff_float = getattr(settings, 'start_difficulty', 65536)
-                    # Округляем до целого числа
+                    # ВАЖНО: это display_difficulty — ASIC будет её отображать
+                    # и использовать для регулировки частоты шаров.
+                    initial_diff_float = getattr(settings, 'start_difficulty', 65536.0)
                     initial_diff = max(1, int(initial_diff_float))
-                    print(f"✅ СЛОЖНОСТЬ initial_diff: {initial_diff_float} -> {initial_diff} (int)", flush=True)
+                    print(f"✅ СЛОЖНОСТЬ initial_diff (display): {initial_diff_float} -> {initial_diff}", flush=True)
 
                     async with self._lock:
                         self.miners[client_id] = authorized_address
-                        # Храним как float для расчетов, но отправляем как int
+                        # Храним как float для расчетов
                         self.miner_difficulties[authorized_address] = float(initial_diff)
                         print(f"✅ СЛОЖНОСТЬ сохранена: {initial_diff}", flush=True)
 
@@ -324,11 +323,12 @@ class StratumTCPServer:
                     # 3. ОТПРАВЛЯЕМ НАЧАЛЬНУЮ СЛОЖНОСТЬ ASIC (ЦЕЛОЕ ЧИСЛО!)
                     difficulty_msg = {
                         "method": "mining.set_difficulty",
-                        "params": [initial_diff],  # ← int!
+                        "params": [initial_diff],  # ← ЦЕЛОЕ ЧИСЛО
                         "id": None
                     }
                     await self._send_json(writer, difficulty_msg)
-                    print(f"📊 SENT INITIAL DIFFICULTY (int): {initial_diff}", flush=True)
+                    print(f"📊 SENT INITIAL DIFFICULTY (display): {initial_diff}", flush=True)
+
                     # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: тип данных
                     print(f"📊 DIFFICULTY TYPE: {type(initial_diff)}, VALUE: {initial_diff}", flush=True)
 
@@ -353,19 +353,20 @@ class StratumTCPServer:
             # ============================================================
             if params and len(params) >= 1:
                 suggested = float(params[0])
-                print(f"📊 ASIC suggested difficulty: {suggested} (IGNORED - pool will decide)", flush=True)
+                print(f"📊 ASIC suggested difficulty: {suggested}", flush=True)
 
-                # Только для статистики (не используется в расчетах)
                 if client_id in self.miners:
                     miner_address = self.miners[client_id]
-                    self.miner_max_difficulties[miner_address] = suggested
+                    # Сохраняем для difficulty_service (как target для адаптации)
+                    if self.difficulty_service:
+                        self.difficulty_service.set_target_difficulty(miner_address, suggested)
+                        print(f"📊 [SUGGEST_DIFF] Target sent to difficulty_service: {suggested}", flush=True)
             else:
                 print(f"⚠️ [SUGGEST_DIFF] Invalid params: {params}", flush=True)
 
-            # Просто подтверждаем получение
             response = {"id": msg_id, "result": True, "error": None}
             await self._send_json(writer, response)
-            print(f"📊 [SUGGEST_DIFF] Confirmed (ignored)", flush=True)
+            print(f"📊 [SUGGEST_DIFF] Confirmed", flush=True)
 
         elif method == "mining.extranonce.subscribe":
             await self._handle_extranonce_subscribe(msg_id, writer)
@@ -585,12 +586,31 @@ class StratumTCPServer:
                 return
 
             # 5. СЛОЖНОСТЬ ДЛЯ ПРОВЕРКИ
-            validation_difficulty = self.miner_difficulties.get(
+            # ============================================================
+            # ВАЖНО: РАЗДЕЛЯЕМ ДВЕ СЛОЖНОСТИ!
+            #
+            # display_difficulty (miner_difficulties) — то, что МЫ ОТПРАВЛЯЕМ ASIC
+            #   через mining.set_difficulty. Управляет частотой шаров ASIC
+            #   и отображением на его панели.
+            #
+            # validation_difficulty (default_share_difficulty) — то, с чем МЫ ВАЛИДИРУЕМ
+            #   входящие шары. Это ОЧЕНЬ НИЗКАЯ сложность (1e-10), потому что ASIC
+            #   присылает шары со своей внутренней сложностью (~1e-9),
+            #   которую мы не знаем и не контролируем.
+            #
+            # РАЗДЕЛЕНИЕ ПОЗВОЛЯЕТ:
+            #   1. Управлять частотой шаров ASIC (через display_difficulty).
+            #   2. Принимать ВСЕ шары ASIC (через validation_difficulty).
+            # ============================================================
+            display_difficulty = self.miner_difficulties.get(
                 miner_address,
-                settings.default_share_difficulty
+                settings.start_difficulty
             )
-            print(f"🔍 VALIDATION difficulty from miner_difficulties: {validation_difficulty:.10f}", flush=True)
-            # ==========================================================
+            # Для ВАЛИДАЦИИ всегда используем default_share_difficulty (1e-10)
+            validation_difficulty = settings.default_share_difficulty
+            print(f"🔍 [SPLIT] display_difficulty (для ASIC):   {display_difficulty:.10f}", flush=True)
+            print(f"🔍 [SPLIT] validation_difficulty (для нас): {validation_difficulty:.10f}", flush=True)
+            # ============================================================
 
             # 6. ВАЛИДАЦИЯ
             print(f"🔍 [TCP] Перед вызовом validate_and_process_share: version_from_asic = {version_from_asic}",
