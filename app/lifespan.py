@@ -213,23 +213,29 @@ async def lifespan(_app):
                 error=str(e)
             )
 
-        # 7. Запускаем периодическое обновление сложности
-        if settings.enable_dynamic_difficulty:
-            try:
-                difficulty_task = asyncio.create_task(_periodic_difficulty_updater())
-                background_tasks.append(difficulty_task)
-                logger.info(
-                    "Периодическое обновление сложности запущено",
-                    event="difficulty_updater_started",
-                    interval_seconds=settings.difficulty_update_interval,
-                    task_id=id(difficulty_task)
-                )
-            except Exception as e:
-                logger.error(
-                    "Ошибка запуска обновления сложности",
-                    event="difficulty_updater_start_failed",
-                    error=str(e)
-                )
+        # 7. Периодическое обновление сложности — ОТКЛЮЧЕНО
+        # Причина: конфликтует с персональной сложностью (difficulty_service.calculate_difficulty_for_miner).
+        # Глобальный апдейтер каждые 300 сек перезаписывает персональную сложность на ерунду (0.015625),
+        # и ASIC получает сложность, при которой не может найти ни одного шара.
+        # Персональная сложность адаптируется при каждом шаре и работает правильно.
+        #
+        # if settings.enable_dynamic_difficulty:
+        #     try:
+        #         difficulty_task = asyncio.create_task(_periodic_difficulty_updater())
+        #         background_tasks.append(difficulty_task)
+        #         logger.info(
+        #             "Периодическое обновление сложности запущено",
+        #             event="difficulty_updater_started",
+        #             interval_seconds=settings.difficulty_update_interval,
+        #             task_id=id(difficulty_task)
+        #         )
+        #     except Exception as e:
+        #         logger.error(
+        #             "Ошибка запуска обновления сложности",
+        #             event="difficulty_updater_start_failed",
+        #             error=str(e)
+        #         )
+        print(f"🔴🔴🔴 Периодическое обновление сложности ОТКЛЮЧЕНО (используется персональная сложность)", flush=True)
 
         # 8. Запускаем периодическую проверку реорганизации
         try:

@@ -2,6 +2,7 @@
 Сервис для управления динамической сложностью
 """
 import statistics
+import time
 from typing import Dict, List, Tuple
 from datetime import datetime, UTC, timedelta
 from collections import deque
@@ -22,6 +23,12 @@ class DifficultyService:
     ADAPTATION_RATE = 0.3  #  30% адаптации за шаг
     MAX_CHANGE_PERCENT = 0.3  # 30% максимум за шаг
     MIN_TIMESTAMPS = 20  #  20 шаров для первого расчета
+    # ===== КОНСТАНТЫ ДЛЯ ОГРАНИЧЕНИЯ ЧАСТОТЫ ОБНОВЛЕНИЯ =====
+    # Минимальный интервал между обновлениями сложности для одного майнера.
+    # Нужен, чтобы не менять сложность на КАЖДОМ шаре — иначе медиана
+    # не успевает пересчитаться, и сложность улетает в космос.
+
+    MIN_UPDATE_INTERVAL = 60.0  # секунд
 
     def __init__(self, network_manager=None, stratum_server=None, tcp_stratum_server=None):
         # Персональные сложности майнеров
@@ -29,6 +36,10 @@ class DifficultyService:
 
         # Целевые сложности от ASIC (из suggest_difficulty)
         self.miner_target_difficulties: Dict[str, float] = {}
+
+        # Время последнего обновления сложности для каждого майнера
+        # Нужно, чтобы не менять сложность на КАЖДОМ шаре (иначе улетает в космос)
+        self.last_update_time: Dict[str, float] = {}
 
         # Network manager
         if network_manager:
@@ -132,14 +143,18 @@ class DifficultyService:
         """
         Расчет оптимальной сложности для конкретного майнера.
 
-        АЛГОРИТМ (как у Molehole):
+        АЛГОРИТМ:
         1. Берём текущую сложность ИЗ tcp_stratum_server (источник истины).
         2. Считаем медианный интервал между шарами.
         3. Сравниваем с target_time (6.0 сек).
         4. Если интервал меньше — поднимаем сложность.
         5. Если больше — опускаем, но НЕ НИЖЕ START_DIFFICULTY.
         6. Ограничиваем изменение в 2 раза за шаг.
-        7. Округляем до целого и синхронизируем с tcp_stratum_server.
+        7. ОКРУГЛЯЕМ до целого и синхронизируем с tcp_stratum_server.
+
+        ВАЖНО: НЕ меняем сложность на каждом шаре!
+        Меняем не чаще чем раз в MIN_UPDATE_INTERVAL секунд.
+        Иначе медиана не успевает пересчитаться, и сложность улетает в космос.
         """
         print(f"\n{'=' * 60}", flush=True)
         print(f"🔍 [DIFF_CALC] ===== START for {miner_address[:20]}... =====", flush=True)
@@ -170,6 +185,32 @@ class DifficultyService:
         if current_diff is None:
             current_diff = self.miner_difficulties.get(miner_address, self.min_difficulty)
             print(f"🔍 [DIFF_CALC] ⚠️ Fallback to difficulty_service: {current_diff}", flush=True)
+
+        # ===== ОГРАНИЧЕНИЕ ЧАСТОТЫ ОБНОВЛЕНИЯ СЛОЖНОСТИ =====
+        # Меняем сложность НЕ ЧАСТО, чтобы ASIC успел адаптироваться.
+        # Molehole меняет сложность раз в 1-2 минуты.
+        # Если менять на КАЖДОМ шаре, медиана не успевает пересчитаться,
+        # и сложность улетает в космос.
+
+
+        last_update = self.last_update_time.get(miner_address, 0)
+        time_since_update = time.time() - last_update
+
+        print(f"🔍 [DIFF_CALC] time_since_update: {time_since_update:.1f}s (min: {self.MIN_UPDATE_INTERVAL}s)", flush=True)
+
+        if time_since_update < self.MIN_UPDATE_INTERVAL:
+            # Слишком рано — возвращаем ТЕКУЩУЮ сложность без изменений
+            print(f"🔍 [DIFF_CALC] ⏸️ Too early to update (need {self.MIN_UPDATE_INTERVAL - time_since_update:.1f}s more)",
+                  flush=True)
+            print(f"🔍 [DIFF_CALC] Returning current difficulty: {current_diff}", flush=True)
+            print(f"🔍 [DIFF_CALC] ===== END =====", flush=True)
+            print(f"{'=' * 60}\n", flush=True)
+            return current_diff
+
+        # Запоминаем время обновления
+        self.last_update_time[miner_address] = time.time()
+        print(f"🔍 [DIFF_CALC] ✅ Update time recorded: {self.last_update_time[miner_address]:.1f}", flush=True)
+        # =====================================================
 
         # Анализируем последние шары (берем последние 20)
         recent = timestamps[-20:] if len(timestamps) > 20 else timestamps
