@@ -157,6 +157,27 @@ async def lifespan(_app):
             )
         # ====================================================================
 
+        # ====================================================================
+        # Инициализируем DifficultyService с TCP сервером
+        # ВАЖНО: после создания tcp_stratum_server, чтобы разорвать циклическую зависимость
+        # Без этого difficulty_service.tcp_stratum_server = None,
+        # и хэшрейт считается неверно (1440 TH/s вместо 40-90 TH/s)
+        try:
+            container.initialize_difficulty_service_with_servers()
+            print(f"🔴🔴🔴 DifficultyService инициализирован с TCP сервером:", flush=True)
+            logger.info(
+                "DifficultyService инициализирован с TCP сервером",
+                event="difficulty_service_initialized_with_tcp"
+            )
+        except Exception as e:
+            print(f"🔴 Ошибка инициализации DifficultyService с TCP сервером: {e}", flush=True)
+            logger.error(
+                "Ошибка инициализации DifficultyService с TCP сервером",
+                event="difficulty_service_initialize_error",
+                error=str(e)
+            )
+        # ====================================================================
+
         # 5. Запускаем периодическую рассылку заданий
         try:
             broadcaster_task = asyncio.create_task(_periodic_job_broadcaster())

@@ -149,6 +149,61 @@ class DependencyContainer:
             )
         return self._job_manager
 
+    def initialize_difficulty_service_with_servers(self):
+        """
+        Инициализация DifficultyService с TCP-сервером.
+
+        ВАЖНО: вызывается ПОСЛЕ создания tcp_stratum_server.
+        Разрывает циклическую зависимость:
+        - difficulty_service нужен для создания tcp_stratum_server
+        - tcp_stratum_server нужен difficulty_service для чтения реальной сложности
+
+        БЕЗ ЭТОГО ВЫЗОВА:
+        - difficulty_service.tcp_stratum_server = None
+        - get_miner_hashrate читает свою копию miner_difficulties (мусор)
+        - хэшрейт считается неверно (1440 TH/s вместо 40-90 TH/s)
+        - сложность разгоняется до 1 миллиарда
+        - ASIC замолкает, потому что не может найти шар
+
+        Returns:
+            DifficultyService или None
+        """
+        print(f"🔴 [INIT_DIFF] ===== START =====", flush=True)
+
+        # Проверяем, что difficulty_service уже создан
+        if self._difficulty_service is None:
+            print(f"🔴 [INIT_DIFF] ❌ DifficultyService is None, cannot initialize", flush=True)
+            logger.warning(
+                "DifficultyService не создан, нечего инициализировать",
+                event="difficulty_service_not_created"
+            )
+            return None
+
+        # Получаем TCP-сервер (создаётся при первом обращении к свойству)
+        # Это ВАЖНО: обращение к self.tcp_stratum_server создаст его, если ещё нет
+        tcp_server = self.tcp_stratum_server
+        print(f"🔴 [INIT_DIFF] tcp_stratum_server = {tcp_server}", flush=True)
+        print(f"🔴 [INIT_DIFF] type(tcp_server) = {type(tcp_server).__name__}", flush=True)
+
+        # Присваиваем его difficulty_service
+        self._difficulty_service.tcp_stratum_server = tcp_server
+
+        # Проверяем, что присвоилось
+        check = self._difficulty_service.tcp_stratum_server
+        print(f"🔴 [INIT_DIFF] ✅ difficulty_service.tcp_stratum_server = {check}", flush=True)
+        print(f"🔴 [INIT_DIFF] ✅ is None? {check is None}", flush=True)
+
+        logger.info(
+            "DifficultyService инициализирован с TCP сервером",
+            event="difficulty_service_initialized_with_tcp",
+            has_tcp_stratum_server=tcp_server is not None,
+            tcp_server_type=type(tcp_server).__name__ if tcp_server else "None"
+        )
+
+        print(f"🔴 [INIT_DIFF] ===== END =====", flush=True)
+
+        return self._difficulty_service
+
     # === STRATUM SERVER ===
     @property
     def stratum_server(self):
