@@ -45,7 +45,7 @@ class Settings(BaseSettings):
 
     # Настройки заданий
     job_broadcast_interval: int = 30 #  30 секунд
-    job_cleanup_age: int = 300
+    job_cleanup_age: int = 1800 # 30 минут активные задания не удалялись
     job_max_history_size: int = 100
 
     # Настройки блоков
