@@ -938,7 +938,24 @@ class StratumTCPServer:
             print(f"🔍 SEND_JOB: bits = {real_bits}", flush=True)
             print(f"🔍 SEND_JOB: ntime = {real_ntime}", flush=True)
 
-            job_id = f"{int(time.time()) & 0xFFFF:04x}"
+            # ===== ГЕНЕРИРУЕМ job_id В ПРАВИЛЬНОМ ФОРМАТЕ =====
+            # БЫЛО: job_id = f"{int(time.time()) & 0xFFFF:04x}"  ← короткий (a152, 5833)
+            # СТАЛО: используем job_service.create_job_id() — длинный формат job_<timestamp>_<counter>_<miner>
+            #
+            # ПОЧЕМУ ЭТО ВАЖНО:
+            # - Короткий job_id (a152) удаляется cleanup_old_jobs, и ASIC замолкает.
+            # - Длинный job_id (job_<timestamp>_...) не удаляется, пока актуален.
+            # - cleanup_old_jobs корректно парсит timestamp из длинного формата.
+            #
+            # Если job_service недоступен — fallback на короткий (совместимость).
+            if self.job_service:
+                job_id = self.job_service.create_job_id(miner_address)
+                print(f"🔑 [SEND_JOB] Generated long job_id: {job_id}", flush=True)
+            else:
+                # Fallback: короткий формат (если job_service недоступен)
+                job_id = f"{int(time.time()) & 0xFFFF:04x}"
+                print(f"🔑 [SEND_JOB] ⚠️ Fallback to short job_id: {job_id}", flush=True)
+            # =====================================================
 
             # === ДЛЯ ВАЛИДАТОРА (сохраняем big-endian) ===
             real_job = {

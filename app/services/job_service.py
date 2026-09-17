@@ -307,11 +307,38 @@ class JobService:
     # ========== ОЧИСТКА ==========
 
     def cleanup_old_jobs(self, max_age_seconds: int = 300):
-        """Очистка старых заданий"""
+        """
+        Очистка старых заданий.
+
+        ВАЖНО: НЕ удаляем короткие job_id (a152, 5833 и т.д.)!
+
+        ПОЧЕМУ:
+        - ASIC может долго слать шары со старым коротким job_id.
+        - Если мы его удалим из active_jobs, то get_job вернёт None,
+          и все шары будут отклоняться: "Задание не найдено".
+        - ASIC получит ошибку и ЗАМОЛЧИТ (перестанет слать шары вообще).
+        - Восстановление: только переподключение ASIC.
+
+        Короткие job_id (<= 8 hex-символов) генерируются в send_new_job_tcp
+        и должны жить, пока ASIC на них работает.
+        """
         current_time = datetime.now(UTC)
         jobs_to_remove = []
 
+        print(f"\n🧹 [CLEANUP] ===== START =====", flush=True)
+        print(f"🧹 [CLEANUP] current_time: {current_time.isoformat()}", flush=True)
+        print(f"🧹 [CLEANUP] max_age_seconds: {max_age_seconds}", flush=True)
+        print(f"🧹 [CLEANUP] active_jobs count: {len(self.active_jobs)}", flush=True)
+
         for job_id, job_data in self.active_jobs.items():
+            # ===== ЗАЩИТА КОРОТКИХ job_id =====
+            # Не удаляем короткие job_id (a152, 5833 и т.д.).
+            # ASIC может долго работать на них, и удаление сломает валидацию.
+            if len(job_id) <= 8 and all(c in '0123456789abcdef' for c in job_id.lower()):
+                print(f"🧹 [CLEANUP] ⏭️ SKIP short job_id: {job_id}", flush=True)
+                continue
+            # ===================================
+
             try:
                 # Извлекаем timestamp из job_id
                 if job_id.startswith("job_"):
@@ -321,18 +348,29 @@ class JobService:
                         job_time = datetime.fromtimestamp(float(timestamp_str), UTC)
 
                         age = (current_time - job_time).total_seconds()
+                        print(f"🧹 [CLEANUP] job_id={job_id[:40]}... age={age:.1f}s", flush=True)
                         if age > max_age_seconds:
+                            print(f"🧹 [CLEANUP] ❌ TO REMOVE (age {age:.1f}s > {max_age_seconds}s): {job_id[:40]}...",
+                                  flush=True)
                             jobs_to_remove.append(job_id)
-            except (IndexError, ValueError, AttributeError):
-                # Если не можем распарсить, удаляем
+            except (IndexError, ValueError, AttributeError) as e:
+                # Если не можем распарсить — удаляем (но короткие уже пропущены выше)
+                print(f"🧹 [CLEANUP] ⚠️ Cannot parse job_id={job_id}, error: {e}", flush=True)
                 jobs_to_remove.append(job_id)
+
+        print(f"🧹 [CLEANUP] jobs_to_remove count: {len(jobs_to_remove)}", flush=True)
 
         # Удаляем старые задания
         for job_id in jobs_to_remove:
             self.remove_job(job_id)
 
         if jobs_to_remove:
+            print(f"🧹 [CLEANUP] ✅ Removed {len(jobs_to_remove)} old jobs", flush=True)
             logger.info(f"JobService: очищено {len(jobs_to_remove)} старых заданий")
+        else:
+            print(f"🧹 [CLEANUP] ✅ Nothing to remove", flush=True)
+
+        print(f"🧹 [CLEANUP] ===== END =====\n", flush=True)
 
     def cleanup_miner_jobs(self, miner_address: str):
         """Очистка всех заданий майнера"""
