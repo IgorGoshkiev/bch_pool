@@ -986,15 +986,15 @@ class StratumTCPServer:
 
             # ===== ОТПРАВЛЯЕМ СЛОЖНОСТЬ ПЕРЕД ЗАДАНИЕМ (как Molehole!) =====
             # Некоторые ASIC "забывают" сложность после получения нового задания.
-            current_diff = self.miner_difficulties.get(miner_address, settings.start_difficulty)
-            current_diff_int = max(1, int(current_diff))
-            difficulty_msg = {
-                "method": "mining.set_difficulty",
-                "params": [current_diff_int],  # ← ЦЕЛОЕ ЧИСЛО
-                "id": None
-            }
-            await self._send_json(writer, difficulty_msg)
-            print(f"📊 SENT DIFFICULTY BEFORE JOB: {current_diff_int}", flush=True)
+            # current_diff = self.miner_difficulties.get(miner_address, settings.start_difficulty)
+            # current_diff_int = max(1, int(current_diff))
+            # difficulty_msg = {
+            #     "method": "mining.set_difficulty",
+            #     "params": [current_diff_int],  # ← ЦЕЛОЕ ЧИСЛО
+            #     "id": None
+            # }
+            # await self._send_json(writer, difficulty_msg)
+            # print(f"📊 SENT DIFFICULTY BEFORE JOB: {current_diff_int}", flush=True)
             # ================================================================
 
             try:

@@ -488,7 +488,7 @@ async def _periodic_job_broadcaster():
 
             if active_miners > 0:
                 await job_manager.broadcast_new_job_to_all(clean_jobs=True)
-                print(f"✅ [BROADCASTER] broadcast_new_job_to_all completed  clean_jobs=False", flush=True)
+                print(f"✅ [BROADCASTER] broadcast_new_job_to_all completed  clean_jobs=True", flush=True)
                 logger.debug(
                     f"Задание разослано {active_miners} майнерам",
                     event="job_broadcasted",
