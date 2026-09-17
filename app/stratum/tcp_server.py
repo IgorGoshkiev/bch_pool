@@ -151,10 +151,6 @@ class StratumTCPServer:
         )
 
         try:
-            # 1. Отправляем приветствие
-            await self._send_welcome(writer)
-
-            # 2. Обрабатываем входящие сообщения
             while True:
                 try:
                     # Читаем строку (Stratum использует JSON-Line протокол)
@@ -255,22 +251,6 @@ class StratumTCPServer:
                 connection_duration_seconds=connection_duration,
                 remaining_connections=remaining  # Используем предварительно рассчитанное значение
             )
-
-    async def _send_welcome(self, writer: asyncio.StreamWriter):
-        """Отправка приветственного сообщения"""
-        welcome = {
-            "id": 1,
-            "result": {
-                "version": "1.0.0",
-                "protocol": "stratum",
-                "motd": "Welcome to BCH Solo Pool (TCP)",
-                "extensions": ["mining.set_difficulty", "mining.notify"],
-                "difficulty": 1.0
-            },
-            "error": None
-        }
-
-        await self._send_json(writer, welcome)
 
     async def handle_message(self, data: dict, writer: asyncio.StreamWriter, client_id: str):
         """Обработка Stratum сообщений - ДОБАВЛЯЕМ suggest_difficulty"""
@@ -995,7 +975,7 @@ class StratumTCPServer:
                     real_version,
                     real_bits,
                     real_ntime,
-                    False  # clean_jobs=False
+                    True  # ← clean_jobs=True (как Molehole)
                 ]
             }
 

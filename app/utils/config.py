@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     min_difficulty: float = 0.0000000001
     max_difficulty: Optional[float] = 1000000000
     target_shares_per_minute: int = 15
-    start_difficulty: float = 65536.0
+    start_difficulty: float = 16384.0
 
     # Stratum серверы
     stratum_host: str = "0.0.0.0"
