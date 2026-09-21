@@ -2,7 +2,6 @@
 Сервис для управления динамической сложностью
 """
 import statistics
-import time
 from typing import Dict, List, Tuple
 from datetime import datetime, UTC, timedelta
 from collections import deque
@@ -16,26 +15,16 @@ logger = StructuredLogger(__name__)
 class DifficultyService:
     """Сервис для расчета и управления сложностью"""
 
-    # ===== КОНСТАНТЫ ДЛЯ БЫСТРОЙ АДАПТАЦИИ =====
-    TARGET_TIME_BETWEEN_SHARES = 5.0  # 5 секунд между шарами
-    TARGET_TIME_MIN_RATIO = 0.5
-    TARGET_TIME_MAX_RATIO = 2.0
-    ADAPTATION_RATE = 0.3  #  30% адаптации за шаг
-    MAX_CHANGE_PERCENT = 0.3  # 30% максимум за шаг
-    MIN_TIMESTAMPS = 20  #  20 шаров для первого расчета
-    # ===== КОНСТАНТЫ ДЛЯ ОГРАНИЧЕНИЯ ЧАСТОТЫ ОБНОВЛЕНИЯ =====
-    # Минимальный интервал между обновлениями сложности для одного майнера.
-    # Нужен, чтобы не менять сложность на КАЖДОМ шаре — иначе медиана
-    # не успевает пересчитаться, и сложность улетает в космос.
-
-    MIN_UPDATE_INTERVAL = 60.0  # секунд
-
     def __init__(self, network_manager=None, stratum_server=None, tcp_stratum_server=None):
-        # Персональные сложности майнеров
+        # Персональные сложности майнеров (display_difficulty — то, что отправляем ASIC)
         self.miner_difficulties: Dict[str, float] = {}
 
         # Целевые сложности от ASIC (из suggest_difficulty)
         self.miner_target_difficulties: Dict[str, float] = {}
+
+        # Минимальные сложности для каждого ASIC (из suggest_difficulty)
+        # Индивидуально для каждого ASIC. Если suggest не было — START_DISPLAY_DIFFICULTY.
+        self.min_asic_difficulties: Dict[str, float] = {}
 
         # Время последнего обновления сложности для каждого майнера
         # Нужно, чтобы не менять сложность на КАЖДОМ шаре (иначе улетает в космос)
@@ -54,9 +43,28 @@ class DifficultyService:
         # Глобальная сложность (для совместимости)
         network_config = self.network_manager.config
         self.current_difficulty = network_config['default_difficulty']
-        self.target_shares_per_minute = getattr(settings, 'target_shares_per_minute', 15)
-        self.min_difficulty = settings.min_difficulty
-        self.max_difficulty = getattr(settings, 'max_difficulty', None)
+
+        # ===== DISPLAY DIFFICULTY (для ASIC) =====
+        # Это то, что мы ОТПРАВЛЯЕМ ASIC через mining.set_difficulty.
+        # Управляет частотой шаров и отображением на панели ASIC.
+        self.start_display_difficulty = settings.start_display_difficulty
+        self.min_display_difficulty = settings.min_display_difficulty
+        self.max_display_difficulty = settings.max_display_difficulty
+
+        # ===== VALIDATION DIFFICULTY (для валидации шаров) =====
+        # Это то, с чем мы ВАЛИДИРУЕМ входящие шары.
+        # Очень низкая, чтобы принимать ВСЕ шары от ASIC.
+        self.default_validation_difficulty = settings.default_validation_difficulty
+
+        # ===== ДИНАМИЧЕСКАЯ СЛОЖНОСТЬ =====
+        # Все параметры берутся из .env через config.py
+        self.difficulty_target_time = settings.difficulty_target_time
+        self.difficulty_adaptation_rate = settings.difficulty_adaptation_rate
+        self.difficulty_min_change = settings.difficulty_min_change
+        self.difficulty_min_update_interval = settings.difficulty_min_update_interval
+        # Первое обновление — быстрое (через N секунд после первого шара).
+        # Нужно, чтобы ASIC быстро получил правильную сложность в начале.
+        self.difficulty_first_update_interval = settings.difficulty_first_update_interval
 
         # История шаров для расчета сложности
         self.share_timestamps: Dict[str, deque] = {}
@@ -73,9 +81,14 @@ class DifficultyService:
             "DifficultyService инициализирован",
             event="difficulty_service_initialized",
             current_difficulty=self.current_difficulty,
-            target_shares_per_minute=self.target_shares_per_minute,
-            min_difficulty=self.min_difficulty,
-            max_difficulty=self.max_difficulty,
+            start_display_difficulty=self.start_display_difficulty,
+            min_display_difficulty=self.min_display_difficulty,
+            max_display_difficulty=self.max_display_difficulty,
+            default_validation_difficulty=self.default_validation_difficulty,
+            difficulty_target_time=self.difficulty_target_time,
+            difficulty_adaptation_rate=self.difficulty_adaptation_rate,
+            difficulty_min_change=self.difficulty_min_change,
+            difficulty_min_update_interval=self.difficulty_min_update_interval,
             network=self.network_manager.network,
             enable_dynamic_difficulty=settings.enable_dynamic_difficulty
         )
@@ -92,6 +105,26 @@ class DifficultyService:
         self.miner_target_difficulties[miner_address] = target
         print(f"🎯 [TARGET] Set for {miner_address[:20]}...: {target}", flush=True)
 
+
+    def reset_share_timestamps(self, miner_address: str) -> None:
+        """
+        Сброс временных меток шаров при смене сложности.
+
+        ВАЖНО: это нужно, чтобы median_interval считался
+        ТОЛЬКО по шарам с НОВОЙ сложностью.
+        Иначе старые шары (с меньшей сложностью) искажают медиану,
+        и пул принимает неправильные решения.
+
+        Вызывается из tcp_server.handle_submit_tcp после успешной
+        отправки set_difficulty.
+        """
+        if miner_address in self.share_timestamps:
+            old_count = len(self.share_timestamps[miner_address])
+            self.share_timestamps[miner_address].clear()
+            print(f"🔄 [DIFF] Reset share_timestamps for {miner_address[:20]}... (was {old_count} entries)", flush=True)
+        else:
+            print(f"🔄 [DIFF] No share_timestamps to reset for {miner_address[:20]}...", flush=True)
+
     # ===== ДОБАВЛЕНИЕ ШАРОВ =====
 
     async def add_share(self, miner_address: str, difficulty: float = 1.0) -> None:
@@ -100,7 +133,8 @@ class DifficultyService:
             timestamp = datetime.now(UTC)
 
             if miner_address not in self.share_timestamps:
-                self.share_timestamps[miner_address] = deque(maxlen=500)
+                # Для мощного ASIC нужно больше истории (1000 временных меток)
+                self.share_timestamps[miner_address] = deque(maxlen=1000)
 
             self.share_timestamps[miner_address].append(timestamp)
 
@@ -139,37 +173,44 @@ class DifficultyService:
             )
 
     # ===== РАСЧЕТ ПЕРСОНАЛЬНОЙ СЛОЖНОСТИ =====
+
     async def calculate_difficulty_for_miner(self, miner_address: str) -> float:
         """
-        Расчет оптимальной сложности для конкретного майнера.
+        Расчет оптимальной сложности для конкретного майнера (как у Molehole).
 
-        АЛГОРИТМ:
-        1. Берём текущую сложность ИЗ tcp_stratum_server (источник истины).
-        2. Считаем медианный интервал между шарами.
-        3. Сравниваем с target_time (6.0 сек).
-        4. Если интервал меньше — поднимаем сложность.
-        5. Если больше — опускаем, но НЕ НИЖЕ START_DIFFICULTY.
+        ЛОГИКА:
+        1. Берём текущую сложность из tcp_stratum_server.
+        2. Считаем медианный интервал между последними 20 шарами.
+        3. Сравниваем с difficulty_target_time.
+        4. Если шары идут ЧАЩЕ target → ПОВЫШАЕМ сложность (шары станут реже).
+        5. Если шары идут РЕЖЕ target → ПОНИЖАЕМ сложность (шары станут чаще).
         6. Ограничиваем изменение в 2 раза за шаг.
-        7. ОКРУГЛЯЕМ до целого и синхронизируем с tcp_stratum_server.
+        7. Округляем до целого.
 
-        ВАЖНО: НЕ меняем сложность на каждом шаре!
-        Меняем не чаще чем раз в MIN_UPDATE_INTERVAL секунд.
-        Иначе медиана не успевает пересчитаться, и сложность улетает в космос.
+        ВАЖНО:
+        - suggest_difficulty от ASIC — это ТОЛЬКО ориентир.
+        - Пул МОЖЕТ опустить сложность ниже suggest, если ASIC
+          не справляется (шары идут слишком редко).
+        - Пул МОЖЕТ поднять сложность выше suggest, если ASIC
+          справляется легко (шары идут слишком часто).
+        - DifficultyService НЕ проверяет частоту обновления.
+          Это делает handle_submit_tcp в tcp_server.py.
         """
         print(f"\n{'=' * 60}", flush=True)
         print(f"🔍 [DIFF_CALC] ===== START for {miner_address[:20]}... =====", flush=True)
 
         # Проверяем наличие данных о шарах
         if miner_address not in self.share_timestamps:
-            print(f"🔍 [DIFF_CALC] No timestamps, returning min: {self.min_difficulty}", flush=True)
-            return self.min_difficulty
+            current = self.miner_difficulties.get(miner_address, self.start_display_difficulty)
+            print(f"🔍 [DIFF_CALC] No timestamps, returning current: {current}", flush=True)
+            return current
 
         timestamps = list(self.share_timestamps[miner_address])
         print(f"🔍 [DIFF_CALC] timestamps count: {len(timestamps)}", flush=True)
 
         # Минимум 3 шара для первого расчета
         if len(timestamps) < 3:
-            current = self.miner_difficulties.get(miner_address, self.min_difficulty)
+            current = self.miner_difficulties.get(miner_address, self.start_display_difficulty)
             print(f"🔍 [DIFF_CALC] Too few timestamps ({len(timestamps)} < 3), keeping: {current:.10f}", flush=True)
             return current
 
@@ -183,34 +224,13 @@ class DifficultyService:
 
         # Fallback — своя копия
         if current_diff is None:
-            current_diff = self.miner_difficulties.get(miner_address, self.min_difficulty)
+            current_diff = self.miner_difficulties.get(miner_address, self.start_display_difficulty)
             print(f"🔍 [DIFF_CALC] ⚠️ Fallback to difficulty_service: {current_diff}", flush=True)
 
-        # ===== ОГРАНИЧЕНИЕ ЧАСТОТЫ ОБНОВЛЕНИЯ СЛОЖНОСТИ =====
-        # Меняем сложность НЕ ЧАСТО, чтобы ASIC успел адаптироваться.
-        # Molehole меняет сложность раз в 1-2 минуты.
-        # Если менять на КАЖДОМ шаре, медиана не успевает пересчитаться,
-        # и сложность улетает в космос.
-
-
-        last_update = self.last_update_time.get(miner_address, 0)
-        time_since_update = time.time() - last_update
-
-        print(f"🔍 [DIFF_CALC] time_since_update: {time_since_update:.1f}s (min: {self.MIN_UPDATE_INTERVAL}s)", flush=True)
-
-        if time_since_update < self.MIN_UPDATE_INTERVAL:
-            # Слишком рано — возвращаем ТЕКУЩУЮ сложность без изменений
-            print(f"🔍 [DIFF_CALC] ⏸️ Too early to update (need {self.MIN_UPDATE_INTERVAL - time_since_update:.1f}s more)",
-                  flush=True)
-            print(f"🔍 [DIFF_CALC] Returning current difficulty: {current_diff}", flush=True)
-            print(f"🔍 [DIFF_CALC] ===== END =====", flush=True)
-            print(f"{'=' * 60}\n", flush=True)
-            return current_diff
-
-        # Запоминаем время обновления
-        self.last_update_time[miner_address] = time.time()
-        print(f"🔍 [DIFF_CALC] ✅ Update time recorded: {self.last_update_time[miner_address]:.1f}", flush=True)
-        # =====================================================
+        # ===== ПРОВЕРКА ЧАСТОТЫ ОБНОВЛЕНИЯ — УБРАНА ОТСЮДА =====
+        # DifficultyService НЕ проверяет частоту.
+        # Это делает handle_submit_tcp.
+        print(f"🔍 [DIFF_CALC] ✅ Calculating new difficulty (frequency check in handle_submit_tcp)", flush=True)
 
         # Анализируем последние шары (берем последние 20)
         recent = timestamps[-20:] if len(timestamps) > 20 else timestamps
@@ -230,9 +250,10 @@ class DifficultyService:
         # Используем медиану для устойчивости к выбросам
         median_interval = statistics.median(intervals)
         print(f"🔍 [DIFF_CALC] Median interval between shares: {median_interval:.3f}s", flush=True)
+        print(f"🔍 [DIFF_CALC] Last 5 intervals: {[f'{i:.2f}' for i in intervals[-5:]]}", flush=True)
 
         # Целевое время между шарами
-        target_time = getattr(settings, 'difficulty_target_time', 6.0)
+        target_time = self.difficulty_target_time
         print(f"🔍 [DIFF_CALC] Target time: {target_time:.1f}s", flush=True)
 
         # Защита от деления на ноль
@@ -241,6 +262,9 @@ class DifficultyService:
             print(f"🔍 [DIFF_CALC] Interval too small, clamped to 0.01s", flush=True)
 
         # ===== ОСНОВНОЙ РАСЧЕТ ПО ЧАСТОТЕ ШАРОВ =====
+        # ratio = target_time / median_interval
+        # - Если median_interval < target_time → ratio > 1 → ПОВЫШАЕМ
+        # - Если median_interval > target_time → ratio < 1 → ПОНИЖАЕМ
         ratio = target_time / median_interval
         print(f"🔍 [DIFF_CALC] Raw ratio (target/median): {ratio:.3f}", flush=True)
 
@@ -253,7 +277,7 @@ class DifficultyService:
             print(f"🔍 [DIFF_CALC] Ratio capped at 0.5 (max decrease 2x)", flush=True)
 
         # Применяем коэффициент адаптации
-        adaptation_rate = getattr(settings, 'difficulty_adaptation_rate', 0.5)
+        adaptation_rate = self.difficulty_adaptation_rate
         print(f"🔍 [DIFF_CALC] Adaptation rate: {adaptation_rate:.2f}", flush=True)
 
         if ratio > 1.0:
@@ -265,45 +289,21 @@ class DifficultyService:
 
         print(f"🔍 [DIFF_CALC] New diff by frequency: {new_diff:.10f}", flush=True)
 
-        # ===== ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ ХЭШРЕЙТ =====
-        hashrate = await self.get_miner_hashrate(miner_address, period_minutes=5)
-        print(f"🔍 [DIFF_CALC] Hashrate: {hashrate:.2f} H/s ({hashrate / 1e12:.2f} TH/s)", flush=True)
-
-        if hashrate > 0:
-            optimal_difficulty = (hashrate * target_time) / (2 ** 32)
-            optimal_difficulty = max(1.0, float(int(optimal_difficulty)))
-            print(f"🔍 [DIFF_CALC] Optimal difficulty (from hashrate): {optimal_difficulty:.0f}", flush=True)
-
-            # Мягкое ограничение: не больше 2x от optimal
-            if new_diff > optimal_difficulty * 2.0:
-                new_diff = optimal_difficulty * 2.0
-                print(f"🔍 [DIFF_CALC] Soft-capped at 2x optimal: {new_diff:.0f}", flush=True)
-            elif new_diff < optimal_difficulty * 0.5:
-                new_diff = optimal_difficulty * 0.5
-                print(f"🔍 [DIFF_CALC] Soft-raised to 0.5x optimal: {new_diff:.0f}", flush=True)
-        else:
-            print(f"🔍 [DIFF_CALC] Cannot calculate optimal (hashrate=0)", flush=True)
-
-        # ===== ЖЁСТКИЕ ОГРАНИЧЕНИЯ =====
-        # НИЖНЯЯ ГРАНИЦА — START_DIFFICULTY (для ASIC)
-        start_diff = getattr(settings, 'start_difficulty', 16384.0)
-        if new_diff < start_diff:
-            print(f"🔍 [DIFF_CALC] ⚠️ new_diff {new_diff:.0f} < START_DIFFICULTY {start_diff:.0f}, capping", flush=True)
-            new_diff = start_diff
-
-        # Минимальная сложность (абсолютная)
-        if new_diff < self.min_difficulty:
-            new_diff = self.min_difficulty
-            print(f"🔍 [DIFF_CALC] Capped by min_difficulty: {self.min_difficulty}", flush=True)
+        # ===== НИЖНЯЯ ГРАНИЦА — min_display_difficulty =====
+        # ВАЖНО: Molehole опускает сложность, если ASIC не справляется.
+        # Мы тоже опускаем, но НЕ ниже min_display_difficulty.
+        if new_diff < self.min_display_difficulty:
+            new_diff = self.min_display_difficulty
+            print(f"🔍 [DIFF_CALC] Capped by min_display_difficulty: {self.min_display_difficulty}", flush=True)
 
         if new_diff < 1.0:
             new_diff = 1.0
             print(f"🔍 [DIFF_CALC] Capped at 1.0", flush=True)
 
         # Максимальная сложность из настроек
-        if self.max_difficulty and new_diff > self.max_difficulty:
-            new_diff = self.max_difficulty
-            print(f"🔍 [DIFF_CALC] Capped at max_difficulty: {self.max_difficulty}", flush=True)
+        if self.max_display_difficulty and new_diff > self.max_display_difficulty:
+            new_diff = self.max_display_difficulty
+            print(f"🔍 [DIFF_CALC] Capped at max_display_difficulty: {self.max_display_difficulty}", flush=True)
 
         # Округляем до целого числа для ASIC
         new_diff_rounded = max(1.0, float(int(new_diff)))
@@ -315,21 +315,17 @@ class DifficultyService:
 
         print(f"🔍 [DIFF_CALC] FINAL new_diff: {new_diff_rounded:.0f}", flush=True)
 
-        # ===== СИНХРОНИЗАЦИЯ С tcp_stratum_server =====
-        self.miner_difficulties[miner_address] = new_diff_rounded
-
-        if self.tcp_stratum_server:
-            self.tcp_stratum_server.miner_difficulties[miner_address] = new_diff_rounded
-            print(f"🔍 [DIFF_CALC] ✅ Synced to tcp_stratum_server: {new_diff_rounded}", flush=True)
-        else:
-            print(f"🔍 [DIFF_CALC] ⚠️ No tcp_stratum_server to sync", flush=True)
-
+        # ===== НЕ СОХРАНЯЕМ ЗДЕСЬ! =====
+        # DifficultyService только СЧИТАЕТ.
+        # handle_submit_tcp сам сравнит и отправит.
+        print(f"🔍 [DIFF_CALC] Returning new_diff WITHOUT saving: {new_diff_rounded:.0f}", flush=True)
         print(f"🔍 [DIFF_CALC] ===== END =====", flush=True)
         print(f"{'=' * 60}\n", flush=True)
 
         return new_diff_rounded
 
     # ===== РАСЧЕТ ХЭШРЕЙТА =====
+
     async def get_miner_hashrate(self, miner_address: str, period_minutes: int = 5) -> float:
         """
         Расчет хэшрейта майнера за период.
@@ -412,45 +408,52 @@ class DifficultyService:
             print(f"🔥 [HASHRATE] EXCEPTION: {e}", flush=True)
             return 0.0
 
-
     async def get_pool_hashrate(self, period_minutes: int = 5) -> float:
-            """Расчет общего хэшрейта пула"""
-            try:
-                total_hashrate = 0.0
-                for miner_address in self.share_timestamps.keys():
-                    hashrate = await self.get_miner_hashrate(miner_address, period_minutes)
-                    total_hashrate += hashrate
-                return total_hashrate
-            except Exception as e:
-                logger.error(
-                    "Ошибка расчета хэшрейта пула",
-                    event="difficulty_pool_hashrate_error",
-                    error=str(e)
-                )
-                return 0.0
+        """Расчет общего хэшрейта пула"""
+        try:
+            total_hashrate = 0.0
+            for miner_address in self.share_timestamps.keys():
+                hashrate = await self.get_miner_hashrate(miner_address, period_minutes)
+                total_hashrate += hashrate
+            return total_hashrate
+        except Exception as e:
+            logger.error(
+                "Ошибка расчета хэшрейта пула",
+                event="difficulty_pool_hashrate_error",
+                error=str(e)
+            )
+            return 0.0
 
     # ===== ГЛОБАЛЬНАЯ СЛОЖНОСТЬ (для совместимости) =====
 
     async def calculate_difficulty(self) -> float:
-        """Расчет глобальной сложности (используется для broadcast)"""
+        """
+        Расчет ГЛОБАЛЬНОЙ сложности (используется для broadcast).
 
+        ВАЖНО: Этот метод считается УСТАРЕВШИМ. Он оставлен для совместимости.
+        Основная логика — в calculate_difficulty_for_miner (персональная сложность).
+
+        Глобальная сложность = медиана персональных сложностей всех майнеров.
+        """
         print(f"\n{'=' * 60}", flush=True)
         print(f"📊 [DIFF_GLOBAL] ===== START =====", flush=True)
         print(f"📊 [DIFF_GLOBAL] Time: {datetime.now(UTC).strftime('%H:%M:%S')}", flush=True)
 
+        # Если динамическая сложность выключена — возвращаем текущую
         if not settings.enable_dynamic_difficulty:
             print(f"📊 [DIFF_GLOBAL] Dynamic difficulty disabled, returning: {self.current_difficulty}", flush=True)
             print(f"{'=' * 60}\n", flush=True)
             return self.current_difficulty
 
         try:
+            # ===== 1. СОБИРАЕМ ДАННЫЕ =====
             shares_last_hour = self.shares_last_hour
             print(f"📊 [DIFF_GLOBAL] shares_last_hour: {shares_last_hour}", flush=True)
             print(f"📊 [DIFF_GLOBAL] current_difficulty: {self.current_difficulty}", flush=True)
-            print(f"📊 [DIFF_GLOBAL] target_shares_per_minute: {self.target_shares_per_minute}", flush=True)
-            print(f"📊 [DIFF_GLOBAL] min_difficulty: {self.min_difficulty}", flush=True)
-            print(f"📊 [DIFF_GLOBAL] max_difficulty: {self.max_difficulty}", flush=True)
+            print(f"📊 [DIFF_GLOBAL] min_display_difficulty: {self.min_display_difficulty}", flush=True)
+            print(f"📊 [DIFF_GLOBAL] max_display_difficulty: {self.max_display_difficulty}", flush=True)
 
+            # Если шаров мало — не меняем сложность
             if shares_last_hour < 10:
                 print(
                     f"📊 [DIFF_GLOBAL] Too few shares ({shares_last_hour} < 10), returning current: {self.current_difficulty}",
@@ -458,33 +461,46 @@ class DifficultyService:
                 print(f"{'=' * 60}\n", flush=True)
                 return self.current_difficulty
 
+            # ===== 2. СЧИТАЕМ ФАКТИЧЕСКУЮ ЧАСТОТУ ШАРОВ =====
             actual_shares_per_minute = shares_last_hour / 60
             print(f"📊 [DIFF_GLOBAL] actual_shares_per_minute: {actual_shares_per_minute:.4f}", flush=True)
 
-            # ===== ЗАЩИТА ОТ ДЕЛЕНИЯ НА НОЛЬ =====
-            if self.target_shares_per_minute <= 0:
-                print(f"⚠️ [DIFF_GLOBAL] target_shares_per_minute is {self.target_shares_per_minute}, using default 15",
+            # ===== 3. СРАВНИВАЕМ С ЦЕЛЕВОЙ ЧАСТОТОЙ =====
+            # Целевая частота = 60 / difficulty_target_time
+            # Например, target_time = 6 сек → 10 шаров в минуту
+            target_shares_per_minute = 60.0 / self.difficulty_target_time
+            print(f"📊 [DIFF_GLOBAL] target_shares_per_minute: {target_shares_per_minute:.4f}", flush=True)
+
+            # Защита от деления на ноль
+            if target_shares_per_minute <= 0:
+                print(f"⚠️ [DIFF_GLOBAL] target_shares_per_minute is {target_shares_per_minute}, using default 10",
                       flush=True)
-                self.target_shares_per_minute = 15
+                target_shares_per_minute = 10.0
 
-            ratio = actual_shares_per_minute / self.target_shares_per_minute
-            print(f"📊 [DIFF_GLOBAL] ratio: {ratio:.6f}", flush=True)
+            # ===== 4. РАССЧИТЫВАЕМ НОВУЮ СЛОЖНОСТЬ =====
+            ratio = actual_shares_per_minute / target_shares_per_minute
+            print(f"📊 [DIFF_GLOBAL] ratio (actual/target): {ratio:.6f}", flush=True)
 
+            # Используем квадратный корень для плавности
             adjustment_factor = ratio ** 0.5
             print(f"📊 [DIFF_GLOBAL] adjustment_factor: {adjustment_factor:.6f}", flush=True)
 
             new_difficulty = self.current_difficulty * adjustment_factor
             print(f"📊 [DIFF_GLOBAL] new_difficulty (before limits): {new_difficulty:.10f}", flush=True)
 
-            # Ограничиваем минимальную и максимальную сложность
-            if self.max_difficulty:
-                new_difficulty = min(new_difficulty, self.max_difficulty)
-                print(f"📊 [DIFF_GLOBAL] after max limit ({self.max_difficulty}): {new_difficulty:.10f}", flush=True)
+            # ===== 5. ПРИМЕНЯЕМ ГРАНИЦЫ =====
+            # Максимальная сложность
+            if self.max_display_difficulty:
+                new_difficulty = min(new_difficulty, self.max_display_difficulty)
+                print(f"📊 [DIFF_GLOBAL] after max limit ({self.max_display_difficulty}): {new_difficulty:.10f}",
+                      flush=True)
 
-            new_difficulty = max(self.min_difficulty, new_difficulty)
-            print(f"📊 [DIFF_GLOBAL] after min limit ({self.min_difficulty}): {new_difficulty:.10f}", flush=True)
+            # Минимальная сложность
+            new_difficulty = max(self.min_display_difficulty, new_difficulty)
+            print(f"📊 [DIFF_GLOBAL] after min limit ({self.min_display_difficulty}): {new_difficulty:.10f}", flush=True)
 
-            # Ограничиваем максимальное изменение
+            # ===== 6. ОГРАНИЧИВАЕМ МАКСИМАЛЬНОЕ ИЗМЕНЕНИЕ =====
+            # Не более 4x за шаг
             max_change_factor = 4.0
             if new_difficulty / self.current_difficulty > max_change_factor:
                 new_difficulty = self.current_difficulty * max_change_factor
@@ -493,6 +509,12 @@ class DifficultyService:
                 new_difficulty = self.current_difficulty / max_change_factor
                 print(f"📊 [DIFF_GLOBAL] capped at -{max_change_factor}x: {new_difficulty:.10f}", flush=True)
 
+            # ===== 7. ОКРУГЛЯЕМ ДО ЦЕЛОГО =====
+            # ASIC ожидает целое число
+            new_difficulty = max(1.0, float(int(new_difficulty)))
+            print(f"📊 [DIFF_GLOBAL] rounded for ASIC: {new_difficulty:.0f}", flush=True)
+
+            # ===== 8. ЛОГИРУЕМ ИЗМЕНЕНИЕ =====
             print(f"📊 [DIFF_GLOBAL] FINAL new_difficulty: {new_difficulty:.10f}", flush=True)
             print(f"📊 [DIFF_GLOBAL] change: {((new_difficulty / self.current_difficulty - 1) * 100):.2f}%", flush=True)
             print(f"{'=' * 60}\n", flush=True)
@@ -574,6 +596,8 @@ class DifficultyService:
                     timestamps.popleft()
                 if not timestamps:
                     del self.share_timestamps[miner_address]
+                    # Также удаляем сложность если нет данных
+                    self.miner_difficulties.pop(miner_address, None)
 
             if removed_count > 0:
                 logger.info(
@@ -598,10 +622,15 @@ class DifficultyService:
             "total_shares": self.total_shares,
             "shares_last_hour": self.shares_last_hour,
             "active_miners": len(self.share_timestamps),
-            "target_shares_per_minute": self.target_shares_per_minute,
             "last_update": self.last_difficulty_update.isoformat(),
             "enable_dynamic": settings.enable_dynamic_difficulty,
-            "min_difficulty": self.min_difficulty,
-            "max_difficulty": self.max_difficulty,
+            "start_display_difficulty": self.start_display_difficulty,
+            "min_display_difficulty": self.min_display_difficulty,
+            "max_display_difficulty": self.max_display_difficulty,
+            "default_validation_difficulty": self.default_validation_difficulty,
+            "difficulty_target_time": self.difficulty_target_time,
+            "difficulty_adaptation_rate": self.difficulty_adaptation_rate,
+            "difficulty_min_change": self.difficulty_min_change,
+            "difficulty_min_update_interval": self.difficulty_min_update_interval,
             "history_size": len(self.share_history)
         }

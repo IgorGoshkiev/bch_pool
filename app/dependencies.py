@@ -84,11 +84,21 @@ class DependencyContainer:
         return self._auth_service
 
     # === SHARE VALIDATOR ===
+    # === SHARE VALIDATOR ===
     @property
     def share_validator(self):
         if self._share_validator is None:
             self._share_validator = ShareValidator(
-                pool_difficulty=settings.default_share_difficulty,
+                # ===== VALIDATION DIFFICULTY =====
+                # Это то, с чем мы ВАЛИДИРУЕМ входящие шары.
+                # Очень низкая (1e-10), чтобы принимать ВСЕ шары от ASIC.
+                # ASIC присылает шары со своей внутренней сложностью (~1e-9),
+                # которую мы не контролируем.
+                #
+                # НЕ ПУТАТЬ с display_difficulty (то, что мы ОТПРАВЛЯЕМ ASIC).
+                # display_difficulty управляет частотой шаров и живёт
+                # в StratumTCPServer.miner_difficulties.
+                pool_difficulty=settings.default_validation_difficulty,
                 extra_nonce2_size=EXTRA_NONCE2_SIZE,
                 extra_nonce1=None,
                 block_builder=self.block_builder
@@ -96,7 +106,7 @@ class DependencyContainer:
             logger.info(
                 "ShareValidator создан",
                 event="share_validator_created",
-                target_difficulty=settings.default_share_difficulty,
+                validation_difficulty=settings.default_validation_difficulty,
                 extra_nonce2_size=EXTRA_NONCE2_SIZE
             )
         return self._share_validator
