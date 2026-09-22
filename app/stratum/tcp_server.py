@@ -58,6 +58,12 @@ class StratumTCPServer:
         # Нужно, чтобы не менять сложность на КАЖДОМ шаре.
         self._last_diff_update: Dict[str, float] = {}
 
+        # Отложенная сложность для отправки вместе с notify.
+        # ВАЖНО: ASIC (WhatsMiner) применяет set_difficulty ТОЛЬКО
+        # когда получает notify сразу после. Поэтому set_difficulty
+        # нельзя отправлять отдельно — только вместе с notify.
+        self._pending_difficulty: Dict[str, int] = {}
+
         self.start_time = datetime.now(UTC)
         self._lock = asyncio.Lock()  # Для синхронизации доступа
         self.max_connections = 1000  # Максимальное количество подключений
@@ -536,25 +542,17 @@ class StratumTCPServer:
             print(f"⚠️ No authorized miner for client {client_id}, skipping job", flush=True)
             return
 
-        print(f"📤 SENDING JOB TO: {miner_address}", flush=True)
+        print(f"📤 JOB will be sent via broadcast to: {miner_address}", flush=True)
 
-        # 1. Отправляем задание этому майнеру
-        # ВАЖНО: send_new_job_tcp отправляет set_difficulty + notify.
-        # НО: broadcast_new_job_to_all уже отправляет notify каждые 30 секунд.
-        # Чтобы не было двойного notify, отправляем ТОЛЬКО set_difficulty.
-        current_diff = self.miner_difficulties.get(
-            miner_address,
-            settings.start_display_difficulty
-        )
-        current_diff_int = max(1, int(current_diff))
-        difficulty_msg = {
-            "method": "mining.set_difficulty",
-            "params": [current_diff_int],
-            "id": None
-        }
-        await self._send_json(writer, difficulty_msg)
-        print(f"📊 [EXTRANONCE] SENT set_difficulty: {current_diff_int}", flush=True)
-        # notify придёт через broadcast в течение 30 секунд
+        # ===== НЕ ВЫЗЫВАЕМ send_new_job_tcp =====
+        # ВАЖНО: если вызвать send_new_job_tcp, будет двойной notify.
+        # broadcast_new_job_to_all() и так шлёт notify каждые 30 секунд.
+        # Кроме того, send_new_job_tcp отправляет set_difficulty + notify,
+        # что может привести к двойному set_difficulty.
+        #
+        # Поэтому: просто логируем. notify придёт через broadcast
+        # в течение 30 секунд, с set_difficulty (парой).
+        print(f"📤 [EXTRANONCE] notify will be sent via broadcast (up to 30s)", flush=True)
 
     async def _send_result(self, writer: asyncio.StreamWriter, msg_id: int, result):
         """Отправка простого результата"""
@@ -1104,8 +1102,11 @@ class StratumTCPServer:
             traceback.print_exc()
 
     async def broadcast_new_job(self, job_data: dict, clean_jobs: bool = False):
-        """Рассылка нового задания всем TCP клиентам"""
+        """Рассылка нового задания всем TCP клиентам.
 
+        ВАЖНО: отправляем set_difficulty ПЕРЕД notify (парой, как Molehole).
+        ASIC применяет set_difficulty ТОЛЬКО когда получает notify сразу после.
+        """
         # ===== РАСШИРЕННАЯ ОТЛАДКА =====
         print(f"\n{'=' * 60}", flush=True)
         print(f"📤 [BROADCAST] ===== START =====", flush=True)
@@ -1118,6 +1119,7 @@ class StratumTCPServer:
         print(f"📤 [BROADCAST] miners count: {len(self.miners)}", flush=True)
         print(f"📤 [BROADCAST] miner_difficulties: {self.miner_difficulties}", flush=True)
         print(f"📤 [BROADCAST] min_asic_difficulties: {self.min_asic_difficulties}", flush=True)
+        print(f"📤 [BROADCAST] _pending_difficulty: {self._pending_difficulty}", flush=True)
 
         if not self.connections:
             print(f"📤 [BROADCAST] NO CONNECTIONS, skipping", flush=True)
@@ -1211,7 +1213,36 @@ class StratumTCPServer:
 
                     print(f"📤 [BROADCAST] Sending job to {miner_address[:20]}...", flush=True)
 
-                    # Отправляем клиенту
+                    # ===== ОТПРАВЛЯЕМ set_difficulty ПЕРЕД notify (как Molehole!) =====
+                    # ВАЖНО: ASIC применяет set_difficulty ТОЛЬКО когда
+                    # получает notify сразу после. Отправляем их ПАРОЙ.
+                    #
+                    # 1. Если есть отложенная сложность (_pending_difficulty) — используем её.
+                    # 2. Иначе — текущую из miner_difficulties.
+                    pending_diff = self._pending_difficulty.pop(miner_address, None)
+                    if pending_diff is not None:
+                        current_diff_int = pending_diff
+                        # Сохраняем в основную сложность
+                        self.miner_difficulties[miner_address] = float(current_diff_int)
+                        print(f"📊 [BROADCAST] Using PENDING difficulty: {current_diff_int}", flush=True)
+                    else:
+                        current_diff = self.miner_difficulties.get(
+                            miner_address,
+                            settings.start_display_difficulty
+                        )
+                        current_diff_int = max(1, int(current_diff))
+                        print(f"📊 [BROADCAST] Using CURRENT difficulty: {current_diff_int}", flush=True)
+
+                    difficulty_msg = {
+                        "method": "mining.set_difficulty",
+                        "params": [current_diff_int],  # ← ЦЕЛОЕ ЧИСЛО
+                        "id": None
+                    }
+                    await self._send_json(writer, difficulty_msg)
+                    print(f"📊 [BROADCAST] SENT set_difficulty BEFORE notify: {current_diff_int}", flush=True)
+                    # ================================================================
+
+                    # Отправляем клиенту notify
                     await self._send_json(writer, job_data_copy)
                     successful_sends += 1
                     print(f"✅ [BROADCAST] Successfully sent to {miner_address[:20]}...", flush=True)
@@ -1240,6 +1271,7 @@ class StratumTCPServer:
         print(f"\n📤 [BROADCAST] ===== DONE =====", flush=True)
         print(f"📤 [BROADCAST] Results: {successful_sends}/{total_clients} success, {failed_sends} failed", flush=True)
         print(f"📤 [BROADCAST] clean_jobs was: {clean_jobs}", flush=True)
+        print(f"📤 [BROADCAST] _pending_difficulty after: {self._pending_difficulty}", flush=True)
         print(f"{'=' * 60}\n", flush=True)
 
         if successful_sends > 0:
@@ -1329,103 +1361,53 @@ class StratumTCPServer:
         """
         Обновление сложности для конкретного майнера.
 
+        ВАЖНО: НЕ отправляем set_difficulty сразу!
+
+        ПОЧЕМУ:
+        - Molehole отправляет set_difficulty ТОЛЬКО вместе с notify.
+        - ASIC (WhatsMiner) применяет set_difficulty ТОЛЬКО когда
+          получает notify сразу после.
+        - Если отправить set_difficulty без notify — ASIC встаёт:
+          он ищет шар на новой сложности со старым job и не находит.
+
+        Поэтому: сохраняем сложность в _pending_difficulty,
+        а set_difficulty отправим в broadcast_new_job перед notify.
+
         Returns:
-            True — если set_difficulty успешно отправлен ASIC.
-            False — если майнер не найден или отправка не удалась.
+            True — сложность сохранена (отправка будет позже, в broadcast).
+            False — ошибка.
         """
         print(f"\n{'=' * 60}", flush=True)
-        print(f"🔍 [UPDATE_DIFF] ===== START =====", flush=True)
+        print(f"🔍 [UPDATE_DIFF] ===== START (deferred) =====", flush=True)
         print(f"🔍 [UPDATE_DIFF] miner_address: {miner_address}", flush=True)
         print(f"🔍 [UPDATE_DIFF] difficulty (raw): {difficulty}", flush=True)
         print(f"🔍 [UPDATE_DIFF] difficulty type: {type(difficulty).__name__}", flush=True)
-        print(f"🔍 [UPDATE_DIFF] self.miners: {self.miners}", flush=True)
-        print(f"🔍 [UPDATE_DIFF] self.connections keys: {list(self.connections.keys())}", flush=True)
 
-        client_id = None
-        writer = None
+        # ===== НЕ ОТПРАВЛЯЕМ СРАЗУ! СОХРАНЯЕМ. =====
+        # set_difficulty будет отправлен в broadcast_new_job ПЕРЕД notify.
+        display_difficulty = max(1, int(difficulty))
+        self._pending_difficulty[miner_address] = display_difficulty
+        print(f"📊 [UPDATE_DIFF] DEFERRED set_difficulty = {display_difficulty}", flush=True)
+        print(f"📊 [UPDATE_DIFF] Will send with next notify (in broadcast_new_job)", flush=True)
 
-        # Находим клиента по адресу майнера
-        for cid, addr in self.miners.items():
-            print(f"🔍 [UPDATE_DIFF]   checking cid={cid}, addr={addr}", flush=True)
-            if addr == miner_address:
-                client_id = cid
-                writer = self.connections.get(cid)
-                print(f"🔍 [UPDATE_DIFF]   ✅ MATCH! cid={cid}", flush=True)
-                print(f"🔍 [UPDATE_DIFF]   writer={writer}", flush=True)
-                break
+        # ===== СИНХРОНИЗИРУЕМ С DIFFICULTY_SERVICE =====
+        # Чтобы DifficultyService знал реальную сложность ASIC.
+        if self.difficulty_service:
+            self.difficulty_service.miner_difficulties[miner_address] = float(display_difficulty)
+            print(f"📊 [UPDATE_DIFF] Synced to difficulty_service: {display_difficulty}", flush=True)
+        else:
+            print(f"⚠️ [UPDATE_DIFF] self.difficulty_service is None, no sync", flush=True)
 
-        if not writer or not client_id:
-            print(f"🔴 [UPDATE_DIFF] ❌ Miner not found!", flush=True)
-            print(f"🔴 [UPDATE_DIFF]    miner_address={miner_address}", flush=True)
-            print(f"🔴 [UPDATE_DIFF]    client_id={client_id}", flush=True)
-            print(f"🔴 [UPDATE_DIFF]    writer={writer}", flush=True)
-            print(f"🔴 [UPDATE_DIFF]    self.miners={self.miners}", flush=True)
-            print(f"🔴 [UPDATE_DIFF] ===== END (NOT FOUND) =====\n", flush=True)
-            logger.warning(
-                "Майнер не найден для обновления сложности",
-                event="tcp_miner_not_found_for_difficulty",
-                miner_address=miner_address,
-                difficulty=difficulty
-            )
-            return False
+        logger.info(
+            "Сложность отложена для отправки с notify",
+            event="tcp_miner_difficulty_deferred",
+            miner_address=miner_address,
+            difficulty=difficulty,
+            display_difficulty=display_difficulty
+        )
 
-        print(f"🔍 [UPDATE_DIFF] writer.is_closing(): {writer.is_closing()}", flush=True)
-        if writer.is_closing():
-            print(f"🔴 [UPDATE_DIFF] ❌ Writer is closing for {miner_address[:20]}...", flush=True)
-            print(f"🔴 [UPDATE_DIFF] ===== END (CLOSING) =====\n", flush=True)
-            return False
-
-        try:
-            # ОКРУГЛЯЕМ ДО ЦЕЛОГО ЧИСЛА ДЛЯ ОТОБРАЖЕНИЯ В ASIC!
-            display_difficulty = max(1, int(difficulty))
-            method_data = {
-                "method": "mining.set_difficulty",
-                "params": [display_difficulty],  # ← int
-                "id": None
-            }
-
-            print(f"🔍 [UPDATE_DIFF] display_difficulty (int): {display_difficulty}", flush=True)
-            print(f"🔍 [UPDATE_DIFF] method_data: {method_data}", flush=True)
-            print(f"🔍 [UPDATE_DIFF] SENDING to ASIC...", flush=True)
-
-            await self._send_json(writer, method_data)
-
-            print(f"📊 [UPDATE_DIFF] ✅ SENT to ASIC: {display_difficulty}", flush=True)
-
-            # ===== СИНХРОНИЗИРУЕМ С DIFFICULTY_SERVICE =====
-            if self.difficulty_service:
-                self.difficulty_service.miner_difficulties[miner_address] = float(display_difficulty)
-                print(f"📊 [UPDATE_DIFF] Synced to difficulty_service: {display_difficulty}", flush=True)
-            else:
-                print(f"⚠️ [UPDATE_DIFF] self.difficulty_service is None, no sync", flush=True)
-
-            logger.info(
-                "Персональная сложность отправлена TCP майнеру",
-                event="tcp_miner_difficulty_updated",
-                client_id=client_id,
-                miner_address=miner_address,
-                difficulty=difficulty,
-                display_difficulty=display_difficulty
-            )
-
-            print(f"🔍 [UPDATE_DIFF] ===== END (SUCCESS) =====\n", flush=True)
-            return True
-
-        except Exception as e:
-            print(f"🔴 [UPDATE_DIFF] ❌ EXCEPTION: {e}", flush=True)
-            print(f"🔴 [UPDATE_DIFF] Exception type: {type(e).__name__}", flush=True)
-            import traceback
-            traceback.print_exc()
-            print(f"🔴 [UPDATE_DIFF] ===== END (EXCEPTION) =====\n", flush=True)
-            logger.error(
-                "Ошибка отправки персональной сложности TCP майнеру",
-                event="tcp_miner_difficulty_error",
-                client_id=client_id,
-                miner_address=miner_address,
-                difficulty=difficulty,
-                error=str(e)
-            )
-            return False
+        print(f"🔍 [UPDATE_DIFF] ===== END (deferred) =====\n", flush=True)
+        return True
 
     async def _send_error(self, writer: asyncio.StreamWriter, msg_id: Optional[int], error_msg: str):
         """Отправка ошибки"""
