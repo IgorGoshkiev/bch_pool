@@ -135,9 +135,12 @@ class StratumProxy:
         print(log_entry.strip())
 
         # В файл
-        if self.log_file:
-            self.log_file.write(log_entry)
-            self.log_file.flush()
+        if self.log_file and not self.log_file.closed:  # ← ПРОВЕРКА!
+            try:
+                self.log_file.write(log_entry)
+                self.log_file.flush()
+            except ValueError as e:
+                print(f"⚠️ Не удалось записать в лог: {e}", flush=True)
 
     def log_notify(self, direction: str, message: dict):
         """Сохранить mining.notify в отдельный файл"""
@@ -460,9 +463,19 @@ class StratumProxy:
                 break
             except asyncio.CancelledError:
                 break
+            except asyncio.LimitOverrunError as e:
+                # ===== ОСОБАЯ ОБРАБОТКА LimitOverrunError =====
+                # Если notify слишком большой — пропускаем его, но НЕ прерываем цикл.
+                self.log(f"⚠️ LimitOverrunError: {e} — пропускаем сообщение, продолжаем")
+                await asyncio.sleep(0.1)
+                continue
+                # ==============================================
             except Exception as e:
                 self.log(f"❌ Ошибка чтения от пула: {e}")
-                break
+                # ===== НЕ ПРЕРЫВАЕМ ЦИКЛ! =====
+                await asyncio.sleep(0.1)
+                continue
+                # ==============================
 
     async def handle_pool_message(self, message: dict):
         """Обработка сообщения от пула"""

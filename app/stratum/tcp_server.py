@@ -1187,41 +1187,38 @@ class StratumTCPServer:
                 try:
                     print(f"📤 [BROADCAST] Creating job for {miner_address[:20]}...", flush=True)
 
+                    # ===== ГЕНЕРИРУЕМ КОРОТКИЙ job_id (как Molehole!) =====
+                    timestamp_low = int(time.time()) & 0xFFFF
+                    counter_low = self.job_service.job_counter & 0xFFFF if self.job_service else 0
+                    job_id = f"{timestamp_low:04x}{counter_low:04x}"
+                    print(f"🔑 [BROADCAST] Сгенерирован КОРОТКИЙ job_id: {job_id}", flush=True)
+
                     # Создаем персональную копию задания
                     job_data_copy = job_data.copy()
-                    job_id = self.job_service.create_job_id(miner_address)
                     job_data_copy["params"][0] = job_id
                     print(f"📤 [BROADCAST] job_id: {job_id}", flush=True)
-
-                    # ===== УСТАНАВЛИВАЕМ clean_jobs =====
-                    if len(job_data_copy["params"]) >= 9:
-                        job_data_copy["params"][8] = clean_jobs
-                        print(f"📤 [BROADCAST] set clean_jobs to: {clean_jobs}", flush=True)
-                    # ===================================
 
                     # ===== ПОЛУЧАЕМ extra_nonce1 =====
                     extra_nonce1 = job_data.get('extra_nonce1')
                     print(f"📤 [BROADCAST] get extra_nonce1: {extra_nonce1}", flush=True)
 
-                    # ===== ПОЛУЧАЕМ template (для сохранения ОТДЕЛЬНО) =====
+                    # ===== ПОЛУЧАЕМ template =====
                     template = job_data.get('template')
                     if template:
                         print(f"📤 [BROADCAST] template найден, будет сохранён ОТДЕЛЬНО", flush=True)
                     else:
                         print(f"⚠️ [BROADCAST] template НЕ найден в job_data!", flush=True)
-                    # ==========================================================
 
-                    # Сохраняем в job_service (template — ОТДЕЛЬНО!)
+                    # Сохраняем в job_service
                     self.job_service.add_job(
                         job_id,
                         job_data_copy,
                         miner_address,
                         extra_nonce1=extra_nonce1,
-                        template=template  # ← передаём template ОТДЕЛЬНО
+                        template=template
                     )
                     print(f"📤 [BROADCAST] Job added to job_service", flush=True)
 
-                    # ===== ПРОВЕРКА ПЕРЕД ОТПРАВКОЙ =====
                     if writer.is_closing():
                         print(f"🔴 [BROADCAST] Writer closed before send for {client_id}", flush=True)
                         failed_sends += 1
@@ -1229,57 +1226,62 @@ class StratumTCPServer:
 
                     print(f"📤 [BROADCAST] Sending job to {miner_address[:20]}...", flush=True)
 
-                    # ===== ОТПРАВЛЯЕМ set_difficulty ПЕРЕД notify (как Molehole!) =====
-                    # ВАЖНО: ASIC применяет set_difficulty ТОЛЬКО когда
-                    # получает notify сразу после. Отправляем их ПАРОЙ.
-                    #
-                    # 1. Если есть отложенная сложность (_pending_difficulty) — используем её.
-                    # 2. Иначе — текущую из miner_difficulties.
+                    # ===== ДИАГНОСТИКА: _pending_difficulty ДО =====
+                    print(f"📊 [BROADCAST] _pending_difficulty BEFORE pop: {self._pending_difficulty}", flush=True)
+
                     pending_diff = self._pending_difficulty.pop(miner_address, None)
+
+                    # ===== ДИАГНОСТИКА: _pending_difficulty ПОСЛЕ =====
+                    print(f"📊 [BROADCAST] _pending_difficulty AFTER pop: {self._pending_difficulty}, pending_diff={pending_diff}", flush=True)
+
                     if pending_diff is not None:
+                        clean_jobs_for_this_send = True
                         current_diff_int = pending_diff
-                        # Сохраняем в основную сложность
                         self.miner_difficulties[miner_address] = float(current_diff_int)
-                        print(f"📊 [BROADCAST] Using PENDING difficulty: {current_diff_int}", flush=True)
+                        print(f"📊 [BROADCAST] PENDING difficulty: {current_diff_int}, clean_jobs=True (СМЕНА СЛОЖНОСТИ)", flush=True)
                     else:
+                        clean_jobs_for_this_send = False
                         current_diff = self.miner_difficulties.get(
                             miner_address,
                             settings.start_display_difficulty
                         )
                         current_diff_int = max(1, int(current_diff))
-                        print(f"📊 [BROADCAST] Using CURRENT difficulty: {current_diff_int}", flush=True)
+                        print(f"📊 [BROADCAST] CURRENT difficulty: {current_diff_int}, clean_jobs=False", flush=True)
 
-                    difficulty_msg = {
-                        "method": "mining.set_difficulty",
-                        "params": [current_diff_int],  # ← ЦЕЛОЕ ЧИСЛО
-                        "id": None
-                    }
-                    ok_diff = await self._send_json(writer, difficulty_msg)
-                    if not ok_diff:
-                        print(f"🔴 [BROADCAST] Failed to send set_difficulty", flush=True)
-                        failed_sends += 1
-                        continue
-                    print(f"📊 [BROADCAST] SENT set_difficulty BEFORE notify: {current_diff_int}", flush=True)
+                    # ===== УСТАНАВЛИВАЕМ clean_jobs =====
+                    if len(job_data_copy["params"]) >= 9:
+                        job_data_copy["params"][8] = clean_jobs_for_this_send
+                        print(f"📤 [BROADCAST] set clean_jobs to: {clean_jobs_for_this_send}", flush=True)
 
-                    # ===== ВАЖНО: ОТПРАВЛЯЕМ ASIC ТОЛЬКО params (БЕЗ template!) =====
-                    # job_data_copy может содержать template (мы его сохранили
-                    # в job_service.add_job для валидации), но ASIC template НЕ нужен.
-                    # Если отправить template, notify будет ~59 KB, и ASIC его не прочитает.
+                    # ===== ОТПРАВЛЯЕМ set_difficulty ТОЛЬКО ПРИ СМЕНЕ СЛОЖНОСТИ =====
+                    if pending_diff is not None:
+                        difficulty_msg = {
+                            "method": "mining.set_difficulty",
+                            "params": [current_diff_int],
+                            "id": None
+                        }
+                        ok_diff = await self._send_json(writer, difficulty_msg)
+                        if not ok_diff:
+                            print(f"🔴 [BROADCAST] Failed to send set_difficulty", flush=True)
+                            failed_sends += 1
+                            continue
+                        print(f"📊 [BROADCAST] SENT set_difficulty BEFORE notify: {current_diff_int}", flush=True)
+                    else:
+                        print(f"📊 [BROADCAST] set_difficulty NOT SENT (сложность не изменилась)", flush=True)
+
+                    # ===== ОТПРАВЛЯЕМ notify БЕЗ template =====
                     job_data_for_send = {
                         "method": "mining.notify",
                         "params": job_data_copy["params"]
-                        # ← template НЕ включаем!
                     }
                     print(f"📤 [BROADCAST] Отправляем ASIC notify БЕЗ template (только params)", flush=True)
 
-                    # Отправляем клиенту notify (БЕЗ template!)
                     ok_notify = await self._send_json(writer, job_data_for_send)
                     if not ok_notify:
                         print(f"🔴 [BROADCAST] Failed to send notify", flush=True)
                         failed_sends += 1
                         continue
-                    # ===================================================================
-                    #------------------------------------------------------------------------------
+
                     successful_sends += 1
                     print(f"✅ [BROADCAST] Successfully sent to {miner_address[:20]}...", flush=True)
 
@@ -1306,7 +1308,7 @@ class StratumTCPServer:
 
         print(f"\n📤 [BROADCAST] ===== DONE =====", flush=True)
         print(f"📤 [BROADCAST] Results: {successful_sends}/{total_clients} success, {failed_sends} failed", flush=True)
-        print(f"📤 [BROADCAST] clean_jobs was: {clean_jobs}", flush=True)
+        print(f"📤 [BROADCAST] clean_jobs (параметр): {clean_jobs}", flush=True)
         print(f"📤 [BROADCAST] _pending_difficulty after: {self._pending_difficulty}", flush=True)
         print(f"{'=' * 60}\n", flush=True)
 
@@ -1422,7 +1424,17 @@ class StratumTCPServer:
         # ===== НЕ ОТПРАВЛЯЕМ СРАЗУ! СОХРАНЯЕМ. =====
         # set_difficulty будет отправлен в broadcast_new_job ПЕРЕД notify.
         display_difficulty = max(1, int(difficulty))
+
+        # ===== ДИАГНОСТИКА: _pending_difficulty ДО =====
+        print(f"📊 [UPDATE_DIFF] _pending_difficulty BEFORE: {self._pending_difficulty}", flush=True)
+        # =============================================
+
         self._pending_difficulty[miner_address] = display_difficulty
+
+        # ===== ДИАГНОСТИКА: _pending_difficulty ПОСЛЕ =====
+        print(f"📊 [UPDATE_DIFF] _pending_difficulty AFTER: {self._pending_difficulty}", flush=True)
+        # =================================================
+
         print(f"📊 [UPDATE_DIFF] DEFERRED set_difficulty = {display_difficulty}", flush=True)
         print(f"📊 [UPDATE_DIFF] Will send with next notify (in broadcast_new_job)", flush=True)
 
