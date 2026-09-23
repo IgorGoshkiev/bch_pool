@@ -203,17 +203,24 @@ class JobManager:
                 )
                 return None
 
-            # Сохраняем задание в job_service
+            # ===== СОХРАНЯЕМ ЗАДАНИЕ В job_service =====
+            # ВАЖНО: template передаём ОТДЕЛЬНО, чтобы он НЕ попал в job_data,
+            # который отправляется ASIC через mining.notify.
+            # Иначе notify будет ~59 KB, и ASIC не сможет его прочитать.
             if miner_address:
                 self.job_service.add_job(
                     job_id,
                     stratum_job,
                     miner_address,
-                    extra_nonce1=extra_nonce1
+                    extra_nonce1=extra_nonce1,
+                    template=template  # ← передаём template ОТДЕЛЬНО
                 )
+                print(f"📦 [JOB_MANAGER] add_job с template (ОТДЕЛЬНО) для {miner_address[:20]}...", flush=True)
             else:
                 # Для broadcast задания сохраняем как последнее общее
-                self.job_service.set_last_broadcast_job(stratum_job)
+                self.job_service.set_last_broadcast_job(stratum_job, template=template)
+                print(f"📦 [JOB_MANAGER] set_last_broadcast_job с template (ОТДЕЛЬНО)", flush=True)
+            # ===========================================
 
             # Сохраняем локально для истории
             self.current_job = {
@@ -428,9 +435,16 @@ class JobManager:
         print(f"📤 [BROADCAST_TO_ALL] job_data keys: {list(job_data.keys())}", flush=True)
 
         # ===== СОХРАНЯЕМ ПОСЛЕДНЕЕ ЗАДАНИЕ =====
+        # ВАЖНО: template сохраняем ОТДЕЛЬНО в last_broadcast_job,
+        # чтобы он был доступен для валидации, но НЕ отправлялся ASIC.
         if self.job_service:
             self.job_service.last_broadcast_job = job_data
             print(f"📤 [BROADCAST_TO_ALL] Saved last_broadcast_job", flush=True)
+            # template уже внутри job_data (если create_new_job его передал)
+            if 'template' in job_data:
+                print(f"📤 [BROADCAST_TO_ALL] template есть в job_data (будет сохранён отдельно)", flush=True)
+            else:
+                print(f"⚠️ [BROADCAST_TO_ALL] template НЕТ в job_data!", flush=True)
         else:
             print(f"⚠️ [BROADCAST_TO_ALL] job_service is None, cannot save last_broadcast_job", flush=True)
 

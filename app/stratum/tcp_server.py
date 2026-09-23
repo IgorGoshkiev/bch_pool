@@ -1078,13 +1078,20 @@ class StratumTCPServer:
                 "params": [current_diff_int],  # ← ЦЕЛОЕ ЧИСЛО
                 "id": None
             }
-            await self._send_json(writer, difficulty_msg)
-            print(f"📊 [SEND_JOB] SENT DIFFICULTY BEFORE JOB: {current_diff_int}", flush=True)
+            ok_diff = await self._send_json(writer, difficulty_msg)
+            if not ok_diff:
+                print(f"🔴 [SEND_JOB] Failed to send set_difficulty", flush=True)
+                return
+            print(f"📊 SENT DIFFICULTY BEFORE JOB: {current_diff_int}", flush=True)
             # ================================================================
 
             try:
-                await self._send_json(writer, job_data_for_send)
+                ok_notify = await self._send_json(writer, job_data_for_send)
+                if not ok_notify:
+                    print(f"🔴 [SEND_JOB] Failed to send notify", flush=True)
+                    return
                 print(f"✅ REAL JOB SENT: id={job_id}, merkle_len={len(real_merkle_branch)}", flush=True)
+
             except (BrokenPipeError, ConnectionResetError) as e:
                 print(f"🔴 [SEND_JOB] Connection lost while sending to {miner_address[:20]}...: {e}", flush=True)
                 # Удаляем этого майнера из списка, так как соединение потеряно
@@ -1196,12 +1203,21 @@ class StratumTCPServer:
                     extra_nonce1 = job_data.get('extra_nonce1')
                     print(f"📤 [BROADCAST] get extra_nonce1: {extra_nonce1}", flush=True)
 
-                    # Сохраняем в job_service
+                    # ===== ПОЛУЧАЕМ template (для сохранения ОТДЕЛЬНО) =====
+                    template = job_data.get('template')
+                    if template:
+                        print(f"📤 [BROADCAST] template найден, будет сохранён ОТДЕЛЬНО", flush=True)
+                    else:
+                        print(f"⚠️ [BROADCAST] template НЕ найден в job_data!", flush=True)
+                    # ==========================================================
+
+                    # Сохраняем в job_service (template — ОТДЕЛЬНО!)
                     self.job_service.add_job(
                         job_id,
                         job_data_copy,
                         miner_address,
-                        extra_nonce1=extra_nonce1
+                        extra_nonce1=extra_nonce1,
+                        template=template  # ← передаём template ОТДЕЛЬНО
                     )
                     print(f"📤 [BROADCAST] Job added to job_service", flush=True)
 
@@ -1238,12 +1254,32 @@ class StratumTCPServer:
                         "params": [current_diff_int],  # ← ЦЕЛОЕ ЧИСЛО
                         "id": None
                     }
-                    await self._send_json(writer, difficulty_msg)
+                    ok_diff = await self._send_json(writer, difficulty_msg)
+                    if not ok_diff:
+                        print(f"🔴 [BROADCAST] Failed to send set_difficulty", flush=True)
+                        failed_sends += 1
+                        continue
                     print(f"📊 [BROADCAST] SENT set_difficulty BEFORE notify: {current_diff_int}", flush=True)
-                    # ================================================================
 
-                    # Отправляем клиенту notify
-                    await self._send_json(writer, job_data_copy)
+                    # ===== ВАЖНО: ОТПРАВЛЯЕМ ASIC ТОЛЬКО params (БЕЗ template!) =====
+                    # job_data_copy может содержать template (мы его сохранили
+                    # в job_service.add_job для валидации), но ASIC template НЕ нужен.
+                    # Если отправить template, notify будет ~59 KB, и ASIC его не прочитает.
+                    job_data_for_send = {
+                        "method": "mining.notify",
+                        "params": job_data_copy["params"]
+                        # ← template НЕ включаем!
+                    }
+                    print(f"📤 [BROADCAST] Отправляем ASIC notify БЕЗ template (только params)", flush=True)
+
+                    # Отправляем клиенту notify (БЕЗ template!)
+                    ok_notify = await self._send_json(writer, job_data_for_send)
+                    if not ok_notify:
+                        print(f"🔴 [BROADCAST] Failed to send notify", flush=True)
+                        failed_sends += 1
+                        continue
+                    # ===================================================================
+                    #------------------------------------------------------------------------------
                     successful_sends += 1
                     print(f"✅ [BROADCAST] Successfully sent to {miner_address[:20]}...", flush=True)
 
@@ -1418,22 +1454,40 @@ class StratumTCPServer:
         }
         await self._send_json(writer, response)
 
-    async def _send_json(self, writer: asyncio.StreamWriter, data: dict):
-        """Отправка JSON с новой строкой"""
+    async def _send_json(self, writer: asyncio.StreamWriter, data: dict) -> bool:
+        """
+        Отправка JSON с новой строкой.
+
+        ВАЖНО: НЕ используем таймаут на drain().
+        Прокси (stratum_proxy.py) работает без таймаута, и это единственная
+        причина, почему с прокси всё работает, а без — нет.
+
+        С таймаутом: если ASIC медленно читает, drain() таймаутится
+        и сообщение ТЕРЯЕТСЯ. ASIC получает только первое из пары
+        set_difficulty+notify, потом встаёт.
+
+        Без таймаута: drain() ждёт, пока весь буфер уйдёт в сокет.
+        Это может занять время, но сообщение гарантированно доставлено.
+
+        Returns:
+            True — отправлено.
+            False — ошибка.
+        """
         try:
             msg = json.dumps(data) + "\n"
             # Показываем первые 500 символов отправляемого сообщения
             msg_preview = msg[:500] if len(msg) > 500 else msg
             print(f"📤 SENDING TO ASIC: {msg_preview}", flush=True)
+
+            print(f"📏 [SEND_JSON] Message size: {len(msg)} bytes, method: {data.get('method', 'response')}", flush=True)
             writer.write(msg.encode())
-            try:
-                await asyncio.wait_for(writer.drain(), timeout=5.0)
-            except asyncio.TimeoutError:
-                print(f"🔴 SEND TIMEOUT: ASIC не отвечает", flush=True)
-                # Не блокируем дальше
+            # ===== БЕЗ ТАЙМАУТА (как в прокси) =====
+            await writer.drain()
+            return True
         except Exception as e:
             print(f"🔴 SEND ERROR: {e}", flush=True)
             logger.error(f'Ошибка отправки TCP: {e}')
+            return False
 
     async def stop(self):
         """Остановка сервера"""

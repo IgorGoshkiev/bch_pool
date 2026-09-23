@@ -76,21 +76,33 @@ class JobService:
 
         return job_id
 
-    def add_job(self, job_id: str, job_data: dict, miner_address: str = None, extra_nonce1: str = None):
+    def add_job(self, job_id: str, job_data: dict, miner_address: str = None, extra_nonce1: str = None,
+                template: dict = None):
         """
         Добавить задание в систему
 
         Args:
         job_id: ID задания
-        job_data: Данные задания
+        job_data: Данные задания (без template!)
         miner_address: Адрес майнера
         extra_nonce1: Extra nonce 1 (обязательный параметр)
+        template: Шаблон блока от ноды (сохраняется ОТДЕЛЬНО, НЕ отправляется ASIC)
         """
         try:
             if not extra_nonce1:
                 raise ValueError(f"extra_nonce1 is required for job {job_id}")
 
             job_data['extra_nonce1'] = extra_nonce1
+
+            # ===== СОХРАНЯЕМ template ОТДЕЛЬНО =====
+            # template нужен для валидации и сборки блока,
+            # но НЕ отправляется ASIC (иначе notify будет 59 KB).
+            if template:
+                job_data['template'] = template  # ← сохраняем в кэше, но НЕ отправляем ASIC
+                print(f"🔵 JOB_SERVICE.add_job: template СОХРАНЁН ОТДЕЛЬНО для {job_id}", flush=True)
+            else:
+                print(f"⚠️ JOB_SERVICE.add_job: template НЕ ПЕРЕДАН для {job_id}!", flush=True)
+            # ========================================
 
             print(f"🔵 JOB_SERVICE.add_job: job_id={job_id}, extra_nonce1={extra_nonce1}", flush=True)
 
@@ -245,7 +257,7 @@ class JobService:
 
     # ========== BROADCAST ==========
 
-    def set_last_broadcast_job(self, job_data: dict):
+    def set_last_broadcast_job(self, job_data: dict, template: dict = None):
         """Установить последнее broadcast задание"""
         self.last_broadcast_job = job_data.copy()
 
@@ -256,7 +268,9 @@ class JobService:
         if not extra_nonce1:
             raise ValueError(f"extra_nonce1 is required for broadcast job {job_id}")
 
-        self.add_job(job_id, job_data, miner_address=None, extra_nonce1=extra_nonce1)
+        # ===== ПЕРЕДАЁМ template ОТДЕЛЬНО =====
+        self.add_job(job_id, job_data, miner_address=None, extra_nonce1=extra_nonce1, template=template)
+        # ======================================
 
         logger.info(
             "Установлено broadcast задание",

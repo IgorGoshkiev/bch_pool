@@ -889,7 +889,13 @@ class BlockBuilder:
             curtime = template.get('curtime', int(datetime.now(UTC).timestamp()))
             ntime_hex = format(curtime, '08x')
 
-            # Создаем Stratum job data
+            # ===== ВАЖНО: НЕ ВКЛЮЧАЕМ template В job_data! =====
+            # template нужен ТОЛЬКО пулу (для валидации и сборки блока),
+            # но НЕ ASIC. Если включить template в job_data,
+            # mining.notify будет ~59 KB, и ASIC не сможет его прочитать.
+            #
+            # template сохраняется ОТДЕЛЬНО в job_service.add_job.
+            # ===================================================
             job_data = {
                 "method": "mining.notify",
                 "params": [
@@ -903,9 +909,12 @@ class BlockBuilder:
                     ntime_hex,
                     True
                 ],
-                "extra_nonce1": extra_nonce1,
-                "template": template
+                "extra_nonce1": extra_nonce1
+                # ← template НЕ включаем! Сохраняется отдельно в job_service.
             }
+
+            print(f"📦 [BLOCK_BUILDER] job_data создан БЕЗ template (params={len(job_data['params'])} элементов)",
+                  flush=True)
 
             print(f"🔍 JOB PARAMS: job_id={job_id}, prevhash={template.get('previousblockhash', '')[:32]}...",
                   flush=True)
