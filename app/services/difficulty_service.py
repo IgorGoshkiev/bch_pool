@@ -1,6 +1,7 @@
 """
 Сервис для управления динамической сложностью
 """
+import math
 import statistics
 from typing import Dict, List, Tuple
 from datetime import datetime, UTC, timedelta
@@ -308,6 +309,20 @@ class DifficultyService:
         # Округляем до целого числа для ASIC
         new_diff_rounded = max(1.0, float(int(new_diff)))
         print(f"🔍 [DIFF_CALC] Rounded for ASIC: {new_diff:.10f} -> {new_diff_rounded:.0f}", flush=True)
+
+        # ===== ОКРУГЛЯЕМ ДО СТЕПЕНИ ДВОЙКИ (как Molehole) =====
+        # ASIC (WhatsMiner) ожидает сложность в виде степеней двойки:
+        # 16384, 32768, 65536, 131072, 262144, ...
+        # Если отправить произвольное число (42583, 55357),
+        # ASIC может ИГНОРИРОВАТЬ set_difficulty.
+
+        if new_diff_rounded > 0:
+            log2 = math.log2(new_diff_rounded)
+            rounded_log2 = round(log2)
+            power_of_two = float(2 ** rounded_log2)
+            print(f"🔍 [DIFF_CALC] Rounded to power of 2: {new_diff_rounded} -> {power_of_two}", flush=True)
+            new_diff_rounded = power_of_two
+        # ======================================================
 
         if current_diff > 0:
             change_percent = ((new_diff_rounded / current_diff - 1) * 100)

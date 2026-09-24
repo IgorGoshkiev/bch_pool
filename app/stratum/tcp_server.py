@@ -79,6 +79,35 @@ class StratumTCPServer:
             start_time=self.start_time.isoformat()
         )
 
+    @staticmethod
+    def _round_to_power_of_two(value: float) -> int:
+        """
+        Округление до ближайшей степени двойки.
+
+        ВАЖНО: ASIC (WhatsMiner) ожидает сложность в виде степеней двойки:
+        16384, 32768, 65536, 131072, 262144, ...
+
+        Molehole использует именно такие значения:
+        65536 → 32768 → 16384 → 32768 → 65536 → 262144
+
+        Если отправить произвольное число (42583, 55357, 71964),
+        ASIC может ИГНОРИРОВАТЬ set_difficulty и не переключаться
+        на новый job_id.
+
+        Args:
+            value: Произвольное число сложности
+
+        Returns:
+            Ближайшая степень двойки (int)
+        """
+        import math
+        if value <= 0:
+            return 1
+        log2 = math.log2(value)
+        rounded_log2 = round(log2)
+        result = int(2 ** rounded_log2)
+        return result
+
     async def start(self):
         """Запуск TCP сервера"""
         try:
@@ -1235,11 +1264,24 @@ class StratumTCPServer:
                     print(f"📊 [BROADCAST] _pending_difficulty AFTER pop: {self._pending_difficulty}, pending_diff={pending_diff}", flush=True)
 
                     if pending_diff is not None:
+                        # Сложность ИЗМЕНИЛАСЬ — clean_jobs=True
                         clean_jobs_for_this_send = True
                         current_diff_int = pending_diff
+
+                        # ===== ОКРУГЛЯЕМ ДО СТЕПЕНИ ДВОЙКИ (как Molehole) =====
+                        # ASIC (WhatsMiner) ожидает сложность в виде степеней двойки:
+                        # 16384, 32768, 65536, 131072, 262144, ...
+                        # Если отправить произвольное число (42583, 55357),
+                        # ASIC может ИГНОРИРОВАТЬ set_difficulty.
+                        rounded_diff = self._round_to_power_of_two(current_diff_int)
+                        print(f"📊 [BROADCAST] Rounded to power of 2: {current_diff_int} -> {rounded_diff}", flush=True)
+                        current_diff_int = rounded_diff
+                        # ======================================================
+
                         self.miner_difficulties[miner_address] = float(current_diff_int)
                         print(f"📊 [BROADCAST] PENDING difficulty: {current_diff_int}, clean_jobs=True (СМЕНА СЛОЖНОСТИ)", flush=True)
                     else:
+                        # Сложность НЕ изменилась — clean_jobs=False
                         clean_jobs_for_this_send = False
                         current_diff = self.miner_difficulties.get(
                             miner_address,
@@ -1424,6 +1466,12 @@ class StratumTCPServer:
         # ===== НЕ ОТПРАВЛЯЕМ СРАЗУ! СОХРАНЯЕМ. =====
         # set_difficulty будет отправлен в broadcast_new_job ПЕРЕД notify.
         display_difficulty = max(1, int(difficulty))
+
+        # ===== ОКРУГЛЯЕМ ДО СТЕПЕНИ ДВОЙКИ =====
+        original_difficulty = display_difficulty
+        display_difficulty = self._round_to_power_of_two(display_difficulty)
+        print(f"📊 [UPDATE_DIFF] Rounded to power of 2: {original_difficulty} -> {display_difficulty}", flush=True)
+        # ========================================
 
         # ===== ДИАГНОСТИКА: _pending_difficulty ДО =====
         print(f"📊 [UPDATE_DIFF] _pending_difficulty BEFORE: {self._pending_difficulty}", flush=True)
