@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BCH Pool — Dashboard</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 20px;
+            line-height: 1.5;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #58a6ff; margin-bottom: 20px; font-size: 24px; }
+        h2 { color: #8b949e; margin: 20px 0 10px; font-size: 16px; text-transform: uppercase; letter-spacing: 1px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .card .label { color: #8b949e; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .card .value { color: #c9d1d9; font-size: 24px; font-weight: 600; margin-top: 4px; }
+        .card .sub { color: #8b949e; font-size: 13px; margin-top: 4px; }
+        .value.green { color: #3fb950; }
+        .value.blue { color: #58a6ff; }
+        .value.yellow { color: #d29922; }
+        .value.red { color: #f85149; }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+        .dot { width: 8px; height: 8px; border-radius: 50%; }
+        .dot.online { background: #3fb950; box-shadow: 0 0 8px #3fb950; }
+        .dot.offline { background: #f85149; }
+        .error {
+            background: #3d1e1e;
+            border: 1px solid #f85149;
+            color: #f85149;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+        }
+        .row { display: flex; gap: 16px; flex-wrap: wrap; }
+        .row .card { flex: 1; min-width: 200px; }
+        .addr { font-family: monospace; font-size: 13px; color: #58a6ff; word-break: break-all; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⛏️ BCH Pool Dashboard</h1>
+            <div class="status">
+                <span class="dot" id="status-dot"></span>
+                <span id="status-text">Загрузка...</span>
+            </div>
+        </div>
+
+        <div id="error" class="error" style="display:none;"></div>
+
+        <div class="card" style="margin-bottom: 16px;">
+            <div class="label">Miner Address</div>
+            <div class="addr" id="miner-addr">—</div>
+        </div>
+
+        <h2>Workers</h2>
+        <div class="row">
+            <div class="card">
+                <div class="label">Online</div>
+                <div class="value green" id="workers-online">—</div>
+            </div>
+            <div class="card">
+                <div class="label">Offline</div>
+                <div class="value" id="workers-offline">—</div>
+            </div>
+        </div>
+
+        <h2>Hashrate</h2>
+        <div class="row">
+            <div class="card">
+                <div class="label">Current (30m)</div>
+                <div class="value blue" id="hashrate-30m">—</div>
+            </div>
+            <div class="card">
+                <div class="label">Average (1h)</div>
+                <div class="value blue" id="hashrate-1h">—</div>
+            </div>
+        </div>
+
+        <h2>Work</h2>
+        <div class="row">
+            <div class="card">
+                <div class="label">Share Sum</div>
+                <div class="value" id="share-sum">—</div>
+            </div>
+            <div class="card">
+                <div class="label">Personal Effort</div>
+                <div class="value yellow" id="effort">—</div>
+                <div class="sub">Чем выше — тем ближе блок</div>
+            </div>
+        </div>
+
+        <h2>Shares</h2>
+        <div class="row">
+            <div class="card">
+                <div class="label">Total</div>
+                <div class="value" id="shares-total">—</div>
+            </div>
+            <div class="card">
+                <div class="label">Accepted</div>
+                <div class="value green" id="shares-accepted">—</div>
+            </div>
+            <div class="card">
+                <div class="label">Rejected</div>
+                <div class="value red" id="shares-rejected">—</div>
+            </div>
+        </div>
+
+        <h2>Blocks</h2>
+        <div class="row">
+            <div class="card">
+                <div class="label">Confirmed</div>
+                <div class="value green" id="blocks-count">—</div>
+            </div>
+            <div class="card">
+                <div class="label">Unconfirmed</div>
+                <div class="value yellow" id="blocks-unconfirmed">—</div>
+            </div>
+        </div>
+
+        <h2>Reward (BCH)</h2>
+        <div class="row">
+            <div class="card">
+                <div class="label">Balance</div>
+                <div class="value green" id="reward-balance">—</div>
+            </div>
+            <div class="card">
+                <div class="label">Unconfirmed</div>
+                <div class="value yellow" id="reward-unconfirmed">—</div>
+            </div>
+            <div class="card">
+                <div class="label">Pending</div>
+                <div class="value" id="reward-pending">—</div>
+            </div>
+        </div>
+
+        <h2>Best Share</h2>
+        <div class="row">
+            <div class="card">
+                <div class="label">Best Share</div>
+                <div class="value" id="best-share">—</div>
+            </div>
+            <div class="card">
+                <div class="label">Last Best Share</div>
+                <div class="value" id="last-best-share" style="font-size:16px;">—</div>
+            </div>
+        </div>
+
+        <h2>Difficulty</h2>
+        <div class="row">
+            <div class="card">
+                <div class="label">Network Difficulty</div>
+                <div class="value" id="network-diff">—</div>
+            </div>
+            <div class="card">
+                <div class="label">Port Difficulty</div>
+                <div class="value" id="port-diff">—</div>
+            </div>
+        </div>
+
+        <div style="margin-top:24px; color:#8b949e; font-size:12px; text-align:center;">
+            Last update: <span id="last-update">—</span> · Auto-refresh 10s
+        </div>
+    </div>
+
+    <script>
+        // Адрес майнера — можно задать через ?address=...
+        const params = new URLSearchParams(window.location.search);
+        const MINER_ADDRESS = params.get('address') || 'qqxsgzrcxvwh3emhrzmgedttm3ju6ks4ec6072chl0';
+
+        const API_URL = `/api/v1/miners/${MINER_ADDRESS}/dashboard`;
+
+        function setText(id, value) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value ?? '—';
+        }
+
+        function showError(msg) {
+            const el = document.getElementById('error');
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
+        }
+
+        function setStatus(online) {
+            const dot = document.getElementById('status-dot');
+            const text = document.getElementById('status-text');
+            if (online) {
+                dot.className = 'dot online';
+                text.textContent = 'Online';
+            } else {
+                dot.className = 'dot offline';
+                text.textContent = 'Offline';
+            }
+        }
+
+        async function fetchDashboard() {
+            try {
+                const response = await fetch(API_URL);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const json = await response.json();
+
+                if (json.status !== 'success') {
+                    throw new Error(json.message || 'Unknown error');
+                }
+
+                const d = json.data;
+
+                // Miner
+                setText('miner-addr', d.miner);
+
+                // Workers
+                setText('workers-online', d.workers.online);
+                setText('workers-offline', d.workers.offline);
+                setStatus(d.workers.online > 0);
+
+                // Hashrate
+                setText('hashrate-30m', d.hashrate.current_30m_formatted);
+                setText('hashrate-1h', d.hashrate.average_1h_formatted);
+
+                // Work
+                setText('share-sum', d.work.share_sum_formatted);
+                setText('effort', d.work.personal_effort_percent.toFixed(3) + '%');
+
+                // Shares
+                setText('shares-total', d.shares.total);
+                setText('shares-accepted', d.shares.accepted);
+                setText('shares-rejected', d.shares.rejected);
+
+                // Blocks
+                setText('blocks-count', d.blocks.count);
+                setText('blocks-unconfirmed', d.blocks.unconfirmed_count);
+
+                // Reward
+                setText('reward-balance', d.reward.balance.toFixed(6));
+                setText('reward-unconfirmed', d.reward.unconfirmed.toFixed(6));
+                setText('reward-pending', d.reward.pending.toFixed(6));
+
+                // Best Share
+                setText('best-share', d.best_share.difficulty_formatted);
+                setText('last-best-share', d.best_share.last_time ? new Date(d.best_share.last_time).toLocaleString() : '—');
+
+                // Difficulty
+                setText('network-diff', d.difficulty.network_formatted);
+                setText('port-diff', d.difficulty.port_formatted);
+
+                // Timestamp
+                setText('last-update', new Date(d.timestamp).toLocaleTimeString());
+
+                hideError();
+            } catch (e) {
+                console.error('Dashboard fetch error:', e);
+                showError('Ошибка загрузки: ' + e.message);
+                setStatus(false);
+            }
+        }
+
+        // Initial fetch
+        fetchDashboard();
+
+        // Auto-refresh каждые 10 секунд
+        setInterval(fetchDashboard, 10000);
+    </script>
+</body>
+</html>

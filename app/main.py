@@ -2,6 +2,8 @@ from datetime import datetime, UTC
 
 from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +12,7 @@ from sqlalchemy import text
 import asyncio
 import json
 import time
+import os
 
 from app.utils.logging_config import StructuredLogger
 
@@ -66,6 +69,36 @@ app.include_router(jobs_router, prefix="/api/v1", tags=["jobs"])
 app.include_router(tcp_stratum_router, prefix="/api/v1", tags=["tcp-stratum"])
 
 
+# ========== Статические файлы и Dashboard ==========
+# Папка для статики
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+os.makedirs(STATIC_DIR, exist_ok=True)
+
+# Mount для CSS/JS/картинок (если понадобятся)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/dashboard", include_in_schema=False)
+async def dashboard_page():
+    """
+    Веб-интерфейс дашборда майнера.
+
+    Отдаёт HTML-страницу, которая через fetch() обращается к
+    /api/v1/miners/{address}/dashboard и отображает данные.
+    """
+    dashboard_path = os.path.join(STATIC_DIR, "dashboard.html")
+    if not os.path.exists(dashboard_path):
+        return ApiResponse(
+            status="error",
+            message="dashboard.html не найден. Создайте app/static/dashboard.html",
+            data={"path": dashboard_path}
+        )
+    return FileResponse(dashboard_path)
+
+
+# =====================================================
+
+
 # ========== Middleware для логирования запросов ==========
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -113,6 +146,7 @@ async def root():
             "version": "1.0.0",
             "api_version": "v1",
             "endpoints": {
+                "dashboard": "/dashboard",
                 "v1_docs": "/docs",
                 "v1_openapi": "/api/v1/openapi.json",
                 "services_stats": "/services/stats",
