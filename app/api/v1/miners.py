@@ -8,6 +8,7 @@ from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
 from typing import Optional
 from datetime import datetime, UTC
+from app.utils.protocol_helpers import format_difficulty
 
 from app.utils.logging_config import StructuredLogger
 from app.utils.helpers import humanize_time_ago
@@ -489,4 +490,136 @@ async def get_miner_weekly_stats(
         status="success",
         message=f"Статистика за неделю для {bch_address}",
         data=stats
+    )
+
+@router.get(
+    "/{bch_address}/dashboard",
+    summary="Дашборд майнера (как у Molehole)",
+    response_description="Полная статистика: workers, hashrate, shares, effort, blocks, best share"
+)
+async def get_miner_dashboard(
+        bch_address: str,
+        db: AsyncSession = Depends(get_db)
+):
+    """
+    Полный дашборд майнера — как страница аккаунта у Molehole.
+
+    Показывает:
+    - Workers Online/Offline
+    - Hashrate (30m, 1h)
+    - Share Sum (сумма сложностей шаров)
+    - Personal Effort (Share Sum / Network Difficulty)
+    - Blocks, Reward
+    - Best Share, Last Best Share
+    - Network Difficulty, Port Difficulty
+    """
+    miner = await get_miner_or_404(bch_address, db)
+
+    from app.dependencies import tcp_stratum_server, job_manager, database_service
+
+    # ===== WORKERS ONLINE =====
+    workers_online = 0
+    if tcp_stratum_server:
+        for addr in tcp_stratum_server.miners.values():
+            if addr == bch_address:
+                workers_online += 1
+
+    # ===== HASHRATE =====
+    hashrate_30m = await miner_stats_service.get_hashrate(bch_address, period_seconds=1800)
+    hashrate_1h = await miner_stats_service.get_hashrate(bch_address, period_seconds=3600)
+
+    # ===== STATS =====
+    stats = await miner_stats_service.get_stats(bch_address)
+    share_sum = stats.total_difficulty if stats else 0.0
+    total_shares = stats.total_shares if stats else 0
+    accepted_shares = stats.accepted_shares if stats else 0
+    rejected_shares = stats.rejected_shares if stats else 0
+
+    # ===== BEST SHARE =====
+    max_share = await miner_stats_service.get_max_difficulty_share(bch_address)
+    best_share = max_share.difficulty if max_share else 0.0
+    last_best_share_time = max_share.timestamp.isoformat() if max_share else None
+
+    # ===== NETWORK DIFFICULTY =====
+    try:
+        network_difficulty = await job_manager.get_current_difficulty()
+    except Exception:
+        network_difficulty = 0.0
+
+    # ===== PERSONAL EFFORT =====
+    personal_effort = (share_sum / network_difficulty * 100) if network_difficulty > 0 else 0.0
+
+    # ===== PORT DIFFICULTY =====
+    port_difficulty = 0
+    if tcp_stratum_server:
+        port_difficulty = tcp_stratum_server.miner_difficulties.get(bch_address, 0)
+
+    # ===== BLOCKS =====
+    blocks = await database_service.get_blocks_by_miner(bch_address, limit=1000)
+    confirmed_blocks = [b for b in blocks if b.confirmed]
+    unconfirmed_blocks = [b for b in blocks if not b.confirmed]
+
+    # ===== REWARD =====
+    block_reward = 3.125  # BCH за блок
+    unconfirmed_reward = len(unconfirmed_blocks) * block_reward
+    balance = len(confirmed_blocks) * block_reward
+
+    return ApiResponse(
+        status="success",
+        message=f"Дашборд майнера {bch_address}",
+        data={
+            "miner": bch_address,
+            "worker_name": miner.worker_name,
+
+            "workers": {
+                "online": workers_online,
+                "offline": 0,
+            },
+
+            "hashrate": {
+                "current_30m": hashrate_30m,
+                "current_30m_formatted": format_hashrate(hashrate_30m),
+                "average_1h": hashrate_1h,
+                "average_1h_formatted": format_hashrate(hashrate_1h),
+            },
+
+            "work": {
+                "share_sum": share_sum,
+                "share_sum_formatted": format_difficulty(share_sum),
+                "personal_effort_percent": round(personal_effort, 3),
+            },
+
+            "shares": {
+                "total": total_shares,
+                "accepted": accepted_shares,
+                "rejected": rejected_shares,
+                "acceptance_rate": round(accepted_shares / total_shares, 4) if total_shares > 0 else 0,
+            },
+
+            "blocks": {
+                "count": len(confirmed_blocks),
+                "unconfirmed_count": len(unconfirmed_blocks),
+            },
+
+            "reward": {
+                "unconfirmed": unconfirmed_reward,
+                "balance": balance,
+                "pending": 0.0,
+            },
+
+            "best_share": {
+                "difficulty": best_share,
+                "difficulty_formatted": format_difficulty(best_share),
+                "last_time": last_best_share_time,
+            },
+
+            "difficulty": {
+                "network": network_difficulty,
+                "network_formatted": format_difficulty(network_difficulty),
+                "port": port_difficulty,
+                "port_formatted": format_difficulty(port_difficulty),
+            },
+
+            "timestamp": datetime.now(UTC).isoformat()
+        }
     )
