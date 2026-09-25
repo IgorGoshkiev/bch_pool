@@ -80,9 +80,9 @@ class StratumTCPServer:
         )
 
     @staticmethod
-    def _round_to_power_of_two(value: float) -> int:
+    def _round_to_power_of_two(value: float, current: float = None) -> int:
         """
-        Округление до ближайшей степени двойки.
+        Округление до степени двойки С ГАРАНТИЕЙ ИЗМЕНЕНИЯ.
 
         ВАЖНО: ASIC (WhatsMiner) ожидает сложность в виде степеней двойки:
         16384, 32768, 65536, 131072, 262144, ...
@@ -94,18 +94,44 @@ class StratumTCPServer:
         ASIC может ИГНОРИРОВАТЬ set_difficulty и не переключаться
         на новый job_id.
 
+        ПРОБЛЕМА:
+        Если просто округлить до ближайшей степени двойки, то:
+          42598 -> round(log2(42598)) = round(15.38) = 15 -> 32768
+        То есть результат РАВЕН текущей сложности (32768).
+        Тогда change_ratio = 0, и update_miner_difficulty не вызывается.
+
+        РЕШЕНИЕ:
+        Если результат равен current, и value > current — берём СЛЕДУЮЩУЮ
+        степень двойки (вверх). Если value < current — берём ПРЕДЫДУЩУЮ
+        (вниз). Это гарантирует, что сложность ИЗМЕНИТСЯ.
+
         Args:
             value: Произвольное число сложности
+            current: Текущая сложность (для проверки, изменилось ли)
 
         Returns:
-            Ближайшая степень двойки (int)
+            Степень двойки (int), гарантированно отличная от current
         """
         import math
         if value <= 0:
             return 1
+
         log2 = math.log2(value)
         rounded_log2 = round(log2)
         result = int(2 ** rounded_log2)
+
+        # ===== ГАРАНТИЯ ИЗМЕНЕНИЯ =====
+        if current is not None and result == int(current):
+            if value > current:
+                # Хотим поднять, но округление дало текущую — берём следующую вверх
+                result = int(2 ** (rounded_log2 + 1))
+                print(f"📊 [ROUND] Forced UP: {value} (current={current}) -> {result}", flush=True)
+            elif value < current:
+                # Хотим опустить, но округление дало текущую — берём следующую вниз
+                result = int(2 ** (rounded_log2 - 1))
+                print(f"📊 [ROUND] Forced DOWN: {value} (current={current}) -> {result}", flush=True)
+        # =================================
+
         return result
 
     async def start(self):
@@ -866,12 +892,23 @@ class StratumTCPServer:
                         )
                         print(f"📊 [DIFF] Current difficulty: {current_difficulty:.10f}", flush=True)
 
-                        # ===== 5. Применяем нижнюю границу — min_display_difficulty =====
+                        # ===== 5. Применяем нижнюю границу — min_asic_difficulty =====
                         # ВАЖНО: Molehole опускает сложность, если ASIC не справляется.
-                        # Мы тоже опускаем, но НЕ ниже min_display_difficulty.
-                        min_allowed = settings.min_display_difficulty
+                        # Мы тоже опускаем, но НЕ ниже min_asic_difficulty ДЛЯ ЭТОГО ASIC.
+                        #
+                        # min_asic_difficulty берётся из mining.suggest_difficulty,
+                        # которое ASIC прислал при подключении.
+                        # Если suggest не было — используется settings.min_display_difficulty.
+                        #
+                        # Это защищает от ситуации, когда пул опускает сложность
+                        # ниже той, на которой ASIC может найти шар.
+                        min_allowed = self.min_asic_difficulties.get(
+                            miner_address,
+                            settings.min_display_difficulty
+                        )
+                        print(f"📊 [DIFF] min_allowed (min_asic_difficulty for this ASIC): {min_allowed}", flush=True)
                         if new_difficulty < min_allowed:
-                            print(f"📊 [DIFF] Capped at min_display_difficulty: {min_allowed}", flush=True)
+                            print(f"📊 [DIFF] Capped at min_asic_difficulty: {min_allowed}", flush=True)
                             new_difficulty = min_allowed
 
                         # ===== 6. Проверяем, изменилась ли сложность =====
@@ -1010,9 +1047,14 @@ class StratumTCPServer:
             print(f"🔍 SEND_JOB: params length = {len(job_data['params'])}", flush=True)
 
             real_prevhash = job_data['params'][1]  # big-endian
-            real_prevhash_le = real_prevhash[::-1]  # little-endian для ASIC
-            print(f"🔍 SEND_JOB: real_prevhash (original) = {real_prevhash[:32]}...", flush=True)
-            print(f"🔍 SEND_JOB: real_prevhash_le = {real_prevhash_le[:32]}...", flush=True)
+            # ===== ПРАВИЛЬНЫЙ РЕВЕРС БАЙТ (BE -> LE) =====
+            # real_prevhash[::-1] — реверс СИМВОЛОВ, а не байт.
+            # Для prevhash это НЕПРАВИЛЬНЫЙ little-endian.
+            # Нужно: bytes.fromhex(real_prevhash)[::-1].hex()
+            real_prevhash_le = bytes.fromhex(real_prevhash)[::-1].hex() if real_prevhash else ""
+            print(f"🔍 SEND_JOB: real_prevhash (BE): {real_prevhash[:32]}...", flush=True)
+            print(f"🔍 SEND_JOB: real_prevhash_le (LE, correct): {real_prevhash_le[:32]}...", flush=True)
+            # =============================================
 
             real_coinb1 = job_data['params'][2]
             real_coinb2 = job_data['params'][3]
@@ -1102,6 +1144,19 @@ class StratumTCPServer:
                 settings.start_display_difficulty
             )
             current_diff_int = max(1, int(current_diff))
+
+            # ===== ОКРУГЛЯЕМ ДО СТЕПЕНИ ДВОЙКИ С ГАРАНТИЕЙ ИЗМЕНЕНИЯ =====
+            # При первом подключении current_difficulty = 0 (нет в словаре),
+            # поэтому округление просто даст ближайшую степень двойки.
+            rounded_diff = self._round_to_power_of_two(
+                current_diff_int,
+                current=None  # первый раз — не с чем сравнивать
+            )
+            print(f"📊 [SEND_JOB] Initial difficulty rounded: {current_diff_int} -> {rounded_diff}", flush=True)
+            current_diff_int = rounded_diff
+            # ============================================================
+
+
             difficulty_msg = {
                 "method": "mining.set_difficulty",
                 "params": [current_diff_int],  # ← ЦЕЛОЕ ЧИСЛО
@@ -1222,10 +1277,25 @@ class StratumTCPServer:
                     job_id = f"{timestamp_low:04x}{counter_low:04x}"
                     print(f"🔑 [BROADCAST] Сгенерирован КОРОТКИЙ job_id: {job_id}", flush=True)
 
-                    # Создаем персональную копию задания
-                    job_data_copy = job_data.copy()
+                    # ===== ГЛУБОКАЯ КОПИЯ =====
+                    # job_data.copy() — поверхностная копия, params — тот же список.
+                    # Изменение params[0] портит оригинал (active_jobs, last_broadcast_job).
+                    import copy
+                    job_data_copy = copy.deepcopy(job_data)
                     job_data_copy["params"][0] = job_id
                     print(f"📤 [BROADCAST] job_id: {job_id}", flush=True)
+
+                    # ===== ПРАВИЛЬНЫЙ РЕВЕРС БАЙТ (BE -> LE) ДЛЯ prevhash =====
+                    # template.get('previousblockhash') — в BE.
+                    # ASIC ожидает prevhash в LE.
+                    # Без этого ASIC видит prevhash, начинающийся с нулей (BE),
+                    # и ИГНОРИРУЕТ notify (как в твоём логе: notify #2 prevhash=0000000000000000...).
+                    prevhash_be = job_data_copy["params"][1]
+                    prevhash_le = bytes.fromhex(prevhash_be)[::-1].hex() if prevhash_be else ""
+                    job_data_copy["params"][1] = prevhash_le
+                    print(f"📤 [BROADCAST] prevhash BE: {prevhash_be[:32]}...", flush=True)
+                    print(f"📤 [BROADCAST] prevhash LE: {prevhash_le[:32]}...", flush=True)
+                    # =====================================================
 
                     # ===== ПОЛУЧАЕМ extra_nonce1 =====
                     extra_nonce1 = job_data.get('extra_nonce1')
@@ -1268,15 +1338,17 @@ class StratumTCPServer:
                         clean_jobs_for_this_send = True
                         current_diff_int = pending_diff
 
-                        # ===== ОКРУГЛЯЕМ ДО СТЕПЕНИ ДВОЙКИ (как Molehole) =====
-                        # ASIC (WhatsMiner) ожидает сложность в виде степеней двойки:
-                        # 16384, 32768, 65536, 131072, 262144, ...
-                        # Если отправить произвольное число (42583, 55357),
-                        # ASIC может ИГНОРИРОВАТЬ set_difficulty.
-                        rounded_diff = self._round_to_power_of_two(current_diff_int)
-                        print(f"📊 [BROADCAST] Rounded to power of 2: {current_diff_int} -> {rounded_diff}", flush=True)
+                        # ===== ОКРУГЛЯЕМ ДО СТЕПЕНИ ДВОЙКИ С ГАРАНТИЕЙ ИЗМЕНЕНИЯ =====
+                        # pending_diff уже прошёл округление в update_miner_difficulty,
+                        # но на всякий случай округляем ещё раз с текущей сложностью.
+                        old_diff = self.miner_difficulties.get(miner_address, 0)
+                        rounded_diff = self._round_to_power_of_two(
+                            current_diff_int,
+                            current=old_diff if old_diff > 0 else None
+                        )
+                        print(f"📊 [BROADCAST] Rounded to power of 2: {current_diff_int} -> {rounded_diff} (old={old_diff})", flush=True)
                         current_diff_int = rounded_diff
-                        # ======================================================
+                        # ==================================================================
 
                         self.miner_difficulties[miner_address] = float(current_diff_int)
                         print(f"📊 [BROADCAST] PENDING difficulty: {current_diff_int}, clean_jobs=True (СМЕНА СЛОЖНОСТИ)", flush=True)
@@ -1467,11 +1539,40 @@ class StratumTCPServer:
         # set_difficulty будет отправлен в broadcast_new_job ПЕРЕД notify.
         display_difficulty = max(1, int(difficulty))
 
-        # ===== ОКРУГЛЯЕМ ДО СТЕПЕНИ ДВОЙКИ =====
+        # ===== ОКРУГЛЯЕМ ДО СТЕПЕНИ ДВОЙКИ С ГАРАНТИЕЙ ИЗМЕНЕНИЯ =====
+        # Передаём текущую сложность, чтобы _round_to_power_of_two
+        # гарантировал, что новая сложность ОТЛИЧАЕТСЯ от текущей.
+        # Иначе 42598 -> 32768, и set_difficulty не отправится.
+        current_difficulty = self.miner_difficulties.get(miner_address, 0)
         original_difficulty = display_difficulty
-        display_difficulty = self._round_to_power_of_two(display_difficulty)
-        print(f"📊 [UPDATE_DIFF] Rounded to power of 2: {original_difficulty} -> {display_difficulty}", flush=True)
-        # ========================================
+        display_difficulty = self._round_to_power_of_two(
+            display_difficulty,
+            current=current_difficulty if current_difficulty > 0 else None
+        )
+
+        print(
+            f"📊 [UPDATE_DIFF] Rounded to power of 2: {original_difficulty} -> {display_difficulty} (current={current_difficulty})",
+            flush=True)
+        # ============================================================
+
+        # ===== ПРОВЕРКА: изменилась ли сложность? =====
+        # Если новая сложность равна текущей — НЕ добавляем в _pending_difficulty.
+        # Иначе ASIC получит set_difficulty с тем же значением + clean_jobs=true,
+        # и это может его сбить (он ждёт РЕАЛЬНОЙ смены сложности).
+        #
+        # ВАЖНО: это должно быть ПОСЛЕ округления до степени двойки,
+        # потому что именно округлённое значение отправляется ASIC.
+        #
+        # ВАЖНО: это НЕ влияет на broadcast_new_job — там pending_diff
+        # уже проверен здесь, и если он None, set_difficulty не отправится.
+        current = self.miner_difficulties.get(miner_address, 0)
+        if current > 0 and display_difficulty == int(current):
+            print(
+                f"📊 [UPDATE_DIFF] Difficulty NOT CHANGED ({display_difficulty} == {int(current)}), skipping",
+                flush=True)
+            print(f"🔍 [UPDATE_DIFF] ===== END (skipped) =====\n", flush=True)
+            return False
+        # =============================================
 
         # ===== ДИАГНОСТИКА: _pending_difficulty ДО =====
         print(f"📊 [UPDATE_DIFF] _pending_difficulty BEFORE: {self._pending_difficulty}", flush=True)

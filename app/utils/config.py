@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     start_display_difficulty: float = 32768.0
 
     # Абсолютный минимум для display_difficulty
-    min_display_difficulty: float = 1024.0
+    min_display_difficulty: float = 16384.0
 
     # Абсолютный максимум для display_difficulty
     max_display_difficulty: float = 1000000000.0

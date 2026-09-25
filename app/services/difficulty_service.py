@@ -1,7 +1,6 @@
 """
 Сервис для управления динамической сложностью
 """
-import math
 import statistics
 from typing import Dict, List, Tuple
 from datetime import datetime, UTC, timedelta
@@ -310,25 +309,30 @@ class DifficultyService:
         new_diff_rounded = max(1.0, float(int(new_diff)))
         print(f"🔍 [DIFF_CALC] Rounded for ASIC: {new_diff:.10f} -> {new_diff_rounded:.0f}", flush=True)
 
-        # ===== ОКРУГЛЯЕМ ДО СТЕПЕНИ ДВОЙКИ (как Molehole) =====
-        # ASIC (WhatsMiner) ожидает сложность в виде степеней двойки:
-        # 16384, 32768, 65536, 131072, 262144, ...
-        # Если отправить произвольное число (42583, 55357),
-        # ASIC может ИГНОРИРОВАТЬ set_difficulty.
-
-        if new_diff_rounded > 0:
-            log2 = math.log2(new_diff_rounded)
-            rounded_log2 = round(log2)
-            power_of_two = float(2 ** rounded_log2)
-            print(f"🔍 [DIFF_CALC] Rounded to power of 2: {new_diff_rounded} -> {power_of_two}", flush=True)
-            new_diff_rounded = power_of_two
-        # ======================================================
+        # ===== ВАЖНО: НЕ ОКРУГЛЯЕМ ДО СТЕПЕНИ ДВОЙКИ ЗДЕСЬ! =====
+        # Округление до степени двойки делает tcp_server.py ПЕРЕД отправкой ASIC.
+        # Если округлить здесь, то change_ratio в handle_submit_tcp будет 0,
+        # и update_miner_difficulty НЕ вызовется.
+        #
+        # Пример бага:
+        #   current_diff = 32768
+        #   new_diff = 42598.4
+        #   new_diff_rounded = 42598.0
+        #   ОКРУГЛЕНИЕ ДО СТЕПЕНИ ДВОЙКИ: 42598 -> 32768  (потому что log2(42598)=15.38, round=15, 2^15=32768)
+        #   change_ratio = abs(32768 - 32768) / 32768 = 0  -> SKIP
+        #
+        # ПРАВИЛЬНО:
+        #   current_diff = 32768
+        #   new_diff_rounded = 42598.0  (сырое, без округления)
+        #   change_ratio = abs(42598 - 32768) / 32768 = 0.3  -> UPDATE
+        #   Затем в update_miner_difficulty округляем 42598 -> 65536 (вверх, чтобы был рост)
+        # ===========================================================
 
         if current_diff > 0:
             change_percent = ((new_diff_rounded / current_diff - 1) * 100)
-            print(f"🔍 [DIFF_CALC] Change: {change_percent:+.1f}%", flush=True)
+            print(f"🔍 [DIFF_CALC] Change (raw): {change_percent:+.1f}%", flush=True)
 
-        print(f"🔍 [DIFF_CALC] FINAL new_diff: {new_diff_rounded:.0f}", flush=True)
+        print(f"🔍 [DIFF_CALC] FINAL new_diff (raw, NOT rounded to power of 2): {new_diff_rounded:.0f}", flush=True)
 
         # ===== НЕ СОХРАНЯЕМ ЗДЕСЬ! =====
         # DifficultyService только СЧИТАЕТ.
@@ -389,6 +393,14 @@ class DifficultyService:
             print(f"🔍 [HASHRATE] avg_time_between_shares: {avg_time_between_shares:.3f}s", flush=True)
 
             # ===== КЛЮЧЕВОЕ: берём сложность ИЗ tcp_stratum_server =====
+            # tcp_stratum_server.miner_difficulties — ИСТОЧНИК ИСТИНЫ.
+            # Именно туда пишет update_miner_difficulty после успешной
+            # отправки set_difficulty ASIC.
+            #
+            # difficulty_service.miner_difficulties — это КОПИЯ для
+            # совместимости. Она может быть рассинхронизирована, поэтому
+            # используем её ТОЛЬКО как fallback, если tcp_stratum_server
+            # недоступен.
             current_diff = None
 
             if self.tcp_stratum_server:

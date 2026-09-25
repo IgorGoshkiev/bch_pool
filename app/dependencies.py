@@ -30,7 +30,7 @@ class DependencyContainer:
         self._difficulty_service = None
         self._network_manager = None
         self._block_builder = None
-        self._job_manager_initialized = False  # ← ДОБАВИТЬ
+        self._job_manager_initialized = False
 
         logger.info(
             "DependencyContainer инициализирован",
