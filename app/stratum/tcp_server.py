@@ -787,13 +787,11 @@ class StratumTCPServer:
             if extra_data and extra_data.get('is_valid_block', False):
                 print(f"🎉🎉🎉 BLOCK FOUND! Отправляем в ноду...", flush=True)
 
-                # Получаем высоту блока из job_data
                 block_height = 0
                 if job_data and 'template' in job_data:
                     block_height = job_data['template'].get('height', 0)
 
                 try:
-                    t0 = time.time()
                     # Сохраняем ТОЛЬКО блок в БД!
                     await self.database_service.save_block(
                         height=block_height,
@@ -801,8 +799,6 @@ class StratumTCPServer:
                         miner_address=miner_address,
                         confirmed=False
                     )
-                    profiler['save_block'] = (time.time() - t0) * 1000
-                    print(f"⏱️ save_block: {profiler['save_block']:.1f}ms", flush=True)
                     print(f"💾 BLOCK SAVED TO DB! height={block_height}", flush=True)
                 except Exception as e:
                     print(f"🔥 ERROR saving block: {e}", flush=True)
@@ -820,6 +816,17 @@ class StratumTCPServer:
 
                     if block_result.get("status") == "accepted":
                         print(f"✅ BLOCK ACCEPTED BY NODE! hash={hash_result[:16]}...", flush=True)
+                        # ===== ОБНОВЛЯЕМ confirmed=True В БД =====
+                        # Используем block_hash из block_result, потому что это ТОЧНЫЙ
+                        # хэш собранного блока. hash_result из validator может отличаться,
+                        # если есть расхождение в подсчёте merkle_root.
+                        confirmed_hash = block_result.get('block_hash', hash_result)
+                        await self.database_service.update_block_confirmed(
+                            block_hash=confirmed_hash,
+                            confirmed=True
+                        )
+                        print(f"✅ BLOCK CONFIRMED IN DB: {confirmed_hash[:16]}...", flush=True)
+                        # =========================================
                     else:
                         print(f"🔴 BLOCK REJECTED: {block_result.get('message')}", flush=True)
                 except Exception as e:

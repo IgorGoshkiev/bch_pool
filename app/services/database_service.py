@@ -175,6 +175,51 @@ class DatabaseService:
             return False
 
     @staticmethod
+    async def update_block_confirmed(
+            block_hash: str,
+            confirmed: bool = True
+    ) -> bool:
+        """
+        Обновить статус подтверждения блока.
+
+        Вызывается из tcp_server после того, как BCH нода приняла блок.
+        """
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(Block).where(Block.hash == block_hash)
+                )
+                block = result.scalar_one_or_none()
+
+                if not block:
+                    logger.warning(
+                        "Блок не найден для обновления confirmed",
+                        event="db_block_not_found_for_update",
+                        block_hash=block_hash[:16] + "..."
+                    )
+                    return False
+
+                block.confirmed = confirmed
+                await session.commit()
+
+                logger.info(
+                    "Статус блока обновлён",
+                    event="db_block_confirmed_updated",
+                    block_hash=block_hash[:16] + "...",
+                    confirmed=confirmed,
+                    height=block.height
+                )
+                return True
+
+        except Exception as e:
+            logger.error(
+                f"Ошибка обновления confirmed блока: {e}",
+                event="db_block_update_confirmed_error",
+                error=str(e)
+            )
+            return False
+
+    @staticmethod
     async def get_blocks_by_miner(
             miner_address: str,
             limit: int = 50,

@@ -163,3 +163,32 @@ async def pool_blocks(
             message=f"Ошибка получения блоков: {str(e)}",
             data={}
         )
+
+@router.get("/last-block", response_model=ApiResponse)
+async def pool_last_block(db: AsyncSession = Depends(get_db)):
+    """Последний найденный блок"""
+    from app.dependencies import database_service
+
+    blocks = await database_service.get_all_blocks(limit=1)
+
+    if not blocks:
+        return ApiResponse(
+            status="success",
+            message="Блоков пока нет",
+            data={"block": None}
+        )
+
+    b = blocks[0]
+    return ApiResponse(
+        status="success",
+        message="Последний блок",
+        data={
+            "block": {
+                "height": b.height,
+                "hash": b.hash,
+                "miner": b.miner_address,
+                "confirmed": b.confirmed,
+                "found_at": b.found_at.isoformat()
+            }
+        }
+    )
