@@ -150,6 +150,31 @@ class JobManager:
             # Получаем шаблон блока от реальной ноды
             template = await self.node_client.get_block_template()
             print(f"🔵 template received: {template is not None}", flush=True)
+
+            # ===== ОБНОВЛЯЕМ TARGET И DIFFICULTY В ВАЛИДАТОРЕ =====
+            # ВАЖНО: вызывается при каждом новом шаблоне,
+            # чтобы difficulty_1_target всегда был актуален.
+            try:
+                if template and 'target' in template and self.job_service and self.job_service.validator:
+                    target_hex = template['target']
+                    target_int = int(target_hex, 16)
+
+                    mining_info = await self.node_client.get_mining_info()
+                    network_difficulty = float(mining_info.get('difficulty', 0))
+
+                    if network_difficulty > 0:
+                        self.job_service.validator.update_from_node(
+                            network_target=target_int,
+                            network_difficulty=network_difficulty
+                        )
+                        print(f"🎯 [JOB_MANAGER] Validator updated from node:", flush=True)
+                        print(f"   target:     {target_hex[:16]}...", flush=True)
+                        print(f"   difficulty: {network_difficulty}", flush=True)
+
+            except Exception as e:
+                print(f"⚠️ [JOB_MANAGER] Не удалось обновить validator: {e}", flush=True)
+            # =========================================================
+
             if not template:
                 print(f"🔵 Не удалось получить шаблон блока от ноды: {template}", flush=True)
 

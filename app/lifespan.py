@@ -71,24 +71,39 @@ async def lifespan(_app):
                 logger.warning(f"Не удалось обновить extra_nonce1 валидатора: {e}")
             # =============================================
 
-            #  ПОЛУЧАЕМ TARGET ИЗ НОДЫ И ОБНОВЛЯЕМ ВАЛИДАТОР
+            # ===== ПОЛУЧАЕМ TARGET И DIFFICULTY ИЗ НОДЫ =====
+            # ВАЖНО: difficulty_1_target вычисляется динамически:
+            #   difficulty_1_target = network_target × network_difficulty
+            #
+            # Это гарантирует, что все расчёты используют АКТУАЛЬНЫЙ target сети,
+            # а не историческую константу.
             try:
                 template = await job_manager.node_client.get_block_template()
                 if template and 'target' in template:
                     target_hex = template['target']
                     target_int = int(target_hex, 16)
 
-                    share_validator.update_target_from_node(target_int)
+                    # Получаем сложность сети из ноды
+                    mining_info = await job_manager.node_client.get_mining_info()
+                    network_difficulty = float(mining_info.get('difficulty', 0))
 
-                    print(f"🎯 TARGET FROM NODE UPDATED: {target_hex}", flush=True)
-
-                    logger.info(
-                        "Validator target обновлен из ноды",
-                        event="validator_target_updated_from_node",
-                        target=target_hex
-                    )
+                    if network_difficulty > 0:
+                        share_validator.update_from_node(
+                            network_target=target_int,
+                            network_difficulty=network_difficulty
+                        )
+                        print(f"🎯 VALIDATOR UPDATED FROM NODE:", flush=True)
+                        print(f"   target:     {target_hex}", flush=True)
+                        print(f"   difficulty: {network_difficulty}", flush=True)
+                    else:
+                        logger.warning(
+                            "Не удалось получить difficulty из ноды",
+                            event="validator_difficulty_failed",
+                            mining_info=mining_info
+                        )
             except Exception as e:
-                logger.warning(f"Не удалось обновить target валидатора: {e}")
+                logger.warning(f"Не удалось обновить validator из ноды: {e}")
+            # ============================================================)
 
             # 2. Создаем первое задание
             await job_manager.broadcast_new_job_to_all()

@@ -562,71 +562,7 @@ class BlockBuilder:
             )
             return ""
 
-    def validate_block_solution(
-            self,
-            template: Dict,
-            merkle_root: str,
-            ntime: str,
-            nonce: str,
-            target_difficulty: float = 1.0
-    ) -> Tuple[bool, str, str]:
-        """
-        Валидация решения блока
 
-        Args:
-            template: Шаблон блока
-            merkle_root: Merkle root
-            ntime: Время
-            nonce: Nonce
-            target_difficulty: Целевая сложность
-
-        Returns:
-            Tuple[is_valid, block_hash, error_message]
-        """
-        try:
-            # Используем текущий экземпляр для сборки заголовка
-            header, header_hash = self.build_block_header(
-                template, merkle_root, ntime, nonce
-            )
-
-            if not header:
-                return False, "", "Ошибка сборки заголовка"
-
-            # Преобразуем хэш в число для сравнения с target
-            hash_int = int(header_hash, 16)
-
-            # Целевое значение для сложности 1.0 (BCH)
-            # Это стандартное значение target для Bitcoin/Bitcoin Cash при сложности 1.0
-            # https://en.bitcoin.it/wiki/Difficulty
-            target_for_difficulty_1 = 0x00000000FFFF0000000000000000000000000000000000000000000000000000
-
-            # Вычисляем target для текущей сложности
-            target = target_for_difficulty_1 // int(target_difficulty)
-
-            # Проверяем: хэш должен быть меньше или равен target
-            is_valid = hash_int <= target
-
-            logger.info(
-                "Проверка решения блока",
-                event="block_builder_solution_validated",
-                height=template.get('height', 'unknown'),
-                is_valid=is_valid,
-                hash_prefix=header_hash[:16],
-                target_prefix=format(target, '064x')[:16],
-                difficulty=target_difficulty
-            )
-
-            return is_valid, header_hash, ""
-
-        except Exception as e:
-            logger.error(
-                "Ошибка валидации решения блока",
-                event="block_builder_validation_error",
-                height=template.get('height', 'unknown') if template else 'unknown',
-                error=str(e),
-                error_type=type(e).__name__
-            )
-            return False, "", f"Ошибка валидации: {str(e)}"
 
     def create_complete_block(
             self,

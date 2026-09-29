@@ -31,19 +31,50 @@ class ShareValidator:
         self.validated_shares = 0
         self.invalid_shares = 0
         self.start_time = datetime.now(UTC)
-        self.network_target = None  # текущий target сети (меняется каждые 2 недели, берется из ноды)
+
+        # ===== АКТУАЛЬНЫЙ TARGET СЕТИ =====
+        # network_target — текущий target сети (из getblocktemplate).
+        # Обновляется при каждом новом шаблоне блока.
+        #
+        # В Bitcoin/BCH сложность пересчитывается:
+        # - каждые 2016 блоков (~2 недели) — стандартный пересчёт
+        # - каждый блок (ASERT) — плавное изменение
+        #
+        # Поэтому network_target может меняться часто.
+        # Используется для проверки, является ли шар блоком.
+        self.network_target = None
+
+        # ===== АКТУАЛЬНАЯ СЛОЖНОСТЬ СЕТИ =====
+        # network_difficulty — текущая сложность сети (из getmininginfo).
+        # Обновляется при каждом новом шаблоне блока.
+        # Может меняться каждые 2016 блоков или каждый блок (ASERT).
+        self.network_difficulty = None
+
+        # ===== ДИНАМИЧЕСКИЙ TARGET ДЛЯ СЛОЖНОСТИ 1.0 =====
+        # difficulty_1_target — target для сложности 1.0.
+        # ВЫЧИСЛЯЕТСЯ из актуальных данных ноды:
+        #   difficulty_1_target = network_target × network_difficulty
+        #
+        # ВАЖНО: это НЕ хардкод! Значение обновляется из ноды.
+        # Для mainnet BCH оно всегда ≈ 0x00000000FFFF0000...
+        # Но для testnet/regtest может отличаться.
+        # И если BCH изменит параметры — обновится автоматически.
+        self.difficulty_1_target = None
+
+        # Fallback (если нода недоступна)
         network = getattr(settings, 'bch_network', 'mainnet')
         network_config = NETWORK_CONFIGS.get(network, NETWORK_CONFIGS['mainnet'])
-        # константа для расчета сложности (никогда не меняется)
-        self.TARGET_FOR_DIFFICULTY_1 = network_config.get(
+        self._fallback_difficulty_1_target = network_config.get(
             'target_for_difficulty_1',
             0x00000000FFFF0000000000000000000000000000000000000000000000000000
         )
 
         self.last_network_update = None
 
-        print(f"🔍 VALIDATOR INIT: target_for_difficulty_1 = {self.TARGET_FOR_DIFFICULTY_1:#066x}", flush=True)
-        print(f"🔍 VALIDATOR INIT: target_difficulty = {self.pool_difficulty}", flush=True)
+        print(f"🔍 VALIDATOR INIT: pool_difficulty = {self.pool_difficulty}", flush=True)
+        print(f"🔍 VALIDATOR INIT: fallback_difficulty_1_target = {self._fallback_difficulty_1_target:#066x}", flush=True)
+        print(f"🔍 VALIDATOR INIT: network_target = None (будет загружен из ноды)", flush=True)
+        print(f"🔍 VALIDATOR INIT: difficulty_1_target = None (будет вычислен из ноды)", flush=True)
 
         logger.info(
             "Валидатор инициализирован",
@@ -51,26 +82,73 @@ class ShareValidator:
             target_difficulty=pool_difficulty,
             extra_nonce2_size=extra_nonce2_size,
             extra_nonce1_length=len(extra_nonce1) if extra_nonce1 else 0,
-            target_for_difficulty_1=hex(self.TARGET_FOR_DIFFICULTY_1),
             network=network,
             start_time=self.start_time.isoformat()
         )
 
-    def update_target_from_node(self, target: int):
+    @property
+    def fallback_difficulty_1_target(self) -> int:
         """
-        Обновить target из ноды для проверки блоков
+        Публичный доступ к fallback difficulty_1_target.
+
+        Используется, когда difficulty_1_target не загружен из ноды.
+        """
+        return self._fallback_difficulty_1_target
+
+    def get_difficulty_1_target(self) -> int:
+        """
+        Получить актуальный difficulty_1_target.
+
+        Возвращает:
+        - difficulty_1_target из ноды (если загружен)
+        - fallback (если нода недоступна)
+        """
+        if self.difficulty_1_target:
+            return self.difficulty_1_target
+        return self._fallback_difficulty_1_target
+
+    def update_from_node(self, network_target: int, network_difficulty: float):
+        """
+        Обновить target и difficulty из ноды.
+
+        ВАЖНО: вызывается при каждом новом шаблоне блока.
+        Вычисляет difficulty_1_target динамически:
+            difficulty_1_target = network_target × network_difficulty
+
+        Это гарантирует, что все расчёты используют АКТУАЛЬНЫЙ target сети,
+        а не историческую константу.
 
         Args:
-            target: Текущий target сети из getblocktemplate
-                   (меняется при каждом изменении сложности)
+            network_target: Текущий target сети из getblocktemplate
+            network_difficulty: Текущая сложность сети из getmininginfo
         """
-        self.network_target = target
+        self.network_target = network_target
+        self.network_difficulty = network_difficulty
+
+        # ===== ВЫЧИСЛЯЕМ difficulty_1_target ИЗ АКТУАЛЬНЫХ ДАННЫХ =====
+        # Формула: difficulty_1_target = network_target × network_difficulty
+        # Это работает для ЛЮБОЙ сложности сети.
+        if network_target and network_difficulty and network_difficulty > 0:
+            self.difficulty_1_target = int(network_target * network_difficulty)
+        else:
+            self.difficulty_1_target = self._fallback_difficulty_1_target
+            print(f"⚠️ VALIDATOR: используем fallback difficulty_1_target", flush=True)
+
         self.last_network_update = datetime.now(UTC)
-        print(f"🎯 VALIDATOR TARGET UPDATED: {target:#066x}", flush=True)
+
+        print(f"\n{'=' * 60}", flush=True)
+        print(f"🎯 VALIDATOR UPDATE FROM NODE:", flush=True)
+        print(f"   network_target:       {network_target:#066x}", flush=True)
+        print(f"   network_difficulty:   {network_difficulty}", flush=True)
+        print(f"   difficulty_1_target:  {self.difficulty_1_target:#066x}", flush=True)
+        print(f"{'=' * 60}\n", flush=True)
+
         logger.info(
-            "Validator target обновлен из ноды",
-            event="validator_target_updated",
-            target=hex(target)
+            "Validator обновлен из ноды",
+            event="validator_updated_from_node",
+            network_target=hex(network_target),
+            network_difficulty=network_difficulty,
+            difficulty_1_target=hex(self.difficulty_1_target)
         )
 
     def add_job(self, job_id: str, job_data: dict):
@@ -271,6 +349,22 @@ class ShareValidator:
 
             print(f"✅ SHARE PASSED difficulty check: {difficulty_to_check}", flush=True)
 
+            # ===== РАСЧЁТ SHARE DIFFICULTY ОТНОСИТЕЛЬНО СЕТИ =====
+            # Это НЕ проверка, а информационный расчёт.
+            # Использует актуальный difficulty_1_target из ноды.
+            if self.difficulty_1_target:
+                try:
+                    hash_int = int(hash_result, 16)
+                    if hash_int > 0:
+                        share_difficulty = self.difficulty_1_target / hash_int
+                        print(f"📊 SHARE DIFFICULTY (relative to 1.0): {share_difficulty:.6e}", flush=True)
+                        # Для отображения как у Molehole:
+                        share_difficulty_x2_32 = share_difficulty * 2 ** 32
+                        print(f"📊 SHARE DIFFICULTY (×2^32): {share_difficulty_x2_32:.2f}", flush=True)
+                except Exception as e:
+                    print(f"⚠️ Ошибка расчёта share_difficulty: {e}", flush=True)
+            # =====================================================
+
             # 6. Проверка, является ли шар БЛОКОМ
             is_valid_block = False
             if self.network_target is not None:
@@ -330,11 +424,13 @@ class ShareValidator:
 
     def _check_pool_difficulty(self, hash_result: str, pool_difficulty: float) -> bool:
         """
-        Проверка сложности пула (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+        Проверка сложности пула.
 
-        Основное исправление:
-        - Используем float деление вместо целочисленного
-        - Правильно рассчитываем target = TARGET_FOR_DIFFICULTY_1 / difficulty
+        ВАЖНО: используем АКТУАЛЬНЫЙ difficulty_1_target из ноды.
+        Если он не загружен — fallback на константу.
+
+        Формула:
+            target = difficulty_1_target / pool_difficulty
         """
         try:
             if pool_difficulty <= 0:
@@ -343,19 +439,26 @@ class ShareValidator:
             # Конвертируем хэш в число для сравнения
             hash_int = int(hash_result, 16)
 
-            # ===== ПРАВИЛЬНЫЙ РАСЧЕТ TARGET =====
-            # target = TARGET_FOR_DIFFICULTY_1 / difficulty
-            # Для difficulty = 1: target = TARGET_FOR_DIFFICULTY_1
-            # Для difficulty = 65536: target = TARGET_FOR_DIFFICULTY_1 / 65536
-            target = int(self.TARGET_FOR_DIFFICULTY_1 / pool_difficulty)
+            # ===== ВЫБОР TARGET =====
+            # Используем актуальный из ноды, если есть.
+            # Иначе — fallback.
+            if self.difficulty_1_target:
+                target_base = self.difficulty_1_target
+                source = "NODE"
+            else:
+                target_base = self._fallback_difficulty_1_target
+                source = "FALLBACK"
+
+            # ===== РАСЧЕТ TARGET =====
+            target = int(target_base / pool_difficulty)
 
             # ===== ПОДРОБНАЯ ДИАГНОСТИКА =====
             print(f"🔍 ========================================", flush=True)
-            print(f"🔍 POOL CHECK DETAILS:", flush=True)
+            print(f"🔍 POOL CHECK DETAILS (source={source}):", flush=True)
             print(f"🔍 hash_result: {hash_result}", flush=True)
             print(f"🔍 hash_int: {hash_int}", flush=True)
             print(f"🔍 pool_difficulty: {pool_difficulty}", flush=True)
-            print(f"🔍 TARGET_FOR_DIFFICULTY_1: {self.TARGET_FOR_DIFFICULTY_1:#066x}", flush=True)
+            print(f"🔍 target_base ({source}): {target_base:#066x}", flush=True)
             print(f"🔍 target (calculated): {target:#066x}", flush=True)
             print(f"🔍 hash_int <= target: {hash_int <= target}", flush=True)
             print(f"🔍 ========================================", flush=True)

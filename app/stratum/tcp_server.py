@@ -669,12 +669,20 @@ class StratumTCPServer:
 
                     hash_int = int(hash_result, 16)
                     if hash_int > 0:
-                        # Берем TARGET из валидатора (динамический)
-                        target_for_diff_1 = self.share_validator.TARGET_FOR_DIFFICULTY_1
+                        # ===== БЕРЁМ АКТУАЛЬНЫЙ TARGET ИЗ ВАЛИДАТОРА =====
+                        # Используем difficulty_1_target, который вычислен
+                        # из актуальных данных ноды (network_target × network_difficulty).
+                        # Fallback — на константу, если нода недоступна.
+                        target_for_diff_1 = self.share_validator.get_difficulty_1_target()
+                        source = "NODE" if self.share_validator.difficulty_1_target else "FALLBACK"
+
                         # Вместо целочисленного деления используем float
                         share_difficulty = target_for_diff_1 / hash_int
-                        print(f"🔥 SHARE DIFFICULTY: {share_difficulty}", flush=True)
-
+                        print(f"🔥 SHARE DIFFICULTY (source={source}): {share_difficulty:.6e}", flush=True)
+                        # Для отображения как у Molehole:
+                        share_difficulty_x2_32 = share_difficulty * 2**32
+                        print(f"🔥 SHARE DIFFICULTY (×2^32): {share_difficulty_x2_32:.2f}", flush=True)
+                        # =================================================
                     else:
                         share_difficulty = 0
                         print(f"🔥 WARNING: hash_int is 0, cannot calculate difficulty", flush=True)
