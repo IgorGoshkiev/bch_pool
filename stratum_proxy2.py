@@ -2,21 +2,13 @@
 """
 Stratum Proxy v2 для отладки взаимодействия ASIC ↔ Пул.
 
-НОВОЕ В v2:
-1. Кэш notify по job_id (coinb1, coinb2, merkle_branch, version, nbits, ntime).
-2. Расчёт реального хэша шара при mining.submit.
-3. Расчёт share_difficulty и Best Share.
-4. Логирование в shares.jsonl с новыми полями (hash, share_difficulty).
-5. 🏆 NEW BEST SHARE в логах.
-6. Best Share в статистике.
-
-Как использовать:
-1. Настройте ASIC подключаться к IP_вашего_сервера:4444
-2. Прокси подключится к Molehole (или другому пулу)
-3. Все сообщения логируются в proxy_v2.log
-
-Пример:
-  ASIC (порт 3333) → ПРОКСИ (порт 4444) → Molehole (stratum+tcp://stratum.molepool.com:3333)
+ИСПРАВЛЕНО:
+1. log_message НЕ обрезает mining.notify и mining.submit.
+2. log_notify сохраняет ВСЕ поля notify (coinb1, coinb2, merkle_branch, version, nbits, ntime, prevhash).
+3. Добавлен subscribe_history_v2.jsonl (extranonce1, extranonce2_size).
+4. shares_v2.jsonl содержит job_data (полные данные notify для пересчёта хэша).
+5. _calculate_share_hash: merkle_root берётся в LE.
+6. В лог best share добавлено network_difficulty и share_diff × network_diff.
 """
 
 import asyncio
@@ -28,21 +20,17 @@ import traceback
 
 # ========== КОНФИГУРАЦИЯ ==========
 PROXY_HOST = "0.0.0.0"
-PROXY_PORT = 4444  # Порт, на котором прокси ждет ASIC
+PROXY_PORT = 4444
 
-# НАСТРОЙКИ РЕАЛЬНОГО ПУЛА (Molehole)
-POOL_HOST = "eu.molepool.com"  # Замените на реальный адрес
-POOL_PORT = 5566  # Стандартный порт для stratum+tcp
-
-# ===== НАСТРОЙКИ МОЕГО ПУЛА (раскомментируйте, если нужно) =====
-# POOL_HOST = "127.0.0.1"  # Мой ПУЛ
-# POOL_PORT = 3333         # Мой ПОРТ
+POOL_HOST = "eu.molepool.com"
+POOL_PORT = 5566
 
 # ========== НАСТРОЙКИ ЛОГИРОВАНИЯ ==========
 LOG_FILE = "proxy_v2.log"
-NOTIFY_LOG_FILE = "notify_history_v2.jsonl"   # Все notify от пула
-SETDIFF_LOG_FILE = "setdiff_history_v2.jsonl" # Все set_difficulty от пула
-SHARES_LOG_FILE = "shares_v2.jsonl"           # Все шары от ASIC с хэшами
+NOTIFY_LOG_FILE = "notify_history_v2.jsonl"
+SETDIFF_LOG_FILE = "setdiff_history_v2.jsonl"
+SHARES_LOG_FILE = "shares_v2.jsonl"
+SUBSCRIBE_LOG_FILE = "subscribe_history_v2.jsonl"
 LOG_ALL_MESSAGES = True
 LOG_SHARE_DETAILS = True
 SHOW_ASIC_TO_POOL = True
@@ -50,13 +38,32 @@ SHOW_POOL_TO_ASIC = True
 SAVE_SHARES_TO_FILE = True
 
 # ========== НАСТРОЙКИ ДЕТЕКТОРА МОЛЧАНИЯ ==========
-SILENCE_THRESHOLD_SEC = 20.0  # Если ASIC молчит дольше — логируем
-SILENCE_CHECK_INTERVAL_SEC = 5.0  # Как часто проверять
+SILENCE_THRESHOLD_SEC = 20.0
+SILENCE_CHECK_INTERVAL_SEC = 5.0
 
-# ========== КОНСТАНТЫ ДЛЯ РАСЧЁТА СЛОЖНОСТИ ==========
-# Target для сложности 1.0 (Bitcoin/BCH)
+# ========== КОНСТАНТА ДЛЯ СЛОЖНОСТИ 1 ==========
 TARGET_FOR_DIFFICULTY_1 = 0x00000000FFFF0000000000000000000000000000000000000000000000000000
 
+
+# ========== ФУНКЦИИ ДЛЯ РАСЧЁТА TARGET ==========
+
+def nbits_to_target(nbits_hex: str) -> int:
+    """Convert nbits (compact target) to full 256-bit target."""
+    nbits = int(nbits_hex, 16)
+    exponent = nbits >> 24
+    mantissa = nbits & 0x007fffff
+    target = mantissa * (2 ** (8 * (exponent - 3)))
+    return target
+
+
+def target_to_difficulty(target: int) -> float:
+    """Convert target to network difficulty."""
+    if target <= 0:
+        return 0.0
+    return TARGET_FOR_DIFFICULTY_1 / target
+
+
+# ================================================
 
 class StratumProxy:
     """Прокси-сервер для перехвата и логирования Stratum трафика"""
@@ -95,20 +102,28 @@ class StratumProxy:
         # Детектор молчания
         self.silence_warning_sent = False
 
-        # Лог-файл
+        # Лог-файлы
         self.log_file = None
         self.notify_file = None
         self.setdiff_file = None
+        self.subscribe_file = None
 
-        # ===== НОВОЕ: КЭШ NOTIFY ДЛЯ РАСЧЁТА СЛОЖНОСТИ =====
-        # job_id -> dict с coinb1, coinb2, merkle_branch, version, nbits, ntime
+        # ===== КЭШ NOTIFY =====
         self.job_cache: Dict[str, dict] = {}
-        # Лучший шар за сессию
+
+        # ===== NETWORK TARGET =====
+        self.network_target: Optional[int] = None
+        self.network_difficulty: Optional[float] = None
+
+        # ===== EXTRANONCE1 =====
+        self.extranonce1: str = ""
+        self.extranonce2_size: int = 4
+
+        # ===== BEST SHARE =====
         self.best_share_difficulty: float = 0.0
         self.best_share_hash: str = ""
         self.best_share_nonce: str = ""
         self.best_share_time: Optional[datetime] = None
-        # ===================================================
 
         print(f"\n{'=' * 70}")
         print(f"🔍 STRATUM PROXY v2 STARTED")
@@ -120,27 +135,23 @@ class StratumProxy:
         print(f"{'=' * 70}\n")
 
     async def open_log_file(self):
-        """Открыть лог-файлы для записи"""
         self.log_file = open(LOG_FILE, 'a', encoding='utf-8')
         self.notify_file = open(NOTIFY_LOG_FILE, 'a', encoding='utf-8')
         self.setdiff_file = open(SETDIFF_LOG_FILE, 'a', encoding='utf-8')
+        self.subscribe_file = open(SUBSCRIBE_LOG_FILE, 'a', encoding='utf-8')
 
     async def close_log_file(self):
-        """Закрыть лог-файлы"""
-        for f in [self.log_file, self.notify_file, self.setdiff_file]:
+        for f in [self.log_file, self.notify_file, self.setdiff_file, self.subscribe_file]:
             if f:
                 f.close()
 
     def _now_str(self) -> str:
-        """Текущее время в формате HH:MM:SS.mmm"""
         return datetime.now(UTC).strftime('%H:%M:%S.%f')[:-3]
 
     def _now_iso(self) -> str:
-        """Текущее время в ISO формате"""
         return datetime.now(UTC).isoformat()
 
     def log(self, message: str, data: Any = None):
-        """Запись в лог-файл и консоль"""
         timestamp = self._now_str()
         prefix = f"[{timestamp}] {message}"
 
@@ -152,10 +163,8 @@ class StratumProxy:
         else:
             log_entry = prefix + "\n"
 
-        # В консоль
         print(log_entry.strip())
 
-        # В файл
         if self.log_file and not self.log_file.closed:
             try:
                 self.log_file.write(log_entry)
@@ -164,7 +173,7 @@ class StratumProxy:
                 print(f"⚠️ Не удалось записать в лог: {e}", flush=True)
 
     def log_notify(self, direction: str, message: dict):
-        """Сохранить mining.notify в отдельный файл"""
+        """Сохранить mining.notify в отдельный файл — ВСЕ ПОЛЯ."""
         if not self.notify_file:
             return
         try:
@@ -173,7 +182,12 @@ class StratumProxy:
                 "ts": self._now_iso(),
                 "direction": direction,
                 "job_id": params[0] if len(params) > 0 else None,
-                "prevhash": params[1][:32] if len(params) > 1 else None,
+                "prevhash": params[1] if len(params) > 1 else None,
+                "coinb1": params[2] if len(params) > 2 else None,
+                "coinb2": params[3] if len(params) > 3 else None,
+                "merkle_branch": params[4] if len(params) > 4 else None,
+                "version": params[5] if len(params) > 5 else None,
+                "nbits": params[6] if len(params) > 6 else None,
                 "ntime": params[7] if len(params) > 7 else None,
                 "clean_jobs": params[8] if len(params) > 8 else None,
             }
@@ -183,7 +197,6 @@ class StratumProxy:
             self.log(f"⚠️ Ошибка записи notify: {e}")
 
     def log_setdiff(self, direction: str, message: dict):
-        """Сохранить mining.set_difficulty в отдельный файл"""
         if not self.setdiff_file:
             return
         try:
@@ -198,8 +211,24 @@ class StratumProxy:
         except Exception as e:
             self.log(f"⚠️ Ошибка записи setdiff: {e}")
 
+    def log_subscribe(self, result: list):
+        """Сохранить ответ на mining.subscribe."""
+        if not self.subscribe_file:
+            return
+        try:
+            record = {
+                "ts": self._now_iso(),
+                "direction": "POOL→ASIC",
+                "extranonce1": self.extranonce1,
+                "extranonce2_size": self.extranonce2_size,
+                "raw_result": result,
+            }
+            self.subscribe_file.write(json.dumps(record) + "\n")
+            self.subscribe_file.flush()
+        except Exception as e:
+            self.log(f"⚠️ Ошибка записи subscribe: {e}")
+
     def log_message(self, direction: str, message: dict):
-        """Логирование Stratum сообщения"""
         if not LOG_ALL_MESSAGES:
             return
 
@@ -209,32 +238,11 @@ class StratumProxy:
         result = message.get("result", None)
         error = message.get("error", None)
 
-        # Определяем тип сообщения
         msg_type = method if method else ("RESPONSE" if result is not None else ("ERROR" if error is not None else "UNKNOWN"))
 
-        # Сокращаем длинные параметры
+        # ===== НЕ ОБРЕЗАЕМ notify и submit =====
+        # params_preview = params (полностью)
         params_preview = params
-        if isinstance(params, list):
-            if method == "mining.notify" and len(params) >= 3:
-                params_preview = [
-                    params[0],
-                    params[1][:16] + "..." if len(params) > 1 and isinstance(params[1], str) and len(params[1]) > 16 else params[1] if len(params) > 1 else None,
-                    params[2][:30] + "..." if len(params) > 2 and isinstance(params[2], str) and len(params[2]) > 30 else params[2] if len(params) > 2 else None,
-                    params[3][:30] + "..." if len(params) > 3 and isinstance(params[3], str) and len(params[3]) > 30 else params[3] if len(params) > 3 else None,
-                    f"[{len(params[4])} items]" if len(params) > 4 and isinstance(params[4], list) else params[4] if len(params) > 4 else None,
-                    params[5] if len(params) > 5 else None,
-                    params[6] if len(params) > 6 else None,
-                    params[7] if len(params) > 7 else None,
-                    params[8] if len(params) > 8 else None,
-                ]
-            elif method == "mining.submit" and len(params) >= 5:
-                params_preview = [
-                    params[0],
-                    params[1],
-                    params[2][:16] + "..." if isinstance(params[2], str) and len(params[2]) > 16 else params[2],
-                    params[3],
-                    params[4],
-                ]
 
         log_entry = {
             "direction": direction,
@@ -247,7 +255,6 @@ class StratumProxy:
         if error is not None:
             log_entry["error"] = error
 
-        # Эмодзи
         emoji = "📨"
         if method == "mining.subscribe": emoji = "📡"
         elif method == "mining.authorize": emoji = "🔐"
@@ -257,13 +264,12 @@ class StratumProxy:
         elif method == "mining.submit": emoji = "⛏️"
         elif method == "mining.configure": emoji = "⚙️"
 
-        # Логируем notify/setdiff в отдельные файлы
+        # Отдельные файлы
         if method == "mining.notify":
             self.log_notify(direction, message)
         elif method == "mining.set_difficulty":
             self.log_setdiff(direction, message)
 
-        # Логирование в консоль/файл
         if method == "mining.submit" and not LOG_SHARE_DETAILS:
             worker = params[0] if params else "unknown"
             job_id = params[1] if len(params) > 1 else "unknown"
@@ -272,22 +278,22 @@ class StratumProxy:
             self.log(f"{emoji} {direction} {msg_type}", log_entry)
 
     # ====================================================================
-    # ===== НОВОЕ: РАСЧЁТ ХЭША ШАРА И СЛОЖНОСТИ =====
+    # ===== РАСЧЁТ ХЭША ШАРА И СЛОЖНОСТИ =====
     # ====================================================================
 
     def _calculate_share_hash(self, job_id: str, extra_nonce2: str, ntime: str, nonce: str) -> Optional[str]:
         """
-        Расчёт хэша шара из данных job_cache.
+        Расчёт хэша шара.
 
-        Формула Stratum:
-          coinbase = coinb1 + extra_nonce2 + coinb2
-          merkle_root = SHA256(SHA256(coinbase)) + merkle_branch (по цепочке)
-          header = version + prevhash + merkle_root + ntime + nbits + nonce
-          hash = SHA256(SHA256(header))
+        coinbase = coinb1 + extranonce1 + extranonce2 + coinb2
         """
         job = self.job_cache.get(job_id)
         if not job:
+            self.log(f"⚠️ job_id={job_id} не найден в кэше — хэш не посчитать")
             return None
+
+        if not self.extranonce1:
+            self.log("⚠️ extranonce1 пуст — хэш будет неверным!")
 
         try:
             coinb1 = job["coinb1"]
@@ -298,12 +304,12 @@ class StratumProxy:
             nbits = job["nbits"]
 
             # 1. Coinbase
-            coinbase_hex = coinb1 + extra_nonce2 + coinb2
+            coinbase_hex = coinb1 + self.extranonce1 + extra_nonce2 + coinb2
             coinbase_bytes = bytes.fromhex(coinbase_hex)
 
-            # 2. Merkle root (стандарт Stratum)
+            # 2. Merkle root
             coinbase_hash = hashlib.sha256(hashlib.sha256(coinbase_bytes).digest()).digest()
-            current_hash = coinbase_hash  # уже LE
+            current_hash = coinbase_hash  # LE
 
             for branch_hex in merkle_branch:
                 branch_bytes = bytes.fromhex(branch_hex)[::-1]  # BE -> LE
@@ -311,9 +317,8 @@ class StratumProxy:
                 current_hash = hashlib.sha256(hashlib.sha256(concat).digest()).digest()
 
             merkle_root_le = current_hash
-            merkle_root_be = merkle_root_le[::-1]
 
-            # 3. Header
+            # 3. Header (все поля в LE)
             version_bytes = bytes.fromhex(version)[::-1]
             prevhash_bytes = bytes.fromhex(prevhash)[::-1]
             ntime_bytes = bytes.fromhex(ntime)[::-1]
@@ -323,48 +328,45 @@ class StratumProxy:
             header = (
                 version_bytes +
                 prevhash_bytes +
-                merkle_root_be +
+                merkle_root_le +   # ← LE, а не BE
                 ntime_bytes +
                 nbits_bytes +
                 nonce_bytes
             )
 
             if len(header) != 80:
+                self.log(f"⚠️ header len = {len(header)}, ожидалось 80")
                 return None
 
             # 4. Hash
             block_hash = hashlib.sha256(hashlib.sha256(header).digest()).digest()
-            return block_hash[::-1].hex()  # BE
+            return block_hash[::-1].hex()  # BE hex
 
         except Exception as e:
             self.log(f"⚠️ Ошибка расчёта хэша шара: {e}")
+            traceback.print_exc()
             return None
 
-    @staticmethod
-    def _calculate_share_difficulty(hash_hex: str) -> float:
-        """
-        Сложность шара относительно сложности 1.0.
-
-        D = TARGET_FOR_DIFFICULTY_1 / hash_int
-        """
+    def _calculate_share_difficulty(self, hash_hex: str) -> float:
+        """share_difficulty = network_target / hash_int"""
+        if self.network_target is None:
+            return 0.0
         try:
             hash_int = int(hash_hex, 16)
             if hash_int == 0:
                 return 0.0
-            return TARGET_FOR_DIFFICULTY_1 / hash_int
+            return self.network_target / hash_int
         except Exception:
             return 0.0
 
     # ====================================================================
 
     async def start(self):
-        """Запуск прокси"""
         try:
             await self.open_log_file()
 
             self.log("🚀 Запуск Stratum Proxy v2...")
 
-            # 1. Подключаемся к пулу
             self.log(f"🔌 Подключение к пулу {self.pool_host}:{self.pool_port}...")
             try:
                 self.pool_reader, self.pool_writer = await asyncio.wait_for(
@@ -380,7 +382,6 @@ class StratumProxy:
                 self.log(f"❌ Ошибка подключения к пулу: {e}")
                 return
 
-            # 2. Запускаем сервер для ASIC
             self.log(f"📡 Запуск прокси-сервера на {self.proxy_host}:{self.proxy_port}...")
             server = await asyncio.start_server(
                 self.handle_asic,
@@ -393,13 +394,8 @@ class StratumProxy:
             self.log("ОЖИДАНИЕ ПОДКЛЮЧЕНИЯ ASIC...")
             self.log("=" * 70)
 
-            # 3. Запускаем слушатель сообщений от пула
             asyncio.create_task(self.read_from_pool())
-
-            # 4. Монитор молчания ASIC
             asyncio.create_task(self.monitor_asic_silence())
-
-            # 5. Монитор "нет новых notify"
             asyncio.create_task(self.monitor_notify_gap())
 
             async with server:
@@ -417,14 +413,12 @@ class StratumProxy:
                 await self.pool_writer.wait_closed()
 
     async def handle_asic(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        """Обработка подключения ASIC"""
         self.asic_reader = reader
         self.asic_writer = writer
 
         addr = writer.get_extra_info('peername')
         self.log(f"\n🔌 ASIC подключился: {addr}")
 
-        # Переподключаемся к пулу
         self.log("🔄 Переподключение к пулу...")
         try:
             self.pool_reader, self.pool_writer = await asyncio.wait_for(
@@ -472,7 +466,6 @@ class StratumProxy:
                 self.connected_to_pool = False
 
     async def handle_asic_message(self, message: dict):
-        """Обработка сообщения от ASIC"""
         self.message_counter += 1
         self.last_message_time = datetime.now(UTC)
 
@@ -482,7 +475,6 @@ class StratumProxy:
         if SHOW_ASIC_TO_POOL:
             self.log_message("ASIC→POOL", message)
 
-        # Пересылаем в пул
         if self.pool_writer and self.connected_to_pool:
             try:
                 self.pool_writer.write((json.dumps(message) + "\n").encode())
@@ -493,7 +485,6 @@ class StratumProxy:
         else:
             self.log(f"⚠️ Нет соединения с пулом, сообщение {method} не отправлено")
 
-        # Обработка важных сообщений
         if method == "mining.authorize":
             if message.get("params"):
                 username = message["params"][0] if message["params"] else "unknown"
@@ -509,7 +500,7 @@ class StratumProxy:
         elif method == "mining.submit":
             self.share_counter += 1
             self.last_share_time = datetime.now(UTC)
-            self.silence_warning_sent = False  # сбрасываем флаг
+            self.silence_warning_sent = False
 
             params = message.get("params", [])
             if len(params) >= 5:
@@ -517,7 +508,6 @@ class StratumProxy:
                 nonce = params[4]
                 self.log(f"⛏️ SHARE #{self.share_counter} @ {self._now_str()}: job={job_id}, nonce={nonce}")
 
-            # Сохраняем шар с расчётом хэша
             if SAVE_SHARES_TO_FILE:
                 self.log_share_to_file(message, "ASIC→POOL")
 
@@ -525,7 +515,6 @@ class StratumProxy:
             self.log(f"📡 ASIC подписался на уведомления")
 
     def log_share_to_file(self, message: dict, direction: str):
-        """Сохранение шаров в отдельный файл с расчётом сложности"""
         if direction != "ASIC→POOL":
             return
         params = message.get("params", [])
@@ -538,25 +527,34 @@ class StratumProxy:
         ntime = params[3]
         nonce = params[4]
 
-        # ===== РАСЧЁТ ХЭША И СЛОЖНОСТИ =====
         share_hash = self._calculate_share_hash(job_id, extra_nonce2, ntime, nonce)
         share_difficulty = 0.0
+        hash_int = 0
+        best_share_molehole = 0.0
+
         if share_hash:
+            hash_int = int(share_hash, 16)
             share_difficulty = self._calculate_share_difficulty(share_hash)
 
-            # Обновляем Best Share
+            if self.network_difficulty:
+                best_share_molehole = share_difficulty * self.network_difficulty
+
             if share_difficulty > self.best_share_difficulty:
                 self.best_share_difficulty = share_difficulty
                 self.best_share_hash = share_hash
                 self.best_share_nonce = nonce
                 self.best_share_time = datetime.now(UTC)
                 self.log(
-                    f"🏆 NEW BEST SHARE! difficulty={share_difficulty:.6e} "
-                    f"(×2^32 = {share_difficulty * 2**32:.2f}), "
+                    f"🏆 NEW BEST SHARE! "
+                    f"share_difficulty={share_difficulty:.6e}, "
+                    f"hash_int={hash_int:.6e}, "
+                    f"network_target={self.network_target:.6e}, "
+                    f"network_difficulty={self.network_difficulty:.2f}, "
+                    f"share_diff_x_net_diff={best_share_molehole:.6e}, "
                     f"hash={share_hash[:16]}..., nonce={nonce}"
                 )
-        # ===================================
 
+        job = self.job_cache.get(job_id)
         share_data = {
             "ts": self._now_iso(),
             "worker": worker,
@@ -564,12 +562,27 @@ class StratumProxy:
             "extra_nonce2": extra_nonce2,
             "ntime": ntime,
             "nonce": nonce,
+            "extranonce1": self.extranonce1,
             "current_difficulty": self.current_difficulty,
+            "network_target": self.network_target,
+            "network_target_hex": hex(self.network_target) if self.network_target else None,
+            "network_difficulty": self.network_difficulty,
             "hash": share_hash,
+            "hash_int": hash_int,
             "share_difficulty": share_difficulty,
-            "share_difficulty_x2_32": share_difficulty * 2**32,
+            "share_difficulty_x_network_difficulty": best_share_molehole,
             "best_share_difficulty": self.best_share_difficulty,
+            # ===== ДАННЫЕ NOTIFY ДЛЯ ПЕРЕСЧЁТА =====
+            "job_data": {
+                "prevhash": job["prevhash"] if job else None,
+                "coinb1": job["coinb1"] if job else None,
+                "coinb2": job["coinb2"] if job else None,
+                "merkle_branch": job["merkle_branch"] if job else None,
+                "version": job["version"] if job else None,
+                "nbits": job["nbits"] if job else None,
+            } if job else None,
         }
+
         try:
             with open(SHARES_LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(json.dumps(share_data) + "\n")
@@ -577,7 +590,6 @@ class StratumProxy:
             self.log(f"⚠️ Ошибка записи шара в файл: {e}")
 
     async def read_from_pool(self):
-        """Чтение сообщений от пула и пересылка ASIC"""
         self.log("📡 Запущен слушатель сообщений от пула")
 
         while True:
@@ -599,18 +611,15 @@ class StratumProxy:
             except asyncio.CancelledError:
                 break
             except asyncio.LimitOverrunError as e:
-                # Если notify слишком большой — пропускаем его, но НЕ прерываем цикл.
                 self.log(f"⚠️ LimitOverrunError: {e} — пропускаем сообщение, продолжаем")
                 await asyncio.sleep(0.1)
                 continue
             except Exception as e:
                 self.log(f"❌ Ошибка чтения от пула: {e}")
-                # НЕ ПРЕРЫВАЕМ ЦИКЛ!
                 await asyncio.sleep(0.1)
                 continue
 
     async def handle_pool_message(self, message: dict):
-        """Обработка сообщения от пула"""
         self.message_counter += 1
         method = message.get("method")
         _msg_id = message.get("id")
@@ -622,10 +631,17 @@ class StratumProxy:
 
         if error is not None:
             self.log(f"❌ ПУЛ ВЕРНУЛ ОШИБКУ: {error}")
-        if result is not None and method is None:
-            self.log(f"✅ ПУЛ ВЕРНУЛ РЕЗУЛЬТАТ: {result}")
 
-        # Обработка set_difficulty
+        # ===== Ответ на mining.subscribe =====
+        if result is not None and method is None:
+            if isinstance(result, list) and len(result) >= 3:
+                if isinstance(result[0], list) and isinstance(result[1], str):
+                    self.extranonce1 = result[1]
+                    self.extranonce2_size = result[2]
+                    self.log(f"📡 ПОЛУЧЕН extranonce1={self.extranonce1}, extranonce2_size={self.extranonce2_size}")
+                    self.log_subscribe(result)
+
+        # ===== set_difficulty =====
         if method == "mining.set_difficulty":
             params = message.get("params", [])
             if params:
@@ -634,14 +650,30 @@ class StratumProxy:
                 self.setdiff_counter += 1
                 self.log(f"📊 POOL→ASIC set_difficulty #{self.setdiff_counter}: {params[0]}")
 
-        # Обработка notify — СОХРАНЯЕМ В КЭШ
+        # ===== notify =====
         elif method == "mining.notify":
             self.last_notify_time = datetime.now(UTC)
             self.notify_counter += 1
             params = message.get("params", [])
             if params and len(params) >= 9:
                 job_id = params[0]
-                # Сохраняем notify в кэш для расчёта сложности
+                nbits = params[6]
+
+                try:
+                    new_network_target = nbits_to_target(nbits)
+                    new_network_difficulty = target_to_difficulty(new_network_target)
+
+                    if self.network_target != new_network_target:
+                        self.network_target = new_network_target
+                        self.network_difficulty = new_network_difficulty
+                        self.log(
+                            f"🎯 NETWORK UPDATED: nbits={nbits}, "
+                            f"target={new_network_target:#066x}, "
+                            f"difficulty={new_network_difficulty:.2f}"
+                        )
+                except Exception as e:
+                    self.log(f"⚠️ Ошибка вычисления network_target из nbits={nbits}: {e}")
+
                 self.job_cache[job_id] = {
                     "prevhash": params[1],
                     "coinb1": params[2],
@@ -651,7 +683,6 @@ class StratumProxy:
                     "nbits": params[6],
                     "ntime": params[7],
                 }
-                # Ограничиваем размер кэша
                 if len(self.job_cache) > 100:
                     keys = list(self.job_cache.keys())
                     for k in keys[:50]:
@@ -659,7 +690,6 @@ class StratumProxy:
 
                 self.log(f"📤 POOL→ASIC notify #{self.notify_counter}: job_id={job_id}")
 
-        # Пересылаем ASIC
         if self.asic_writer:
             try:
                 self.asic_writer.write((json.dumps(message) + "\n").encode())
@@ -668,16 +698,11 @@ class StratumProxy:
                 self.log(f"❌ Ошибка отправки ASIC: {e}")
 
     async def monitor_asic_silence(self):
-        """
-        Фоновая задача: проверяет, не замолчал ли ASIC.
-        Логирует предупреждение, если ASIC не отправлял шары дольше SILENCE_THRESHOLD_SEC.
-        """
         self.log("👁️ Запущен монитор молчания ASIC")
 
         while True:
             try:
                 await asyncio.sleep(SILENCE_CHECK_INTERVAL_SEC)
-
                 now = datetime.now(UTC)
 
                 if self.last_share_time is not None:
@@ -717,33 +742,24 @@ class StratumProxy:
                 self.log(f"❌ Ошибка в мониторе молчания: {e}")
 
     async def monitor_notify_gap(self):
-        """
-        Фоновая задача: проверяет, шлёт ли пул новые notify регулярно.
-        Если пул не шлёт notify дольше 60 секунд — логируем.
-        """
         self.log("👁️ Запущен монитор notify gap")
         NOTIFY_GAP_THRESHOLD = 60.0
 
         while True:
             try:
                 await asyncio.sleep(10)
-
                 if self.last_notify_time is None:
                     continue
-
                 now = datetime.now(UTC)
                 gap = (now - self.last_notify_time).total_seconds()
-
                 if gap > NOTIFY_GAP_THRESHOLD:
                     self.log(f"⚠️ Пул не шлёт notify уже {gap:.1f}с!")
-
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 self.log(f"❌ Ошибка в мониторе notify gap: {e}")
 
     def get_stats(self) -> dict:
-        """Получить статистику прокси"""
         uptime = (datetime.now(UTC) - self.start_time).total_seconds()
         return {
             "uptime_seconds": uptime,
@@ -755,19 +771,19 @@ class StratumProxy:
             "asic_authorized": self.asic_authorized,
             "miner_address": self.miner_address,
             "connected_to_pool": self.connected_to_pool,
-            # ===== НОВОЕ =====
+            "extranonce1": self.extranonce1,
+            "extranonce2_size": self.extranonce2_size,
+            "network_target": hex(self.network_target) if self.network_target else None,
+            "network_target_int": self.network_target,
+            "network_difficulty": self.network_difficulty,
             "best_share_difficulty": self.best_share_difficulty,
-            "best_share_difficulty_x2_32": self.best_share_difficulty * 2**32,
             "best_share_hash": self.best_share_hash[:16] + "..." if self.best_share_hash else None,
             "best_share_nonce": self.best_share_nonce,
             "best_share_time": self.best_share_time.isoformat() if self.best_share_time else None,
-            # =================
         }
 
 
-# ========== ЗАПУСК ==========
 async def main():
-    """Главная функция"""
     proxy = StratumProxy(PROXY_HOST, PROXY_PORT, POOL_HOST, POOL_PORT)
     try:
         await proxy.start()
@@ -790,17 +806,23 @@ async def main():
         print(f"   Адрес майнера:          {stats['miner_address'][:30]}...")
         print(f"   Подключен к пулу:       {stats['connected_to_pool']}")
         print("=" * 70)
+        print(f"   📡 EXTRANONCE1:         {stats['extranonce1']}")
+        print(f"   📡 EXTRANONCE2_SIZE:    {stats['extranonce2_size']}")
+        print("=" * 70)
+        print(f"   🎯 NETWORK TARGET:      {stats['network_target']}")
+        print(f"   🎯 NETWORK DIFFICULTY:  {stats['network_difficulty']}")
+        print("=" * 70)
         print(f"   🏆 BEST SHARE:          {stats['best_share_difficulty']:.6e}")
-        print(f"      ×2^32:               {stats['best_share_difficulty_x2_32']:.2f}")
-        print(f"      hash:                {stats['best_share_hash']}")
-        print(f"      nonce:               {stats['best_share_nonce']}")
-        print(f"      time:                {stats['best_share_time']}")
+        print(f"      hash:                 {stats['best_share_hash']}")
+        print(f"      nonce:                {stats['best_share_nonce']}")
+        print(f"      time:                 {stats['best_share_time']}")
         print("=" * 70)
         print("\n📁 Логи сохранены в:")
         print(f"   - {LOG_FILE} (все сообщения)")
-        print(f"   - {SHARES_LOG_FILE} (только шары + hash + difficulty)")
-        print(f"   - {NOTIFY_LOG_FILE} (все notify от пула)")
+        print(f"   - {SHARES_LOG_FILE} (только шары + hash + difficulty + job_data)")
+        print(f"   - {NOTIFY_LOG_FILE} (все notify от пула, полные)")
         print(f"   - {SETDIFF_LOG_FILE} (все set_difficulty от пула)")
+        print(f"   - {SUBSCRIBE_LOG_FILE} (extranonce1, extranonce2_size)")
         print("=" * 70)
 
 

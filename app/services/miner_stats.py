@@ -22,6 +22,12 @@ class ShareInfo:
     job_id: str
     nonce: str
     ntime: str
+    # ===== НОВОЕ: сложность относительно сложности 1 (как Molehole) =====
+    share_difficulty_1: float = 0.0
+    # ====================================================================
+    # ===== display_difficulty (то, что пул отправил ASIC) =====
+    display_difficulty: float = 0.0
+    # ================================================================
 
     def to_dict(self) -> Dict[str, Any]:
         """Преобразовать в словарь для API"""
@@ -46,6 +52,12 @@ class MinerStatsData:
     total_difficulty: float = 0.0
     max_difficulty: float = 0.0
     max_difficulty_share: Optional[ShareInfo] = None
+
+    # ===== максимум по сложности относительно 1 (как Molehole) =====
+    max_share_difficulty_1: float = 0.0
+    max_share_difficulty_1_share: Optional[ShareInfo] = None
+    # ======================================================================
+
     last_shares: deque = field(default_factory=lambda: deque(maxlen=1000))
     hashrate_history: deque = field(default_factory=lambda: deque(maxlen=360))
     last_update: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -65,32 +77,49 @@ class MinerStatsData:
             self.max_difficulty = share.difficulty
             self.max_difficulty_share = share
 
+        # =====  обновляем максимальную сложность относительно 1 =====
+        if share.share_difficulty_1 > self.max_share_difficulty_1:
+            self.max_share_difficulty_1 = share.share_difficulty_1
+            self.max_share_difficulty_1_share = share
+        # ==================================================================
+
         # Добавляем в историю
         self.last_shares.append(share)
         self.last_update = datetime.now(UTC)
 
     def get_hashrate(self, period_seconds: int = 600) -> float:
-        """Рассчитать хэшрейт за последние N секунд"""
+        """
+        Рассчитать хэшрейт за последние N секунд.
+
+        ВАЖНО: используем display_difficulty (то, что пул отправил ASIC),
+        а НЕ share.difficulty (сложность относительно сети).
+
+        Формула:
+            hashrate = (количество шаров × display_difficulty × 2^32) / period_seconds
+
+        Где display_difficulty — сложность, которую пул отправил ASIC
+        через mining.set_difficulty (например, 131072).
+        """
         if period_seconds <= 0:
             return 0.0
 
         now = datetime.now(UTC)
-        total_difficulty = 0.0
-        shares_count = 0
+        total_hashes = 0.0
 
         for share in self.last_shares:
             age = (now - share.timestamp).total_seconds()
             if age <= period_seconds and share.is_valid:
-                total_difficulty += share.difficulty
-                shares_count += 1
+                # ===== ПРАВИЛЬНАЯ ФОРМУЛА =====
+                # Каждый шар при display_difficulty D = D × 2^32 хэшей.
+                display_diff = share.display_difficulty or 1.0
+                total_hashes += display_diff * (2 ** 32)
+                # ==============================
 
-        if shares_count == 0:
+        if total_hashes == 0:
             return 0.0
 
-        # Каждый шар = 2^32 хэшей
-        hashes_per_share = 2 ** 32
-        total_hashes = total_difficulty * hashes_per_share
         return total_hashes / period_seconds
+
 
     def to_dict(self) -> Dict[str, Any]:
         """Преобразовать в словарь для API"""
@@ -131,6 +160,13 @@ class MinerStatsService:
                 event="miner_stats_cleanup_started",
                 cleanup_interval_seconds=60
             )
+
+    async def get_max_share_difficulty_1(self, address: str) -> Optional[ShareInfo]:
+        """Получить шар с максимальной сложностью относительно 1 (как Molehole)"""
+        stats = await self.get_stats(address)
+        if not stats:
+            return None
+        return stats.max_share_difficulty_1_share
 
     async def stop(self):
         """Остановка фоновой очистки"""

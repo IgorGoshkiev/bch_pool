@@ -402,7 +402,7 @@ async def get_max_difficulty_share(
     """Получить шар с максимальной сложностью для майнера."""
     await get_miner_or_404(bch_address, db)
 
-    share = await miner_stats_service.get_max_difficulty_share(bch_address)
+    share = await miner_stats_service.get_max_share_difficulty_1(bch_address)
 
     if not share:
         return ApiResponse(
@@ -535,10 +535,10 @@ async def get_miner_dashboard(
     accepted_shares = stats.accepted_shares if stats else 0
     rejected_shares = stats.rejected_shares if stats else 0
 
-    # ===== BEST SHARE =====
-    max_share = await miner_stats_service.get_max_difficulty_share(bch_address)
-    best_share = max_share.difficulty if max_share else 0.0
-    last_best_share_time = max_share.timestamp.isoformat() if max_share else None
+    # ===== BEST SHARE (как Molehole — сложность относительно 1) =====
+    max_share_1 = await miner_stats_service.get_max_share_difficulty_1(bch_address)
+    best_share = max_share_1.share_difficulty_1 if max_share_1 else 0.0
+    last_best_share_time = max_share_1.timestamp.isoformat() if max_share_1 else None
 
     # ===== NETWORK DIFFICULTY =====
     try:

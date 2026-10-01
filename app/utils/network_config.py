@@ -34,7 +34,6 @@ NETWORK_CONFIGS = {
         'magic_bytes': bytes.fromhex('e3e1f3e8'),
         'genesis_hash': '000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f',
         'default_difficulty': 1.0,
-        # ✅ ПРАВИЛЬНАЯ КОНСТАНТА
         'target_for_difficulty_1': 0x00000000FFFF0000000000000000000000000000000000000000000000000000,
         'testnet': False
     },
@@ -55,7 +54,6 @@ NETWORK_CONFIGS = {
         'magic_bytes': bytes.fromhex('f4e5f3f4'),
         'genesis_hash': '000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943',
         'default_difficulty': 1.0,
-        # ✅ ТА ЖЕ КОНСТАНТА ДЛЯ ВСЕХ СЕТЕЙ
         'target_for_difficulty_1': 0x00000000FFFF0000000000000000000000000000000000000000000000000000,
         'testnet': True
     },
@@ -76,7 +74,6 @@ NETWORK_CONFIGS = {
         'magic_bytes': bytes.fromhex('e2b7daaf'),
         'genesis_hash': '000000001dd410c49a788668ce26751718cc797474d3152a5fc073dd44fd9f7b',
         'default_difficulty': 0.001,
-        # ✅ ТА ЖЕ КОНСТАНТА
         'target_for_difficulty_1': 0x00000000FFFF0000000000000000000000000000000000000000000000000000,
         'testnet': True
     },

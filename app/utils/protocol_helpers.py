@@ -107,15 +107,13 @@ def format_difficulty(difficulty: float) -> str:
     """
     Форматирование сложности в читаемый вид (как у Molehole).
 
-    Отличие от format_hashrate:
-    - format_hashrate: "89.45 TH/s" (хэшрейт)
-    - format_difficulty: "61.132M", "520.613G" (сложность)
-
     Примеры:
-    - 131072        → "131K"
-    - 61132000      → "61.132M"
-    - 520613000000  → "520.613G"
-    - 1500000000000 → "1.500T"
+    - 0.00000000118   → "0.000000001"
+    - 131072          → "131.000K"
+    - 61132000        → "61.132M"
+    - 520613000000    → "520.613G"
+    - 1500000000000   → "1.500T"
+    - 3083000000000   → "3.083T"
     """
     if difficulty >= 1_000_000_000_000:  # T
         return f"{difficulty / 1_000_000_000_000:.3f}T"
@@ -125,5 +123,8 @@ def format_difficulty(difficulty: float) -> str:
         return f"{difficulty / 1_000_000:.3f}M"
     elif difficulty >= 1_000:  # K
         return f"{difficulty / 1_000:.3f}K"
-    else:
+    elif difficulty >= 1:
         return f"{difficulty:.0f}"
+    else:
+        # Для чисел < 1 показываем с достаточной точностью
+        return f"{difficulty:.9f}"
