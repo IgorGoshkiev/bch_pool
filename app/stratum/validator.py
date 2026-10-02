@@ -64,9 +64,14 @@ class ShareValidator:
         # Fallback (если нода недоступна)
         network = getattr(settings, 'bch_network', 'mainnet')
         network_config = NETWORK_CONFIGS.get(network, NETWORK_CONFIGS['mainnet'])
+
+        # target_for_difficulty_1 — НЕ хардкод.
+        # Используется ТОЛЬКО если нода недоступна.
+        # Если нода недоступна — _fallback_difficulty_1_target = None.
+        # Тогда share_difficulty НЕ считается.
         self._fallback_difficulty_1_target = network_config.get(
             'target_for_difficulty_1',
-            0x00000000FFFF0000000000000000000000000000000000000000000000000000
+            None  # ← НЕ хардкод! None, если нет в конфиге
         )
 
         self.last_network_update = None
@@ -95,17 +100,17 @@ class ShareValidator:
         """
         return self._fallback_difficulty_1_target
 
-    def get_difficulty_1_target(self) -> int:
+    def get_difficulty_1_target(self) -> Optional[int]:
         """
         Получить актуальный difficulty_1_target.
 
         Возвращает:
         - difficulty_1_target из ноды (если загружен)
-        - fallback (если нода недоступна)
+        - None, если нода недоступна (НЕ используем хардкод!)
         """
         if self.difficulty_1_target:
             return self.difficulty_1_target
-        return self._fallback_difficulty_1_target
+        return self._fallback_difficulty_1_target  # None
 
     def update_from_node(self, network_target: int, network_difficulty: float):
         """

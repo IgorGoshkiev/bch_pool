@@ -34,7 +34,6 @@ NETWORK_CONFIGS = {
         'magic_bytes': bytes.fromhex('e3e1f3e8'),
         'genesis_hash': '000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f',
         'default_difficulty': 1.0,
-        'target_for_difficulty_1': 0x00000000FFFF0000000000000000000000000000000000000000000000000000,
         'testnet': False
     },
     'testnet': {

@@ -675,13 +675,14 @@ class StratumTCPServer:
 
                     if hash_int > 0:
                         target_for_diff_1 = self.share_validator.get_difficulty_1_target()
-                        source = "NODE" if self.share_validator.difficulty_1_target else "FALLBACK"
+
+                        if target_for_diff_1 is None:
+                            print(f"🔴 SHARE REJECTED: difficulty_1_target = None (нода недоступна)", flush=True)
+                            await self._send_error(writer, msg_id, "Node data unavailable")
+                            return
 
                         share_difficulty = target_for_diff_1 / hash_int
-                        print(f"🔥 SHARE DIFFICULTY (source={source}): {share_difficulty:.6e}", flush=True)
-                    else:
-                        share_difficulty = 0
-                        print(f"🔥 WARNING: hash_int is 0, cannot calculate difficulty", flush=True)
+                        print(f"🔥 SHARE DIFFICULTY: {share_difficulty:.6e}", flush=True)
 
                 except Exception as e:
                     print(f"🔥 ERROR calculating hash: {e}", flush=True)

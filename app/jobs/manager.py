@@ -160,7 +160,12 @@ class JobManager:
                     target_int = int(target_hex, 16)
 
                     mining_info = await self.node_client.get_mining_info()
+                    print(f"🔍 [DEBUG] mining_info keys: {list(mining_info.keys()) if mining_info else 'None'}",
+                          flush=True)
+                    print(f"🔍 [DEBUG] difficulty RAW: {mining_info.get('difficulty') if mining_info else 'None'}",
+                          flush=True)
                     network_difficulty = float(mining_info.get('difficulty', 0))
+                    print(f"🔍 [DEBUG] network_difficulty AFTER float: {network_difficulty}", flush=True)
 
                     if network_difficulty > 0:
                         self.job_service.validator.update_from_node(
