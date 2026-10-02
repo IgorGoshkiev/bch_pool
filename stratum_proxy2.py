@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
-Stratum Proxy v2 для отладки взаимодействия ASIC ↔ Пул.
+Stratum Proxy v2 — для сравнения Molehole и своего пула.
 
-ИСПРАВЛЕНО:
-1. log_message НЕ обрезает mining.notify и mining.submit.
-2. log_notify сохраняет ВСЕ поля notify (coinb1, coinb2, merkle_branch, version, nbits, ntime, prevhash).
-3. Добавлен subscribe_history_v2.jsonl (extranonce1, extranonce2_size).
-4. shares_v2.jsonl содержит job_data (полные данные notify для пересчёта хэша).
-5. _calculate_share_hash: merkle_root берётся в LE.
-6. В лог best share добавлено network_difficulty и share_diff × network_diff.
+Что делает:
+1. Перехватывает трафик ASIC ↔ Пул.
+2. Сохраняет ВСЕ данные notify и submit.
+3. Считает хэш шара (с extranonce1 и version_bits).
+4. Считает ВСЕ возможные формулы сложности — для сравнения.
+5. Пишет в shares_v2.jsonl всё, что нужно для анализа.
+
+Как использовать:
+1. Настройте ASIC подключаться к IP:4444.
+2. Прокси подключится к пулу (Molehole или свой).
+3. Запустите, дайте 5-10 шар, остановите.
+4. Пришлите shares_v2.jsonl.
 """
 
 import asyncio
@@ -22,8 +27,17 @@ import traceback
 PROXY_HOST = "0.0.0.0"
 PROXY_PORT = 4444
 
-POOL_HOST = "eu.molepool.com"
-POOL_PORT = 5566
+# ===== ВЫБЕРИТЕ ПУЛ =====
+# Molehole:
+# POOL_HOST = "eu.molepool.com"
+# POOL_PORT = 5566
+
+POOL_HOST = "eu-bch.solofury.com"
+POOL_PORT = 7070
+
+# Свой пул (раскомментируйте, когда нужно):
+# POOL_HOST = "127.0.0.1"
+# POOL_PORT = 3333
 
 # ========== НАСТРОЙКИ ЛОГИРОВАНИЯ ==========
 LOG_FILE = "proxy_v2.log"
@@ -37,18 +51,18 @@ SHOW_ASIC_TO_POOL = True
 SHOW_POOL_TO_ASIC = True
 SAVE_SHARES_TO_FILE = True
 
-# ========== НАСТРОЙКИ ДЕТЕКТОРА МОЛЧАНИЯ ==========
+# ========== ДЕТЕКТОР МОЛЧАНИЯ ==========
 SILENCE_THRESHOLD_SEC = 20.0
 SILENCE_CHECK_INTERVAL_SEC = 5.0
 
-# ========== КОНСТАНТА ДЛЯ СЛОЖНОСТИ 1 ==========
+# ========== КОНСТАНТЫ ==========
 TARGET_FOR_DIFFICULTY_1 = 0x00000000FFFF0000000000000000000000000000000000000000000000000000
 
 
-# ========== ФУНКЦИИ ДЛЯ РАСЧЁТА TARGET ==========
+# ========== ФУНКЦИИ ==========
 
 def nbits_to_target(nbits_hex: str) -> int:
-    """Convert nbits (compact target) to full 256-bit target."""
+    """nbits -> full 256-bit target."""
     nbits = int(nbits_hex, 16)
     exponent = nbits >> 24
     mantissa = nbits & 0x007fffff
@@ -57,7 +71,7 @@ def nbits_to_target(nbits_hex: str) -> int:
 
 
 def target_to_difficulty(target: int) -> float:
-    """Convert target to network difficulty."""
+    """target -> network difficulty."""
     if target <= 0:
         return 0.0
     return TARGET_FOR_DIFFICULTY_1 / target
@@ -66,61 +80,50 @@ def target_to_difficulty(target: int) -> float:
 # ================================================
 
 class StratumProxy:
-    """Прокси-сервер для перехвата и логирования Stratum трафика"""
-
     def __init__(self, proxy_host: str, proxy_port: int, pool_host: str, pool_port: int):
         self.proxy_host = proxy_host
         self.proxy_port = proxy_port
         self.pool_host = pool_host
         self.pool_port = pool_port
 
-        # Подключения
         self.asic_reader: Optional[asyncio.StreamReader] = None
         self.asic_writer: Optional[asyncio.StreamWriter] = None
         self.pool_reader: Optional[asyncio.StreamReader] = None
         self.pool_writer: Optional[asyncio.StreamWriter] = None
 
-        # Счетчики
         self.message_counter = 0
         self.share_counter = 0
         self.notify_counter = 0
         self.setdiff_counter = 0
         self.start_time = datetime.now(UTC)
 
-        # Статистика по сложности
         self.current_difficulty: float = 0.0
         self.last_share_time: Optional[datetime] = None
         self.last_message_time: Optional[datetime] = None
         self.last_notify_time: Optional[datetime] = None
         self.last_setdiff_time: Optional[datetime] = None
 
-        # Статус
         self.connected_to_pool = False
         self.asic_authorized = False
         self.miner_address = "unknown"
-
-        # Детектор молчания
         self.silence_warning_sent = False
 
-        # Лог-файлы
         self.log_file = None
         self.notify_file = None
         self.setdiff_file = None
         self.subscribe_file = None
 
-        # ===== КЭШ NOTIFY =====
         self.job_cache: Dict[str, dict] = {}
-
-        # ===== NETWORK TARGET =====
         self.network_target: Optional[int] = None
         self.network_difficulty: Optional[float] = None
 
-        # ===== EXTRANONCE1 =====
         self.extranonce1: str = ""
         self.extranonce2_size: int = 4
 
-        # ===== BEST SHARE =====
-        self.best_share_difficulty: float = 0.0
+        # version-rolling mask (из mining.configure)
+        self.version_rolling_mask: int = 0
+
+        self.best_share_difficulty_1: float = 0.0
         self.best_share_hash: str = ""
         self.best_share_nonce: str = ""
         self.best_share_time: Optional[datetime] = None
@@ -173,7 +176,6 @@ class StratumProxy:
                 print(f"⚠️ Не удалось записать в лог: {e}", flush=True)
 
     def log_notify(self, direction: str, message: dict):
-        """Сохранить mining.notify в отдельный файл — ВСЕ ПОЛЯ."""
         if not self.notify_file:
             return
         try:
@@ -212,7 +214,6 @@ class StratumProxy:
             self.log(f"⚠️ Ошибка записи setdiff: {e}")
 
     def log_subscribe(self, result: list):
-        """Сохранить ответ на mining.subscribe."""
         if not self.subscribe_file:
             return
         try:
@@ -240,9 +241,7 @@ class StratumProxy:
 
         msg_type = method if method else ("RESPONSE" if result is not None else ("ERROR" if error is not None else "UNKNOWN"))
 
-        # ===== НЕ ОБРЕЗАЕМ notify и submit =====
-        # params_preview = params (полностью)
-        params_preview = params
+        params_preview = params  # НЕ обрезаем
 
         log_entry = {
             "direction": direction,
@@ -264,7 +263,6 @@ class StratumProxy:
         elif method == "mining.submit": emoji = "⛏️"
         elif method == "mining.configure": emoji = "⚙️"
 
-        # Отдельные файлы
         if method == "mining.notify":
             self.log_notify(direction, message)
         elif method == "mining.set_difficulty":
@@ -278,18 +276,26 @@ class StratumProxy:
             self.log(f"{emoji} {direction} {msg_type}", log_entry)
 
     # ====================================================================
-    # ===== РАСЧЁТ ХЭША ШАРА И СЛОЖНОСТИ =====
+    # ===== РАСЧЁТ ХЭША ШАРА =====
     # ====================================================================
 
-    def _calculate_share_hash(self, job_id: str, extra_nonce2: str, ntime: str, nonce: str) -> Optional[str]:
+    def _calculate_share_hash(
+        self,
+        job_id: str,
+        extra_nonce2: str,
+        ntime: str,
+        nonce: str,
+        version_bits: Optional[str] = None
+    ) -> Optional[str]:
         """
         Расчёт хэша шара.
 
         coinbase = coinb1 + extranonce1 + extranonce2 + coinb2
+        header = version + prevhash + merkle_root + ntime + nbits + nonce
         """
         job = self.job_cache.get(job_id)
         if not job:
-            self.log(f"⚠️ job_id={job_id} не найден в кэше — хэш не посчитать")
+            self.log(f"⚠️ job_id={job_id} не найден в кэше")
             return None
 
         if not self.extranonce1:
@@ -302,6 +308,15 @@ class StratumProxy:
             version = job["version"]
             prevhash = job["prevhash"]
             nbits = job["nbits"]
+
+            # ===== VERSION BITS =====
+            if version_bits and self.version_rolling_mask:
+                version_int = int(version, 16)
+                version_bits_int = int(version_bits, 16)
+                mask = self.version_rolling_mask
+                final_version_int = (version_int & ~mask) | (version_bits_int & mask)
+                version = f"{final_version_int:08x}"
+            # ====================================
 
             # 1. Coinbase
             coinbase_hex = coinb1 + self.extranonce1 + extra_nonce2 + coinb2
@@ -328,7 +343,7 @@ class StratumProxy:
             header = (
                 version_bytes +
                 prevhash_bytes +
-                merkle_root_le +   # ← LE, а не BE
+                merkle_root_le +
                 ntime_bytes +
                 nbits_bytes +
                 nonce_bytes
@@ -343,28 +358,15 @@ class StratumProxy:
             return block_hash[::-1].hex()  # BE hex
 
         except Exception as e:
-            self.log(f"⚠️ Ошибка расчёта хэша шара: {e}")
+            self.log(f"⚠️ Ошибка расчёта хэша: {e}")
             traceback.print_exc()
             return None
-
-    def _calculate_share_difficulty(self, hash_hex: str) -> float:
-        """share_difficulty = network_target / hash_int"""
-        if self.network_target is None:
-            return 0.0
-        try:
-            hash_int = int(hash_hex, 16)
-            if hash_int == 0:
-                return 0.0
-            return self.network_target / hash_int
-        except Exception:
-            return 0.0
 
     # ====================================================================
 
     async def start(self):
         try:
             await self.open_log_file()
-
             self.log("🚀 Запуск Stratum Proxy v2...")
 
             self.log(f"🔌 Подключение к пулу {self.pool_host}:{self.pool_port}...")
@@ -396,7 +398,6 @@ class StratumProxy:
 
             asyncio.create_task(self.read_from_pool())
             asyncio.create_task(self.monitor_asic_silence())
-            asyncio.create_task(self.monitor_notify_gap())
 
             async with server:
                 await server.serve_forever()
@@ -526,35 +527,42 @@ class StratumProxy:
         extra_nonce2 = params[2]
         ntime = params[3]
         nonce = params[4]
+        version_bits = params[5] if len(params) > 5 else None
 
-        share_hash = self._calculate_share_hash(job_id, extra_nonce2, ntime, nonce)
-        share_difficulty = 0.0
+        share_hash = self._calculate_share_hash(job_id, extra_nonce2, ntime, nonce, version_bits)
         hash_int = 0
-        best_share_molehole = 0.0
+        share_diff_1 = 0.0
+        share_diff_network = 0.0
+        share_diff_port = 0.0
 
         if share_hash:
             hash_int = int(share_hash, 16)
-            share_difficulty = self._calculate_share_difficulty(share_hash)
 
-            if self.network_difficulty:
-                best_share_molehole = share_difficulty * self.network_difficulty
+            # ===== ВСЕ ФОРМУЛЫ ДЛЯ СРАВНЕНИЯ =====
+            if hash_int > 0:
+                share_diff_1 = TARGET_FOR_DIFFICULTY_1 / hash_int
+                if self.network_target:
+                    share_diff_network = self.network_target / hash_int
+                if self.current_difficulty and self.current_difficulty > 0:
+                    port_target = TARGET_FOR_DIFFICULTY_1 / self.current_difficulty
+                    share_diff_port = port_target / hash_int
+            # ======================================
 
-            if share_difficulty > self.best_share_difficulty:
-                self.best_share_difficulty = share_difficulty
+            if share_diff_1 > self.best_share_difficulty_1:
+                self.best_share_difficulty_1 = share_diff_1
                 self.best_share_hash = share_hash
                 self.best_share_nonce = nonce
                 self.best_share_time = datetime.now(UTC)
                 self.log(
                     f"🏆 NEW BEST SHARE! "
-                    f"share_difficulty={share_difficulty:.6e}, "
+                    f"share_difficulty_1={share_diff_1:.6e}, "
                     f"hash_int={hash_int:.6e}, "
-                    f"network_target={self.network_target:.6e}, "
-                    f"network_difficulty={self.network_difficulty:.2f}, "
-                    f"share_diff_x_net_diff={best_share_molehole:.6e}, "
+                    f"network_target={self.network_target if self.network_target else 0:.6e}, "
                     f"hash={share_hash[:16]}..., nonce={nonce}"
                 )
 
         job = self.job_cache.get(job_id)
+
         share_data = {
             "ts": self._now_iso(),
             "worker": worker,
@@ -562,6 +570,7 @@ class StratumProxy:
             "extra_nonce2": extra_nonce2,
             "ntime": ntime,
             "nonce": nonce,
+            "version_bits": version_bits,
             "extranonce1": self.extranonce1,
             "current_difficulty": self.current_difficulty,
             "network_target": self.network_target,
@@ -569,10 +578,16 @@ class StratumProxy:
             "network_difficulty": self.network_difficulty,
             "hash": share_hash,
             "hash_int": hash_int,
-            "share_difficulty": share_difficulty,
-            "share_difficulty_x_network_difficulty": best_share_molehole,
-            "best_share_difficulty": self.best_share_difficulty,
-            # ===== ДАННЫЕ NOTIFY ДЛЯ ПЕРЕСЧЁТА =====
+
+            # ===== ВСЕ ВАРИАНТЫ СЛОЖНОСТИ ДЛЯ СРАВНЕНИЯ =====
+            "share_difficulty_1": share_diff_1,               # TARGET_FOR_DIFFICULTY_1 / hash_int
+            "share_difficulty_network": share_diff_network,   # network_target / hash_int
+            "share_difficulty_port": share_diff_port,         # port_target / hash_int
+            # =================================================
+
+            "best_share_difficulty_1": self.best_share_difficulty_1,
+
+            # ===== ДАННЫЕ NOTIFY ДЛЯ ПЕРЕСЧЁТА ВРУЧНУЮ =====
             "job_data": {
                 "prevhash": job["prevhash"] if job else None,
                 "coinb1": job["coinb1"] if job else None,
@@ -611,7 +626,7 @@ class StratumProxy:
             except asyncio.CancelledError:
                 break
             except asyncio.LimitOverrunError as e:
-                self.log(f"⚠️ LimitOverrunError: {e} — пропускаем сообщение, продолжаем")
+                self.log(f"⚠️ LimitOverrunError: {e} — пропускаем сообщение")
                 await asyncio.sleep(0.1)
                 continue
             except Exception as e:
@@ -640,6 +655,16 @@ class StratumProxy:
                     self.extranonce2_size = result[2]
                     self.log(f"📡 ПОЛУЧЕН extranonce1={self.extranonce1}, extranonce2_size={self.extranonce2_size}")
                     self.log_subscribe(result)
+
+        # ===== mining.configure (version-rolling) =====
+        if method == "mining.configure":
+            params = message.get("params", [])
+            if params and len(params) >= 2:
+                # params[0] — список опций, params[1] — dict с параметрами
+                if isinstance(params[1], dict) and "version-rolling.mask" in params[1]:
+                    mask_hex = params[1]["version-rolling.mask"]
+                    self.version_rolling_mask = int(mask_hex, 16)
+                    self.log(f"⚙️ version-rolling.mask = {mask_hex}")
 
         # ===== set_difficulty =====
         if method == "mining.set_difficulty":
@@ -726,7 +751,6 @@ class StratumProxy:
                         self.log(f"   Последний notify:   {self.last_notify_time}")
                         self.log(f"   Последний setdiff:  {self.last_setdiff_time}")
                         self.log(f"   Текущая сложность:  {self.current_difficulty}")
-                        self.log(f"   ASIC closing:       {self.asic_writer.is_closing() if self.asic_writer else 'N/A'}")
                         self.log(f"   Пул connected:      {self.connected_to_pool}")
                         self.log("=" * 70)
                         self.silence_warning_sent = True
@@ -740,24 +764,6 @@ class StratumProxy:
                 break
             except Exception as e:
                 self.log(f"❌ Ошибка в мониторе молчания: {e}")
-
-    async def monitor_notify_gap(self):
-        self.log("👁️ Запущен монитор notify gap")
-        NOTIFY_GAP_THRESHOLD = 60.0
-
-        while True:
-            try:
-                await asyncio.sleep(10)
-                if self.last_notify_time is None:
-                    continue
-                now = datetime.now(UTC)
-                gap = (now - self.last_notify_time).total_seconds()
-                if gap > NOTIFY_GAP_THRESHOLD:
-                    self.log(f"⚠️ Пул не шлёт notify уже {gap:.1f}с!")
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.log(f"❌ Ошибка в мониторе notify gap: {e}")
 
     def get_stats(self) -> dict:
         uptime = (datetime.now(UTC) - self.start_time).total_seconds()
@@ -773,10 +779,11 @@ class StratumProxy:
             "connected_to_pool": self.connected_to_pool,
             "extranonce1": self.extranonce1,
             "extranonce2_size": self.extranonce2_size,
+            "version_rolling_mask": hex(self.version_rolling_mask),
             "network_target": hex(self.network_target) if self.network_target else None,
             "network_target_int": self.network_target,
             "network_difficulty": self.network_difficulty,
-            "best_share_difficulty": self.best_share_difficulty,
+            "best_share_difficulty_1": self.best_share_difficulty_1,
             "best_share_hash": self.best_share_hash[:16] + "..." if self.best_share_hash else None,
             "best_share_nonce": self.best_share_nonce,
             "best_share_time": self.best_share_time.isoformat() if self.best_share_time else None,
@@ -808,21 +815,22 @@ async def main():
         print("=" * 70)
         print(f"   📡 EXTRANONCE1:         {stats['extranonce1']}")
         print(f"   📡 EXTRANONCE2_SIZE:    {stats['extranonce2_size']}")
+        print(f"   ⚙️ VERSION_ROLLING_MASK:{stats['version_rolling_mask']}")
         print("=" * 70)
         print(f"   🎯 NETWORK TARGET:      {stats['network_target']}")
         print(f"   🎯 NETWORK DIFFICULTY:  {stats['network_difficulty']}")
         print("=" * 70)
-        print(f"   🏆 BEST SHARE:          {stats['best_share_difficulty']:.6e}")
+        print(f"   🏆 BEST SHARE (отн. 1): {stats['best_share_difficulty_1']:.6e}")
         print(f"      hash:                 {stats['best_share_hash']}")
         print(f"      nonce:                {stats['best_share_nonce']}")
         print(f"      time:                 {stats['best_share_time']}")
         print("=" * 70)
         print("\n📁 Логи сохранены в:")
         print(f"   - {LOG_FILE} (все сообщения)")
-        print(f"   - {SHARES_LOG_FILE} (только шары + hash + difficulty + job_data)")
-        print(f"   - {NOTIFY_LOG_FILE} (все notify от пула, полные)")
+        print(f"   - {SHARES_LOG_FILE} (шары + hash + все формулы сложности)")
+        print(f"   - {NOTIFY_LOG_FILE} (все notify от пула)")
         print(f"   - {SETDIFF_LOG_FILE} (все set_difficulty от пула)")
-        print(f"   - {SUBSCRIBE_LOG_FILE} (extranonce1, extranonce2_size)")
+        print(f"   - {SUBSCRIBE_LOG_FILE} (extranonce1)")
         print("=" * 70)
 
 

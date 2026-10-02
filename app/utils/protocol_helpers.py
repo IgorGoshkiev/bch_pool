@@ -128,3 +128,28 @@ def format_difficulty(difficulty: float) -> str:
     else:
         # Для чисел < 1 показываем с достаточной точностью
         return f"{difficulty:.9f}"
+
+
+def format_elapsed_time(seconds: float) -> str:
+    """
+    Форматирование времени в читаемый вид.
+
+    Примеры:
+    - 65       → "1m 5s"
+    - 3665     → "1h 1m"
+    - 90065    → "1d 1h"
+    """
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    elif seconds < 3600:
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{minutes}m {secs}s"
+    elif seconds < 86400:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        return f"{hours}h {minutes}m"
+    else:
+        days = int(seconds // 86400)
+        hours = int((seconds % 86400) // 3600)
+        return f"{days}d {hours}h"

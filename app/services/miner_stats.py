@@ -22,12 +22,14 @@ class ShareInfo:
     job_id: str
     nonce: str
     ntime: str
-    # ===== НОВОЕ: сложность относительно сложности 1 (как Molehole) =====
-    share_difficulty_1: float = 0.0
-    # ====================================================================
-    # ===== display_difficulty (то, что пул отправил ASIC) =====
+
+
+    # ===== Display difficulty (то, что пул отправил ASIC) =====
     display_difficulty: float = 0.0
-    # ================================================================
+
+    # ===== Best Share (SoloFury): share_difficulty = network_target × network_difficulty / hash_int =====
+    share_difficulty: float = 0.0
+    # ================================================================================
 
     def to_dict(self) -> Dict[str, Any]:
         """Преобразовать в словарь для API"""
@@ -53,10 +55,15 @@ class MinerStatsData:
     max_difficulty: float = 0.0
     max_difficulty_share: Optional[ShareInfo] = None
 
-    # ===== максимум по сложности относительно 1 (как Molehole) =====
-    max_share_difficulty_1: float = 0.0
-    max_share_difficulty_1_share: Optional[ShareInfo] = None
-    # ======================================================================
+    # ===== Best Share (SoloFury) =====
+    max_share_difficulty: float = 0.0
+    max_share_difficulty_share: Optional[ShareInfo] = None
+    # =================================
+
+    # ===== Round info =====
+    round_start_time: datetime = field(default_factory=lambda: datetime.now(UTC))
+    round_share_sum: float = 0.0
+    # ======================
 
     last_shares: deque = field(default_factory=lambda: deque(maxlen=1000))
     hashrate_history: deque = field(default_factory=lambda: deque(maxlen=360))
@@ -66,6 +73,9 @@ class MinerStatsData:
         """Добавить шар в статистику"""
         self.total_shares += 1
         self.total_difficulty += share.difficulty
+        # ===== Обновляем round_share_sum =====
+        self.round_share_sum += share.share_difficulty
+        # =====================================
 
         if share.is_valid:
             self.accepted_shares += 1
@@ -77,11 +87,11 @@ class MinerStatsData:
             self.max_difficulty = share.difficulty
             self.max_difficulty_share = share
 
-        # =====  обновляем максимальную сложность относительно 1 =====
-        if share.share_difficulty_1 > self.max_share_difficulty_1:
-            self.max_share_difficulty_1 = share.share_difficulty_1
-            self.max_share_difficulty_1_share = share
-        # ==================================================================
+        # ===== Обновляем Best Share (SoloFury) =====
+        if share.share_difficulty > self.max_share_difficulty:
+            self.max_share_difficulty = share.share_difficulty
+            self.max_share_difficulty_share = share
+        # ===========================================
 
         # Добавляем в историю
         self.last_shares.append(share)
@@ -91,14 +101,11 @@ class MinerStatsData:
         """
         Рассчитать хэшрейт за последние N секунд.
 
-        ВАЖНО: используем display_difficulty (то, что пул отправил ASIC),
-        а НЕ share.difficulty (сложность относительно сети).
+        ВАЖНО: используем share_difficulty (Best Share по SoloFury,
+        = network_target × network_difficulty / hash_int).
 
         Формула:
-            hashrate = (количество шаров × display_difficulty × 2^32) / period_seconds
-
-        Где display_difficulty — сложность, которую пул отправил ASIC
-        через mining.set_difficulty (например, 131072).
+            hashrate = Σ (share_difficulty × 2^32) / period_seconds
         """
         if period_seconds <= 0:
             return 0.0
@@ -109,10 +116,12 @@ class MinerStatsData:
         for share in self.last_shares:
             age = (now - share.timestamp).total_seconds()
             if age <= period_seconds and share.is_valid:
-                # ===== ПРАВИЛЬНАЯ ФОРМУЛА =====
-                # Каждый шар при display_difficulty D = D × 2^32 хэшей.
-                display_diff = share.display_difficulty or 1.0
-                total_hashes += display_diff * (2 ** 32)
+
+                # Это сложность шара относительно сети.
+                # × 2^32 — количество хэшей на 1 единицу сложности.
+                share_diff = share.share_difficulty or 0.0
+                if share_diff > 0:
+                    total_hashes += share_diff * (2 ** 32)
                 # ==============================
 
         if total_hashes == 0:
@@ -161,12 +170,39 @@ class MinerStatsService:
                 cleanup_interval_seconds=60
             )
 
-    async def get_max_share_difficulty_1(self, address: str) -> Optional[ShareInfo]:
-        """Получить шар с максимальной сложностью относительно 1 (как Molehole)"""
+    async def get_round_info(self, address: str) -> Dict[str, Any]:
+        """Получить информацию о текущем раунде майнера"""
+        stats = await self.get_stats(address)
+        if not stats:
+            return {
+                "round_start_time": None,
+                "round_elapsed_seconds": 0,
+                "round_share_sum": 0.0,
+            }
+
+        now = datetime.now(UTC)
+        elapsed = (now - stats.round_start_time).total_seconds()
+
+        return {
+            "round_start_time": stats.round_start_time.isoformat(),
+            "round_elapsed_seconds": elapsed,
+            "round_share_sum": stats.round_share_sum,
+        }
+
+    async def reset_round(self, address: str):
+        """Сбросить раунд (при нахождении блока или новом блоке)"""
+        stats = await self.get_stats(address)
+        if stats:
+            stats.round_start_time = datetime.now(UTC)
+            stats.round_share_sum = 0.0
+
+    async def get_max_share_difficulty(self, address: str) -> Optional[ShareInfo]:
+        """Получить шар с максимальным Best Share (SoloFury)"""
         stats = await self.get_stats(address)
         if not stats:
             return None
-        return stats.max_share_difficulty_1_share
+        return stats.max_share_difficulty_share
+
 
     async def stop(self):
         """Остановка фоновой очистки"""

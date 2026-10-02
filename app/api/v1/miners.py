@@ -8,7 +8,7 @@ from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
 from typing import Optional
 from datetime import datetime, UTC
-from app.utils.protocol_helpers import format_difficulty
+from app.utils.protocol_helpers import format_difficulty, format_elapsed_time
 
 from app.utils.logging_config import StructuredLogger
 from app.utils.helpers import humanize_time_ago
@@ -402,7 +402,7 @@ async def get_max_difficulty_share(
     """Получить шар с максимальной сложностью для майнера."""
     await get_miner_or_404(bch_address, db)
 
-    share = await miner_stats_service.get_max_share_difficulty_1(bch_address)
+    share = await miner_stats_service.get_max_share_difficulty(bch_address)
 
     if not share:
         return ApiResponse(
@@ -535,10 +535,17 @@ async def get_miner_dashboard(
     accepted_shares = stats.accepted_shares if stats else 0
     rejected_shares = stats.rejected_shares if stats else 0
 
-    # ===== BEST SHARE (как Molehole — сложность относительно 1) =====
-    max_share_1 = await miner_stats_service.get_max_share_difficulty_1(bch_address)
-    best_share = max_share_1.share_difficulty_1 if max_share_1 else 0.0
-    last_best_share_time = max_share_1.timestamp.isoformat() if max_share_1 else None
+    # ===== BEST SHARE (формула SoloFury: share_difficulty = target_for_diff_1 / hash_int) =====
+    max_share = await miner_stats_service.get_max_share_difficulty(bch_address)
+    best_share = max_share.share_difficulty if max_share else 0.0
+    last_best_share_time = max_share.timestamp.isoformat() if max_share else None
+
+    # ===== BLOCK IN PROGRESS =====
+    current_block_height = 0
+    try:
+        current_block_height = job_manager.block_height
+    except Exception:
+        pass
 
     # ===== NETWORK DIFFICULTY =====
     try:
@@ -549,10 +556,21 @@ async def get_miner_dashboard(
     # ===== PERSONAL EFFORT =====
     personal_effort = (share_sum / network_difficulty * 100) if network_difficulty > 0 else 0.0
 
+    # ===== ROUND INFO =====
+    round_info = await miner_stats_service.get_round_info(bch_address)
+    round_elapsed_seconds = round_info.get("round_elapsed_seconds", 0)
+    round_share_sum = round_info.get("round_share_sum", 0.0)
+
     # ===== PORT DIFFICULTY =====
     port_difficulty = 0
     if tcp_stratum_server:
         port_difficulty = tcp_stratum_server.miner_difficulties.get(bch_address, 0)
+
+    # ===== PROGRESS =====
+    # progress = (round_share_sum / network_difficulty) × 100%
+    progress_percent = 0.0
+    if network_difficulty > 0 and round_share_sum > 0:
+        progress_percent = (round_share_sum / network_difficulty) * 100.0
 
     # ===== BLOCKS =====
     blocks = await database_service.get_blocks_by_miner(bch_address, limit=1000)
@@ -618,6 +636,16 @@ async def get_miner_dashboard(
                 "network_formatted": format_difficulty(network_difficulty),
                 "port": port_difficulty,
                 "port_formatted": format_difficulty(port_difficulty),
+            },
+
+            "block_in_progress": {
+                "height": current_block_height,
+                "height_formatted": f"#{current_block_height}",
+                "elapsed_seconds": round_elapsed_seconds,
+                "elapsed_formatted": format_elapsed_time(round_elapsed_seconds),
+                "round_share_sum": round_share_sum,
+                "round_share_sum_formatted": format_difficulty(round_share_sum),
+                "progress_percent": round(progress_percent, 6),
             },
 
             "timestamp": datetime.now(UTC).isoformat()

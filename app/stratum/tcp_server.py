@@ -630,7 +630,11 @@ class StratumTCPServer:
         # ===== ИНИЦИАЛИЗАЦИЯ ВСЕХ ПЕРЕМЕННЫХ =====
         hash_result = None
         job_data = None
-        share_difficulty = None
+
+        share_difficulty = 0.0  # сложность шара относительно сети
+        display_difficulty = 0.0  # то, что пул отправил ASIC
+        # =================================================================
+
         extra_data = None  # noqa: F841
         is_valid = False  # noqa: F841
         error_msg = None  # noqa: F841
@@ -673,13 +677,12 @@ class StratumTCPServer:
                         target_for_diff_1 = self.share_validator.get_difficulty_1_target()
                         source = "NODE" if self.share_validator.difficulty_1_target else "FALLBACK"
 
-                        # Вместо целочисленного деления используем float
                         share_difficulty = target_for_diff_1 / hash_int
                         print(f"🔥 SHARE DIFFICULTY (source={source}): {share_difficulty:.6e}", flush=True)
-                        # =================================================
                     else:
                         share_difficulty = 0
                         print(f"🔥 WARNING: hash_int is 0, cannot calculate difficulty", flush=True)
+
                 except Exception as e:
                     print(f"🔥 ERROR calculating hash: {e}", flush=True)
                     hash_result = None
@@ -761,7 +764,8 @@ class StratumTCPServer:
 
             # 8. ОПРЕДЕЛЯЕМ СЛОЖНОСТЬ ДЛЯ СТАТИСТИКИ
             # Используем сложность шара, если она рассчитана, иначе fallback
-            difficulty_to_save = share_difficulty if share_difficulty is not None else settings.default_validation_difficulty
+            difficulty_to_save = share_difficulty if share_difficulty else settings.default_validation_difficulty
+
             print(f"📊 SHARE difficulty: {difficulty_to_save:.10e}", flush=True)
 
             # 9. ОБНОВЛЯЕМ СТАТИСТИКУ В ПАМЯТИ
@@ -774,11 +778,10 @@ class StratumTCPServer:
                 job_id=job_id,
                 nonce=nonce,
                 ntime=ntime,
-                share_difficulty_1=share_difficulty if share_difficulty is not None else 0.0,
-                # =====  display_difficulty (для расчёта хэшрейта) =====
-                display_difficulty = display_difficulty if display_difficulty else 0.0
-                # ==========================================================
+                display_difficulty=display_difficulty,
+                share_difficulty=share_difficulty,
             )
+
             try:
                 t0 = time.time()
                 # Добавляем в статистику (мгновенно, без БД)
@@ -833,6 +836,13 @@ class StratumTCPServer:
                         )
                         print(f"✅ BLOCK CONFIRMED IN DB: {confirmed_hash[:16]}...", flush=True)
                         # =========================================
+                        # ===== СБРОС РАУНДА ПОСЛЕ НАЙДЕННОГО БЛОКА =====
+                        try:
+                            await miner_stats_service.reset_round(miner_address)
+                            print(f"🔄 [BLOCK] Round reset for {miner_address[:20]}...", flush=True)
+                        except Exception as e:
+                            print(f"⚠️ [BLOCK] Failed to reset round: {e}", flush=True)
+                        # ================================================
                     else:
                         print(f"🔴 BLOCK REJECTED: {block_result.get('message')}", flush=True)
                 except Exception as e:

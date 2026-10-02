@@ -172,6 +172,23 @@
             </div>
         </div>
 
+        <h2>Block In Progress</h2>
+        <div class="row">
+            <div class="card">
+                <div class="label">Current Block</div>
+                <div class="value blue" id="block-height">—</div>
+            </div>
+            <div class="card">
+                <div class="label">Elapsed</div>
+                <div class="value" id="block-elapsed">—</div>
+            </div>
+            <div class="card">
+                <div class="label">Progress</div>
+                <div class="value yellow" id="block-progress">—</div>
+                <div class="sub" id="block-share-sum">—</div>
+            </div>
+        </div>
+
         <h2>Difficulty</h2>
         <div class="row">
             <div class="card">
@@ -274,6 +291,27 @@
                 // Difficulty
                 setText('network-diff', d.difficulty.network_formatted);
                 setText('port-diff', d.difficulty.port_formatted);
+
+                // Block In Progress
+                setText('block-height', d.block_in_progress.height_formatted);
+                setText('block-elapsed', d.block_in_progress.elapsed_formatted);
+
+                const progress = d.block_in_progress.progress_percent;
+                let progressText;
+                if (progress === 0) {
+                    progressText = '0%';
+                } else if (progress < 0.000001) {
+                    progressText = progress.toExponential(2) + '%';
+                } else if (progress < 0.01) {
+                    progressText = progress.toFixed(6) + '%';
+                } else if (progress < 1) {
+                    progressText = progress.toFixed(3) + '%';
+                } else {
+                    progressText = progress.toFixed(2) + '%';
+                }
+                setText('block-progress', progressText);
+
+                setText('block-share-sum', 'Share Sum: ' + d.block_in_progress.round_share_sum_formatted);
 
                 // Timestamp
                 setText('last-update', new Date(d.timestamp).toLocaleTimeString());

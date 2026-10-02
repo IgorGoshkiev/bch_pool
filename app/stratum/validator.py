@@ -358,9 +358,6 @@ class ShareValidator:
                     if hash_int > 0:
                         share_difficulty = self.difficulty_1_target / hash_int
                         print(f"📊 SHARE DIFFICULTY (relative to 1.0): {share_difficulty:.6e}", flush=True)
-                        # Для отображения как у Molehole:
-                        share_difficulty_x2_32 = share_difficulty * 2 ** 32
-                        print(f"📊 SHARE DIFFICULTY (×2^32): {share_difficulty_x2_32:.2f}", flush=True)
                 except Exception as e:
                     print(f"⚠️ Ошибка расчёта share_difficulty: {e}", flush=True)
             # =====================================================

@@ -342,6 +342,17 @@ class JobManager:
                 broadcast_duration = (datetime.now(UTC) - broadcast_start).total_seconds() * 1000
                 print(f"🔍 [REORG] broadcast_new_job_to_all took {broadcast_duration:.1f}ms", flush=True)
 
+                # ===== СБРОС РАУНДА ПРИ НОВОМ БЛОКЕ =====
+                try:
+                    from app.services.miner_stats import miner_stats_service
+                    if self.tcp_stratum_server:
+                        for miner_address in self.tcp_stratum_server.miners.values():
+                            await miner_stats_service.reset_round(miner_address)
+                            print(f"🔄 [REORG] Round reset for {miner_address[:20]}...", flush=True)
+                except Exception as e:
+                    print(f"⚠️ [REORG] Failed to reset round: {e}", flush=True)
+                # ========================================
+
                 # ===== ОБНОВЛЯЕМ current_job =====
                 if self.job_service and self.job_service.last_broadcast_job:
                     last_job = self.job_service.last_broadcast_job
