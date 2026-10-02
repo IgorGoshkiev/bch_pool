@@ -675,6 +675,14 @@ class StratumTCPServer:
 
                     if hash_int > 0:
                         target_for_diff_1 = self.share_validator.get_difficulty_1_target()
+                        print(f"🔍 [TCP] get_difficulty_1_target:", flush=True)
+                        print(
+                            f"   self.share_validator.difficulty_1_target = {self.share_validator.difficulty_1_target}",
+                            flush=True)
+                        print(
+                            f"   self.share_validator._fallback_difficulty_1_target = {self.share_validator._fallback_difficulty_1_target}",
+                            flush=True)
+                        print(f"   target_for_diff_1 = {target_for_diff_1}", flush=True)
 
                         if target_for_diff_1 is None:
                             print(f"🔴 SHARE REJECTED: difficulty_1_target = None (нода недоступна)", flush=True)

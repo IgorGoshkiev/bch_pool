@@ -158,6 +158,10 @@ class JobManager:
                 if template and 'target' in template and self.job_service and self.job_service.validator:
                     target_hex = template['target']
                     target_int = int(target_hex, 16)
+                    print(f"🔍 [DEBUG] target_hex: {target_hex}", flush=True)
+                    print(f"🔍 [DEBUG] target_int: {target_int}", flush=True)
+                    print(f"🔍 [DEBUG] target_int hex: {target_int:#066x}", flush=True)
+                    print(f"🔍 [DEBUG] target_int bit_length: {target_int.bit_length()}", flush=True)
 
                     mining_info = await self.node_client.get_mining_info()
                     print(f"🔍 [DEBUG] mining_info keys: {list(mining_info.keys()) if mining_info else 'None'}",
@@ -168,6 +172,12 @@ class JobManager:
                     print(f"🔍 [DEBUG] network_difficulty AFTER float: {network_difficulty}", flush=True)
 
                     if network_difficulty > 0:
+                        print(f"🔍 [MANAGER] ПЕРЕД update_from_node:", flush=True)
+                        print(f"   target_int:         {target_int}", flush=True)
+                        print(f"   target_int hex:     {target_int:#066x}", flush=True)
+                        print(f"   target_int bits:    {target_int.bit_length()}", flush=True)
+                        print(f"   network_difficulty: {network_difficulty}", flush=True)
+
                         self.job_service.validator.update_from_node(
                             network_target=target_int,
                             network_difficulty=network_difficulty

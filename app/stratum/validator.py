@@ -77,7 +77,11 @@ class ShareValidator:
         self.last_network_update = None
 
         print(f"🔍 VALIDATOR INIT: pool_difficulty = {self.pool_difficulty}", flush=True)
-        print(f"🔍 VALIDATOR INIT: fallback_difficulty_1_target = {self._fallback_difficulty_1_target:#066x}", flush=True)
+        if self._fallback_difficulty_1_target is not None:
+            print(f"🔍 VALIDATOR INIT: fallback_difficulty_1_target = {self._fallback_difficulty_1_target:#066x}",
+                  flush=True)
+        else:
+            print(f"🔍 VALIDATOR INIT: fallback_difficulty_1_target = None (нода недоступна)", flush=True)
         print(f"🔍 VALIDATOR INIT: network_target = None (будет загружен из ноды)", flush=True)
         print(f"🔍 VALIDATOR INIT: difficulty_1_target = None (будет вычислен из ноды)", flush=True)
 
@@ -108,9 +112,13 @@ class ShareValidator:
         - difficulty_1_target из ноды (если загружен)
         - None, если нода недоступна (НЕ используем хардкод!)
         """
+        print(f"🔍 [VALIDATOR.get_difficulty_1_target]:", flush=True)
+        print(f"   self.difficulty_1_target = {self.difficulty_1_target}", flush=True)
+        print(f"   self._fallback_difficulty_1_target = {self._fallback_difficulty_1_target}", flush=True)
+
         if self.difficulty_1_target:
             return self.difficulty_1_target
-        return self._fallback_difficulty_1_target  # None
+        return self._fallback_difficulty_1_target
 
     def update_from_node(self, network_target: int, network_difficulty: float):
         """
@@ -127,6 +135,13 @@ class ShareValidator:
             network_target: Текущий target сети из getblocktemplate
             network_difficulty: Текущая сложность сети из getmininginfo
         """
+
+        print(f"🔍 [VALIDATOR.update_from_node] ВХОД:", flush=True)
+        print(f"   network_target:     {network_target}", flush=True)
+        print(f"   network_target hex: {network_target:#066x}", flush=True)
+        print(f"   network_target bits:{network_target.bit_length()}", flush=True)
+        print(f"   network_difficulty: {network_difficulty}", flush=True)
+
         self.network_target = network_target
         self.network_difficulty = network_difficulty
 
@@ -134,7 +149,11 @@ class ShareValidator:
         # Формула: difficulty_1_target = network_target × network_difficulty
         # Это работает для ЛЮБОЙ сложности сети.
         if network_target and network_difficulty and network_difficulty > 0:
+            print(f"🔍 [VALIDATOR.update_from_node] РАСЧЁТ:", flush=True)
+            print(f"   network_target × network_difficulty = {network_target * network_difficulty}", flush=True)
             self.difficulty_1_target = int(network_target * network_difficulty)
+            print(f"   difficulty_1_target = {self.difficulty_1_target}", flush=True)
+            print(f"   difficulty_1_target hex = {self.difficulty_1_target:#066x}", flush=True)
         else:
             self.difficulty_1_target = self._fallback_difficulty_1_target
             print(f"⚠️ VALIDATOR: используем fallback difficulty_1_target", flush=True)
