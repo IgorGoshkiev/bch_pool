@@ -525,8 +525,11 @@ async def get_miner_dashboard(
                 workers_online += 1
 
     # ===== HASHRATE =====
-    hashrate_30m = await miner_stats_service.get_hashrate(bch_address, period_seconds=1800)
-    hashrate_1h = await miner_stats_service.get_hashrate(bch_address, period_seconds=3600)
+    #  используем ОКНО 10 МИНУТ для current, и 30 МИНУТ для average.
+
+    hashrate_30m = await miner_stats_service.get_hashrate(bch_address, period_seconds=600)  # 10 минут
+    hashrate_1h = await miner_stats_service.get_hashrate(bch_address, period_seconds=1800)  # 30 минут
+    # ==============================
 
     # ===== STATS =====
     stats = await miner_stats_service.get_stats(bch_address)

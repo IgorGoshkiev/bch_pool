@@ -303,10 +303,20 @@ class MinerStatsService:
                     else:
                         break
 
-                # Если у майнера нет свежих данных - удаляем его
+                # Если у майнера нет свежих данных более часа - удаляем его
+                # ===== НЕ УДАЛЯЕМ МАЙНЕРА, ЕСЛИ last_shares ПУСТ =====
+                # ПОЧЕМУ: при смене блока или кратком молчании ASIC
+                # last_shares может опустеть. Если удалить MinerStatsData —
+                # потеряется best_share (лучший шар за всё время).
+                #
+                # Удаляем только если майнер молчит > 60 минут
+                # (реально отключён, а не временно молчит).
                 if not stats.last_shares:
-                    del self._stats[address]
-                    cleaned_count += 1
+                    age_since_update = (now - stats.last_update).total_seconds()
+                    if age_since_update > self._max_age_seconds * 6:  # 60 минут
+                        del self._stats[address]
+                        cleaned_count += 1
+                # =====================================================
 
             if cleaned_count > 0:
                 logger.debug(
