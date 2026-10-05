@@ -95,6 +95,15 @@ class ShareValidator:
             start_time=self.start_time.isoformat()
         )
 
+        # ===== ОТЛАДКА: ID ЭКЗЕМПЛЯРА =====
+        # Нужно, чтобы убедиться, что job_service.validator,
+        # tcp_stratum_server.share_validator и share_validator из lifespan —
+        # это ОДИН И ТОТ ЖЕ объект. Если id разные — значит, создалось
+        # несколько экземпляров ShareValidator, и update_from_node
+        # обновляет не тот, который используется в tcp_server.
+        print(f"🔍 [VALIDATOR.__init__] id(self) = {id(self)}", flush=True)
+        # ==================================
+
     @property
     def fallback_difficulty_1_target(self) -> int:
         """
@@ -112,6 +121,12 @@ class ShareValidator:
         - difficulty_1_target из ноды (если загружен)
         - None, если нода недоступна (НЕ используем хардкод!)
         """
+        # ===== ОТЛАДКА: ID ЭКЗЕМПЛЯРА =====
+        # Должен совпадать с id из update_from_node.
+        # Если не совпадает — tcp_server читает из ДРУГОГО объекта,
+        # который update_from_node не обновлял.
+        print(f"🔍 [VALIDATOR.get_difficulty_1_target] id(self) = {id(self)}", flush=True)
+        # ==================================
         print(f"🔍 [VALIDATOR.get_difficulty_1_target]:", flush=True)
         print(f"   self.difficulty_1_target = {self.difficulty_1_target}", flush=True)
         print(f"   self._fallback_difficulty_1_target = {self._fallback_difficulty_1_target}", flush=True)
@@ -135,6 +150,13 @@ class ShareValidator:
             network_target: Текущий target сети из getblocktemplate
             network_difficulty: Текущая сложность сети из getmininginfo
         """
+
+        # ===== ОТЛАДКА: ID ЭКЗЕМПЛЯРА =====
+        # Сравнивать с id из __init__ и из get_difficulty_1_target.
+        # Если id не совпадает — update_from_node обновляет НЕ ТОТ объект,
+        # который используется в tcp_server.
+        print(f"🔍 [VALIDATOR.update_from_node] id(self) = {id(self)}", flush=True)
+        # ==================================
 
         print(f"🔍 [VALIDATOR.update_from_node] ВХОД:", flush=True)
         print(f"   network_target:     {network_target}", flush=True)
@@ -165,6 +187,16 @@ class ShareValidator:
         print(f"   network_target:       {network_target:#066x}", flush=True)
         print(f"   network_difficulty:   {network_difficulty}", flush=True)
         print(f"   difficulty_1_target:  {self.difficulty_1_target:#066x}", flush=True)
+        # ===== ОТЛАДКА: ПРОВЕРКА ФОРМУЛЫ =====
+        # Если difficulty_1_target != network_target × network_difficulty,
+        # значит, где-то произошло переполнение или обрезание.
+        print(f"   ПРОВЕРКА: network_target × network_difficulty = "
+              f"{network_target * network_difficulty}", flush=True)
+        print(f"   ПРОВЕРКА: self.difficulty_1_target             = "
+              f"{self.difficulty_1_target}", flush=True)
+        print(f"   ПРОВЕРКА: совпадает? "
+              f"{self.difficulty_1_target == int(network_target * network_difficulty)}", flush=True)
+        # =====================================
         print(f"{'=' * 60}\n", flush=True)
 
         logger.info(

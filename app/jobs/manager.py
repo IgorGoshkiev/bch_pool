@@ -170,6 +170,7 @@ class JobManager:
                           flush=True)
                     network_difficulty = float(mining_info.get('difficulty', 0))
                     print(f"🔍 [DEBUG] network_difficulty AFTER float: {network_difficulty}", flush=True)
+                    print(f"🔍 [MANAGER] difficulty type: {type(mining_info.get('difficulty')).__name__ if mining_info else 'None'}", flush=True)
 
                     if network_difficulty > 0:
                         print(f"🔍 [MANAGER] ПЕРЕД update_from_node:", flush=True)
@@ -177,6 +178,17 @@ class JobManager:
                         print(f"   target_int hex:     {target_int:#066x}", flush=True)
                         print(f"   target_int bits:    {target_int.bit_length()}", flush=True)
                         print(f"   network_difficulty: {network_difficulty}", flush=True)
+
+                        # ===== ОТЛАДКА: ID ВАЛИДАТОРА ИЗ MANAGER =====
+                        # Сравнивать с id из tcp_server.share_validator
+                        # и с id из lifespan.
+                        # Если id разные — manager обновляет НЕ ТОТ объект.
+                        print(f"🔍 [MANAGER] id(self.job_service.validator) = {id(self.job_service.validator)}",
+                              flush=True)
+                        print(
+                            f"🔍 [MANAGER] type(self.job_service.validator) = {type(self.job_service.validator).__name__}",
+                            flush=True)
+                        # ==============================================
 
                         self.job_service.validator.update_from_node(
                             network_target=target_int,

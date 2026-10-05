@@ -109,6 +109,11 @@ class DependencyContainer:
                 validation_difficulty=settings.default_validation_difficulty,
                 extra_nonce2_size=EXTRA_NONCE2_SIZE
             )
+            # ===== ОТЛАДКА: ID СОЗДАННОГО ВАЛИДАТОРА =====
+            # Сравнивать с id из tcp_server и job_service.
+            # Если id разные — создалось несколько экземпляров.
+            print(f"🔍 [DEPENDENCIES] Создан share_validator id = {id(self._share_validator)}", flush=True)
+            # =============================================
         return self._share_validator
 
     # === JOB SERVICE ===
@@ -124,6 +129,11 @@ class DependencyContainer:
                 event="job_service_created",
                 has_validator=self.share_validator is not None
             )
+            # ===== ОТЛАДКА: ID ВАЛИДАТОРА В JOB_SERVICE =====
+            # Должен совпадать с id из dependencies.share_validator
+            # и с id из tcp_stratum_server.share_validator.
+            print(f"🔍 [DEPENDENCIES] job_service.validator id = {id(self._job_service.validator)}", flush=True)
+            # ==============================================
         return self._job_service
 
     # === JOB MANAGER (БЕЗ СЕРВЕРОВ) ===
@@ -251,6 +261,10 @@ class DependencyContainer:
                 has_job_manager=self.job_manager is not None,
                 has_share_validator=self.share_validator is not None
             )
+            # ===== ОТЛАДКА: ID ВАЛИДАТОРА В TCP СЕРВЕРЕ =====
+            # Должен совпадать с id из dependencies.share_validator.
+            print(f"🔍 [DEPENDENCIES] tcp_stratum_server.share_validator id = {id(self._tcp_stratum_server.share_validator)}", flush=True)
+            # ==============================================
         return self._tcp_stratum_server
 
     # === DIFFICULTY SERVICE ===

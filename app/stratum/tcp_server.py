@@ -674,13 +674,19 @@ class StratumTCPServer:
                     hash_int = int(hash_result, 16)
 
                     if hash_int > 0:
+                        # ===== ОТЛАДКА: ID ВАЛИДАТОРА, КОТОРЫЙ ИСПОЛЬЗУЕТ TCP =====
+                        # Сравнивать с id из validator.update_from_node.
+                        # Если не совпадает — update_from_node обновлял
+                        # ДРУГОЙ объект, и tcp_server читает устаревший
+                        # difficulty_1_target.
+                        print(f"🔍 [TCP] id(self.share_validator) = {id(self.share_validator)}", flush=True)
+                        print(f"🔍 [TCP] type(self.share_validator) = {type(self.share_validator).__name__}", flush=True)
+                        # ==========================================================
+
                         target_for_diff_1 = self.share_validator.get_difficulty_1_target()
                         print(f"🔍 [TCP] get_difficulty_1_target:", flush=True)
                         print(
                             f"   self.share_validator.difficulty_1_target = {self.share_validator.difficulty_1_target}",
-                            flush=True)
-                        print(
-                            f"   self.share_validator._fallback_difficulty_1_target = {self.share_validator._fallback_difficulty_1_target}",
                             flush=True)
                         print(f"   target_for_diff_1 = {target_for_diff_1}", flush=True)
 
@@ -691,6 +697,21 @@ class StratumTCPServer:
 
                         share_difficulty = target_for_diff_1 / hash_int
                         print(f"🔥 SHARE DIFFICULTY: {share_difficulty:.6e}", flush=True)
+
+                        # ===== ОТЛАДКА: ПРОВЕРКА ФОРМУЛЫ BEST SHARE =====
+                        # Смотрим, что мы считаем и что должно быть.
+                        # share_difficulty = difficulty_1_target / hash_int
+                        # Это УЖЕ Best Share, потому что difficulty_1_target
+                        # = network_target × network_difficulty.
+                        print(f"🔍 [TCP] target_for_diff_1 = {target_for_diff_1}", flush=True)
+                        print(f"🔍 [TCP] hash_int          = {hash_int}", flush=True)
+                        print(f"🔍 [TCP] share_difficulty  = target_for_diff_1 / hash_int = {share_difficulty:.6e}", flush=True)
+                        # Если хотим сравнить с SoloFury:
+                        # best_share_solofury = share_difficulty × network_difficulty
+                        if self.share_validator.network_difficulty:
+                            best_share_solofury = share_difficulty * self.share_validator.network_difficulty
+                            print(f"🔍 [TCP] best_share (SoloFury style) = share_difficulty × network_difficulty = {best_share_solofury:.6e}", flush=True)
+                        # ==================================================
 
                 except Exception as e:
                     print(f"🔥 ERROR calculating hash: {e}", flush=True)

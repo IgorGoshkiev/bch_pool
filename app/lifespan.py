@@ -88,6 +88,19 @@ async def lifespan(_app):
                     network_difficulty = float(mining_info.get('difficulty', 0))
 
                     if network_difficulty > 0:
+
+                        # ===== ОТЛАДКА: ID ВАЛИДАТОРА ИЗ LIFESPAN =====
+                        # Сравнивать с id из tcp_server.share_validator
+                        # и с id из validator.update_from_node.
+                        # Если id разные — lifespan обновляет НЕ ТОТ объект.
+                        print(f"🔍 [LIFESPAN] id(share_validator) = {id(share_validator)}", flush=True)
+                        # ==============================================
+                        print(f"🔍 [LIFESPAN] target_hex:         {target_hex}", flush=True)
+                        print(f"🔍 [LIFESPAN] target_int:         {target_int}", flush=True)
+                        print(f"🔍 [LIFESPAN] target_int hex:     {target_int:#066x}", flush=True)
+                        print(f"🔍 [LIFESPAN] target_int bits:    {target_int.bit_length()}", flush=True)
+                        print(f"🔍 [LIFESPAN] network_difficulty: {network_difficulty}", flush=True)
+
                         share_validator.update_from_node(
                             network_target=target_int,
                             network_difficulty=network_difficulty
