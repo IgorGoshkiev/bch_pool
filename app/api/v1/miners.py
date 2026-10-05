@@ -535,9 +535,16 @@ async def get_miner_dashboard(
     accepted_shares = stats.accepted_shares if stats else 0
     rejected_shares = stats.rejected_shares if stats else 0
 
-    # ===== BEST SHARE (формула SoloFury: share_difficulty = target_for_diff_1 / hash_int) =====
+    # ===== BEST SHARE (SoloFury style) =====
+    # ВАЖНО: используем max_share.best_share, а НЕ max_share.share_difficulty!
+    #
+    # ShareInfo имеет два разных поля:
+    #   - share_difficulty = difficulty_1_target / hash_int  (относительно 1, ~2e-10)
+    #   - best_share = share_difficulty × network_difficulty  (SoloFury, ~131)
+    #
+    # В дашборде показывается именно best_share (SoloFury-единицы).
     max_share = await miner_stats_service.get_max_share_difficulty(bch_address)
-    best_share = max_share.share_difficulty if max_share else 0.0
+    best_share = max_share.best_share if max_share else 0.0
     last_best_share_time = max_share.timestamp.isoformat() if max_share else None
 
     # ===== BLOCK IN PROGRESS =====

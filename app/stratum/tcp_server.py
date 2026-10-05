@@ -631,8 +631,17 @@ class StratumTCPServer:
         hash_result = None
         job_data = None
 
-        share_difficulty = 0.0  # сложность шара относительно сети
-        display_difficulty = 0.0  # то, что пул отправил ASIC
+        # Сложность шара относительно 1 (target_for_diff_1 / hash_int).
+        # Используется для расчёта хэшрейта.
+        share_difficulty = 0.0
+
+        # Best Share (SoloFury style) = share_difficulty × network_difficulty.
+        # Используется для отображения в дашборде.
+        best_share = 0.0
+
+        # То, что пул отправил ASIC через mining.set_difficulty.
+        # Управляет частотой шаров.
+        display_difficulty = 0.0
         # =================================================================
 
         extra_data = None  # noqa: F841
@@ -698,6 +707,14 @@ class StratumTCPServer:
                         share_difficulty = target_for_diff_1 / hash_int
                         print(f"🔥 SHARE DIFFICULTY: {share_difficulty:.6e}", flush=True)
 
+                        # ===== BEST SHARE (SoloFury style) =====
+                        # best_share = share_difficulty × network_difficulty
+                        # Это то, что должно показываться в дашборде.
+                        network_difficulty = self.share_validator.network_difficulty or 0
+                        best_share = share_difficulty * network_difficulty if network_difficulty else 0.0
+                        print(f"🔥 BEST SHARE: {best_share:.6e}", flush=True)
+                        # ======================================
+
                         # ===== ОТЛАДКА: ПРОВЕРКА ФОРМУЛЫ BEST SHARE =====
                         # Смотрим, что мы считаем и что должно быть.
                         # share_difficulty = difficulty_1_target / hash_int
@@ -706,12 +723,7 @@ class StratumTCPServer:
                         print(f"🔍 [TCP] target_for_diff_1 = {target_for_diff_1}", flush=True)
                         print(f"🔍 [TCP] hash_int          = {hash_int}", flush=True)
                         print(f"🔍 [TCP] share_difficulty  = target_for_diff_1 / hash_int = {share_difficulty:.6e}", flush=True)
-                        # Если хотим сравнить с SoloFury:
-                        # best_share_solofury = share_difficulty × network_difficulty
-                        if self.share_validator.network_difficulty:
-                            best_share_solofury = share_difficulty * self.share_validator.network_difficulty
-                            print(f"🔍 [TCP] best_share (SoloFury style) = share_difficulty × network_difficulty = {best_share_solofury:.6e}", flush=True)
-                        # ==================================================
+
 
                 except Exception as e:
                     print(f"🔥 ERROR calculating hash: {e}", flush=True)
@@ -793,23 +805,31 @@ class StratumTCPServer:
                 return
 
             # 8. ОПРЕДЕЛЯЕМ СЛОЖНОСТЬ ДЛЯ СТАТИСТИКИ
-            # Используем сложность шара, если она рассчитана, иначе fallback
+            # difficulty_to_save — сложность шара относительно 1.
+            # Используется для:
+            #   1. Расчёта хэшрейта (share_difficulty × 2^32).
+            #   2. Адаптации сложности ASIC (difficulty_service.add_share).
+            #
+            # ВАЖНО: это НЕ Best Share! Best Share (best_share) уже посчитан
+            # выше, в блоке `if hash_int > 0`.
             difficulty_to_save = share_difficulty if share_difficulty else settings.default_validation_difficulty
-
-            print(f"📊 SHARE difficulty: {difficulty_to_save:.10e}", flush=True)
+            print(f"📊 SHARE difficulty (относительно 1): {difficulty_to_save:.10e}", flush=True)
 
             # 9. ОБНОВЛЯЕМ СТАТИСТИКУ В ПАМЯТИ
+            print(f"📊 [SHAREINFO] difficulty=best_share={best_share:.6e}, share_difficulty={share_difficulty:.6e}",
+                  flush=True)
             # Создаем информацию о шаре
             share_info = ShareInfo(
                 hash=hash_result,
-                difficulty=difficulty_to_save,
+                difficulty=best_share,  # ← Best Share (SoloFury), для дашборда
                 is_valid=is_valid,
                 timestamp=datetime.now(UTC),
                 job_id=job_id,
                 nonce=nonce,
                 ntime=ntime,
-                display_difficulty=display_difficulty,
-                share_difficulty=share_difficulty,
+                display_difficulty=display_difficulty,  # то, что отправили ASIC
+                share_difficulty=share_difficulty,  # сложность относительно 1, для хэшрейта
+                best_share=best_share,  # дублируем для явности
             )
 
             try:

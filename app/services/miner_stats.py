@@ -16,19 +16,40 @@ logger = StructuredLogger(__name__)
 class ShareInfo:
     """Информация о шаре"""
     hash: str
-    difficulty: float
+    difficulty: float                 # ← Best Share (SoloFury style), для отображения
     is_valid: bool
     timestamp: datetime
     job_id: str
     nonce: str
     ntime: str
 
-
-    # ===== Display difficulty (то, что пул отправил ASIC) =====
+    # ===== Display difficulty (то, что пул отправил ASIC через mining.set_difficulty) =====
+    # Управляет частотой шаров. НЕ используется для расчёта Best Share или хэшрейта.
     display_difficulty: float = 0.0
 
-    # ===== Best Share (SoloFury): share_difficulty = network_target × network_difficulty / hash_int =====
+    # ===== Share difficulty (сложность шара относительно 1) =====
+    # Формула: share_difficulty = difficulty_1_target / hash_int
+    # где difficulty_1_target = network_target × network_difficulty (из ноды).
+    #
+    # ЕДИНИЦЫ: безразмерное число (не SoloFury-единицы!).
+    # НАЗНАЧЕНИЕ: расчёт хэшрейта.
+    #   hashrate = Σ (share_difficulty × 2^32) / period_seconds
+    #
+    # ВАЖНО: НЕ путать с best_share (см. ниже).
     share_difficulty: float = 0.0
+
+    # ===== Best Share (SoloFury style) =====
+    # Формула: best_share = share_difficulty × network_difficulty
+    #
+    # ЕДИНИЦЫ: SoloFury-единицы (то же, что показывает SoloFury в bestDifficulty).
+    # НАЗНАЧЕНИЕ: отображение в дашборде как «Best Share».
+    #   Прогресс раунда = Σ best_share / network_difficulty
+    #   (то есть round_share_sum хранит сумму share_difficulty, а не best_share —
+    #    см. ниже, почему)
+    #
+    # ПРИМЕР: share_difficulty = 3.05e-10, network_difficulty = 5.4e11
+    #         best_share = 3.05e-10 × 5.4e11 = 164.7
+    best_share: float = 0.0
     # ================================================================================
 
     def to_dict(self) -> Dict[str, Any]:
@@ -73,25 +94,36 @@ class MinerStatsData:
         """Добавить шар в статистику"""
         self.total_shares += 1
         self.total_difficulty += share.difficulty
-        # ===== Обновляем round_share_sum =====
-        self.round_share_sum += share.share_difficulty
-        # =====================================
+
+        # ===== Прогресс раунда =====
+        # Храним сумму в SoloFury-единицах (best_share), потому что
+        # в дашборде «Share Sum» показывается в тех же единицах,
+        # что и Best Share (как у SoloFury).
+        #
+        # ВАЖНО: если хочешь показывать прогресс как «сумму сложностей
+        # относительно 1», замени на share.share_difficulty.
+        # Но тогда progress_percent надо считать по-другому.
+        self.round_share_sum += share.best_share
+        # ============================
 
         if share.is_valid:
             self.accepted_shares += 1
         else:
             self.rejected_shares += 1
 
-        # Обновляем максимальную сложность
+        # ===== Best Share (SoloFury style) =====
+        # max_difficulty теперь = best_share (SoloFury-единицы).
+        # Это то, что показывается в дашборде как «Best Share».
         if share.difficulty > self.max_difficulty:
             self.max_difficulty = share.difficulty
             self.max_difficulty_share = share
 
-        # ===== Обновляем Best Share (SoloFury) =====
-        if share.share_difficulty > self.max_share_difficulty:
-            self.max_share_difficulty = share.share_difficulty
+        # Дублируем в max_share_difficulty для совместимости с API
+        # (get_max_share_difficulty возвращает max_share_difficulty_share).
+        if share.best_share > self.max_share_difficulty:
+            self.max_share_difficulty = share.best_share
             self.max_share_difficulty_share = share
-        # ===========================================
+        # ======================================
 
         # Добавляем в историю
         self.last_shares.append(share)
@@ -101,8 +133,13 @@ class MinerStatsData:
         """
         Рассчитать хэшрейт за последние N секунд.
 
-        ВАЖНО: используем share_difficulty (Best Share по SoloFury,
-        = network_target × network_difficulty / hash_int).
+        ВАЖНО: используем share_difficulty (сложность относительно 1),
+        а НЕ best_share!
+
+        ПОЧЕМУ:
+        - 2^32 — это количество хэшей на 1 единицу сложности относительно 1.
+        - Если использовать best_share (= share_difficulty × network_difficulty),
+          то получим хэшрейт, умноженный на network_difficulty.
 
         Формула:
             hashrate = Σ (share_difficulty × 2^32) / period_seconds
@@ -116,13 +153,9 @@ class MinerStatsData:
         for share in self.last_shares:
             age = (now - share.timestamp).total_seconds()
             if age <= period_seconds and share.is_valid:
-
-                # Это сложность шара относительно сети.
-                # × 2^32 — количество хэшей на 1 единицу сложности.
                 share_diff = share.share_difficulty or 0.0
                 if share_diff > 0:
                     total_hashes += share_diff * (2 ** 32)
-                # ==============================
 
         if total_hashes == 0:
             return 0.0
