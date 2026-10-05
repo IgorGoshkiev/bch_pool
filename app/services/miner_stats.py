@@ -153,9 +153,28 @@ class MinerStatsData:
         for share in self.last_shares:
             age = (now - share.timestamp).total_seconds()
             if age <= period_seconds and share.is_valid:
-                share_diff = share.share_difficulty or 0.0
-                if share_diff > 0:
-                    total_hashes += share_diff * (2 ** 32)
+                # ===== ИСПОЛЬЗУЕМ display_difficulty, А НЕ share_difficulty =====
+                # ПОЧЕМУ:
+                # - share_difficulty = difficulty_1_target / hash_int
+                #   Это фактическая сложность шара относительно 1.
+                #   У твоего ASIC она ~2e-10 (ASIC шлёт все шары).
+                #   Формула share_difficulty × 2^32 даёт мусор (0.17 H/s).
+                #
+                # - display_difficulty = то, что пул отправил ASIC через
+                #   mining.set_difficulty (например, 262144).
+                #   ASIC обучен искать шары сложности ≥ display_difficulty.
+                #   Значит, каждый присланный шар = минимум
+                #   display_difficulty × 2^32 выполненных хэшей.
+                #   Формула display_difficulty × 2^32 даёт реальный хэшрейт.
+                #
+                # ВНИМАНИЕ: формула работает ТОЛЬКО если ASIC
+                # действительно фильтрует шары по display_difficulty.
+                # Если ASIC шлёт все шары независимо от сложности —
+                # формула даст завышенный хэшрейт.
+                display_diff = share.display_difficulty or 0.0
+                if display_diff > 0:
+                    total_hashes += display_diff * (2 ** 32)
+                # =================================================================
 
         if total_hashes == 0:
             return 0.0
