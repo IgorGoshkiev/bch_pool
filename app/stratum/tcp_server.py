@@ -38,31 +38,37 @@ class StratumTCPServer:
         self.difficulty_service = difficulty_service
         self.share_validator = share_validator
 
-        # ===== СЛОЖНОСТИ МАЙНЕРОВ =====
+        # ===== СЛОЖНОСТИ МАЙНЕРОВ (КЛЮЧ — client_id) =====
+        # ВАЖНО: ключ — client_id ("IP:порт"), а НЕ miner_address.
+        # Это позволяет двум ASIC с ОДНИМ кошельком иметь РАЗНУЮ сложность.
+        #
+        # Пример:
+        #   ASIC №1: client_id = "192.168.10.183:39924" → diff = 262144
+        #   ASIC №2: client_id = "192.168.10.184:42108" → diff = 262144
+        #
+        # РАНЬШЕ ключ был miner_address — оба ASIC "сливались" в один,
+        # и сложность росла до бесконечности.
+
         # display_difficulty — то, что мы ОТПРАВЛЯЕМ ASIC через mining.set_difficulty.
         # Управляет частотой шаров и отображением на панели ASIC.
-        self.miner_difficulties: Dict[str, float] = {}
+        self.miner_difficulties: Dict[str, float] = {}       # client_id -> display_difficulty
 
         # Индивидуальный МИНИМУМ display_difficulty для каждого ASIC.
         # Берётся из mining.suggest_difficulty при подключении.
-        # Если suggest не было — используется settings.start_display_difficulty.
         # Пул НЕ опускает сложность ниже этого значения.
-        self.min_asic_difficulties: Dict[str, float] = {}
+        self.min_asic_difficulties: Dict[str, float] = {}    # client_id -> min_display_difficulty
 
         # Временное хранилище suggest_difficulty до авторизации.
         # ASIC может прислать suggest до mining.authorize.
-        # Ключ — client_id, значение — предложенная сложность.
-        self._pending_suggest: Dict[str, float] = {}
+        self._pending_suggest: Dict[str, float] = {}         # client_id -> suggested
 
-        # Время последнего обновления сложности для каждого майнера.
+        # Время последнего обновления сложности для каждого ASIC.
         # Нужно, чтобы не менять сложность на КАЖДОМ шаре.
-        self._last_diff_update: Dict[str, float] = {}
+        self._last_diff_update: Dict[str, float] = {}        # client_id -> timestamp
 
         # Отложенная сложность для отправки вместе с notify.
-        # ВАЖНО: ASIC (WhatsMiner) применяет set_difficulty ТОЛЬКО
-        # когда получает notify сразу после. Поэтому set_difficulty
-        # нельзя отправлять отдельно — только вместе с notify.
-        self._pending_difficulty: Dict[str, int] = {}
+        # ASIC применяет set_difficulty ТОЛЬКО когда получает notify сразу после.
+        self._pending_difficulty: Dict[str, int] = {}        # client_id -> pending difficulty
 
         self.start_time = datetime.now(UTC)
         self._lock = asyncio.Lock()  # Для синхронизации доступа
@@ -311,11 +317,14 @@ class StratumTCPServer:
 
                 # ===== ОЧИЩАЕМ ДАННЫЕ О СЛОЖНОСТИ =====
                 # При отключении ASIC удаляем его индивидуальные данные.
-                # При повторном подключении он снова пришлёт suggest_difficulty.
-                self.miner_difficulties.pop(miner_address, None)
-                self.min_asic_difficulties.pop(miner_address, None)
-                self._last_diff_update.pop(miner_address, None)
-                print(f"🧹 [CLEANUP] Removed difficulty data for {miner_address[:20]}...", flush=True)
+                # КЛЮЧ — client_id (у каждого ASIC свои записи).
+                # При повторном подключении ASIC получит новый client_id
+                # (новый порт) и снова пришлёт suggest_difficulty.
+                self.miner_difficulties.pop(client_id, None)
+                self.min_asic_difficulties.pop(client_id, None)
+                self._last_diff_update.pop(client_id, None)
+                self._pending_difficulty.pop(client_id, None)
+                print(f"🧹 [CLEANUP] Removed difficulty data for client_id={client_id}", flush=True)
 
             # Закрываем соединение
             try:
@@ -386,23 +395,26 @@ class StratumTCPServer:
 
                     async with self._lock:
                         self.miners[client_id] = authorized_address
-                        # Храним как float для расчетов
-                        self.miner_difficulties[authorized_address] = float(initial_diff)
-                        print(f"✅ СЛОЖНОСТЬ сохранена: {initial_diff}", flush=True)
+
+                        # ===== КЛЮЧ — client_id, А НЕ address =====
+                        # Так каждый ASIC имеет свою сложность.
+                        # client_id = "IP:порт" (например, "192.168.10.183:39924").
+                        self.miner_difficulties[client_id] = float(initial_diff)
+                        print(f"✅ [AUTH] difficulty сохранена для client_id={client_id}: {initial_diff}", flush=True)
 
                         # ===== ИНИЦИАЛИЗИРУЕМ МИНИМУМ ДЛЯ ЭТОГО ASIC =====
                         # suggest_difficulty — это НИЖНЯЯ ГРАНИЦА для этого ASIC.
                         # Пул НЕ опускает сложность ниже suggest.
                         # Если suggest не было — используем min_display_difficulty.
-                        if authorized_address not in self.min_asic_difficulties:
+                        if client_id not in self.min_asic_difficulties:
                             if suggested:
-                                self.min_asic_difficulties[authorized_address] = max(
+                                self.min_asic_difficulties[client_id] = max(
                                     settings.min_display_difficulty,
                                     float(suggested)
                                 )
                                 print(f"🎯 [AUTH] min_asic_difficulty from suggest: {suggested}", flush=True)
                             else:
-                                self.min_asic_difficulties[authorized_address] = settings.min_display_difficulty
+                                self.min_asic_difficulties[client_id] = settings.min_display_difficulty
                                 print(f"🎯 [AUTH] min_asic_difficulty default: {settings.min_display_difficulty}", flush=True)
 
                     # 1. Ответ на авторизацию
@@ -445,25 +457,32 @@ class StratumTCPServer:
                 self._pending_suggest[client_id] = suggested
 
                 if client_id in self.miners:
-                    miner_address = self.miners[client_id]
-
-                    # ===== СОХРАНЯЕМ КАК НИЖНЮЮ ГРАНИЦУ ДЛЯ ЭТОГО ASIC =====
-                    # Пул не будет опускать сложность ниже этого значения.
-                    self.min_asic_difficulties[miner_address] = max(
+                    # ===== КЛЮЧ — client_id, А НЕ address =====
+                    # Так каждый ASIC имеет свою нижнюю границу сложности.
+                    self.min_asic_difficulties[client_id] = max(
                         settings.min_display_difficulty,
                         suggested
                     )
-                    print(f"🎯 [SUGGEST_DIFF] min_asic_difficulty set: {self.min_asic_difficulties[miner_address]}", flush=True)
+                    print(f"🎯 [SUGGEST_DIFF] min_asic_difficulty set для client_id={client_id}: {self.min_asic_difficulties[client_id]}", flush=True)
+                    # ============================================
 
-                    # ===== ТАКЖЕ ПЕРЕДАЁМ В DIFFICULTY_SERVICE =====
-                    # Это ориентир для адаптации и нижняя граница.
+                    # ===== ПЕРЕДАЁМ В DIFFICULTY_SERVICE =====
+                    # ВАЖНО: difficulty_service пока работает по miner_address,
+                    # а не по client_id. Поэтому передаём miner_address.
+                    # TODO
+                    # Это ОТДЕЛЬНАЯ проблема — разберёмся после этапа 2.
+                    miner_address = self.miners[client_id]
                     if self.difficulty_service:
                         self.difficulty_service.set_target_difficulty(miner_address, suggested)
                         # Синхронизируем нижнюю границу с difficulty_service
-                        self.difficulty_service.min_asic_difficulties[miner_address] = self.min_asic_difficulties[miner_address]
+                        self.difficulty_service.min_asic_difficulties[miner_address] = self.min_asic_difficulties[client_id]
                         print(f"📊 [SUGGEST_DIFF] Synced to difficulty_service", flush=True)
                 else:
                     print(f"📊 [SUGGEST_DIFF] Saved to pending (waiting for authorize)", flush=True)
+
+
+
+
             else:
                 print(f"⚠️ [SUGGEST_DIFF] Invalid params: {params}", flush=True)
 
@@ -474,9 +493,12 @@ class StratumTCPServer:
         elif method == "mining.extranonce.subscribe":
             await self._handle_extranonce_subscribe(msg_id, writer)
 
+
         elif method == "mining.submit":
+
             if client_id in self.miners:
-                await self.handle_submit_tcp(msg_id, params, self.miners[client_id], writer)
+
+                await self.handle_submit_tcp(msg_id, params, self.miners[client_id], writer, client_id)
             else:
                 # ===== АВТОМАТИЧЕСКАЯ АВТОРИЗАЦИЯ ПО IP =====
                 client_ip = self._client_ips.get(client_id, "")
@@ -499,7 +521,7 @@ class StratumTCPServer:
 
                         print(f"🔁 AUTO-AUTHORIZED by IP: {client_ip} -> {addr} (new client: {client_id})", flush=True)
 
-                        await self.handle_submit_tcp(msg_id, params, addr, writer)
+                        await self.handle_submit_tcp(msg_id, params, addr, writer, client_id)
 
                         found = True
                         break
@@ -619,8 +641,13 @@ class StratumTCPServer:
         await self._send_json(writer, response)
 
     async def handle_submit_tcp(self, msg_id: int, params: list, miner_address: str,
-                                writer: asyncio.StreamWriter):
-        """Обработка шара от TCP клиента"""
+                                writer: asyncio.StreamWriter, client_id: str = None):
+        """Обработка шара от TCP клиента
+
+        ВАЖНО: client_id — ключ для словарей сложности.
+        Каждый ASIC (TCP-подключение) имеет свой client_id,
+        поэтому у двух ASIC с одним кошельком РАЗНАЯ сложность.
+        """
 
         # ===== ПРОФАЙЛИНГ =====
         profiler = {}
@@ -755,7 +782,7 @@ class StratumTCPServer:
             #   2. Принимать ВСЕ шары ASIC (через validation_difficulty).
             # ============================================================
             display_difficulty = self.miner_difficulties.get(
-                miner_address,
+                client_id,
                 settings.start_display_difficulty
             )
             # Для ВАЛИДАЦИИ всегда используем default_validation_difficulty (1e-10)
@@ -936,7 +963,8 @@ class StratumTCPServer:
                     print(f"📊 [DIFF] Share added to difficulty_service", flush=True)
 
                     # ===== 2. ПРОВЕРКА ЧАСТОТЫ ОБНОВЛЕНИЯ — ЗДЕСЬ =====
-                    last_update = self._last_diff_update.get(miner_address, 0)
+                    # КЛЮЧ — client_id (у каждого ASIC свой интервал обновления)
+                    last_update = self._last_diff_update.get(client_id, 0)
                     time_since_update = time.time() - last_update
 
                     # Если это первый шар — используем быстрый интервал
@@ -959,8 +987,9 @@ class StratumTCPServer:
                         print(f"📊 [DIFF] New difficulty calculated: {new_difficulty:.10f}", flush=True)
 
                         # ===== 4. Получаем текущую сложность майнера =====
+                        # КЛЮЧ — client_id
                         current_difficulty = self.miner_difficulties.get(
-                            miner_address,
+                            client_id,
                             settings.start_display_difficulty
                         )
                         print(f"📊 [DIFF] Current difficulty: {current_difficulty:.10f}", flush=True)
@@ -975,11 +1004,13 @@ class StratumTCPServer:
                         #
                         # Это защищает от ситуации, когда пул опускает сложность
                         # ниже той, на которой ASIC может найти шар.
+                        # КЛЮЧ — client_id (у каждого ASIC свой минимум)
                         min_allowed = self.min_asic_difficulties.get(
-                            miner_address,
+                            client_id,
                             settings.min_display_difficulty
                         )
                         print(f"📊 [DIFF] min_allowed (min_asic_difficulty for this ASIC): {min_allowed}", flush=True)
+
                         if new_difficulty < min_allowed:
                             print(f"📊 [DIFF] Capped at min_asic_difficulty: {min_allowed}", flush=True)
                             new_difficulty = min_allowed
@@ -1008,25 +1039,26 @@ class StratumTCPServer:
                             print(f"📊 [DIFF_DEBUG] Rounded difficulty: {rounded_diff:.0f}", flush=True)
 
                             # Отправляем ASIC (возвращает True/False)
-                            sent_ok = await self.update_miner_difficulty(miner_address, rounded_diff)
+                            sent_ok = await self.update_miner_difficulty(miner_address, rounded_diff, client_id)
 
                             if sent_ok:
                                 # ===== СОХРАНЯЕМ ТОЛЬКО ПОСЛЕ УСПЕШНОЙ ОТПРАВКИ =====
-                                self.miner_difficulties[miner_address] = rounded_diff
-                                self._last_diff_update[miner_address] = time.time()
+                                # КЛЮЧ — client_id
+                                self.miner_difficulties[client_id] = rounded_diff
+                                self._last_diff_update[client_id] = time.time()
 
                                 # ===== СИНХРОНИЗИРУЕМ С DIFFICULTY_SERVICE =====
+                                # ВАЖНО: difficulty_service пока по miner_address.
                                 if self.difficulty_service:
                                     self.difficulty_service.miner_difficulties[miner_address] = rounded_diff
                                     self.difficulty_service.last_update_time[miner_address] = time.time()
 
                                     # ===== СБРАСЫВАЕМ ВРЕМЕННЫЕ МЕТКИ =====
-                                    # Это нужно, чтобы median_interval считался
-                                    # ТОЛЬКО по шарам с НОВОЙ сложностью.
                                     self.difficulty_service.reset_share_timestamps(miner_address)
 
-                                print(f"📊 [DIFF_DEBUG] miner_difficulties updated: {rounded_diff:.0f}", flush=True)
-
+                                print(
+                                    f"📊 [DIFF_DEBUG] miner_difficulties updated для client_id={client_id}: {rounded_diff:.0f}",
+                                    flush=True)
                                 if current_difficulty > 0:
                                     change_pct = ((rounded_diff / current_difficulty - 1) * 100)
                                     print(f"📊 DIFFICULTY UPDATED: {current_difficulty:.10f} -> {rounded_diff:.0f} (change: {change_pct:+.1f}%)", flush=True)
@@ -1401,7 +1433,8 @@ class StratumTCPServer:
                     # ===== ДИАГНОСТИКА: _pending_difficulty ДО =====
                     print(f"📊 [BROADCAST] _pending_difficulty BEFORE pop: {self._pending_difficulty}", flush=True)
 
-                    pending_diff = self._pending_difficulty.pop(miner_address, None)
+                    # КЛЮЧ — client_id
+                    pending_diff = self._pending_difficulty.pop(client_id, None)
 
                     # ===== ДИАГНОСТИКА: _pending_difficulty ПОСЛЕ =====
                     print(f"📊 [BROADCAST] _pending_difficulty AFTER pop: {self._pending_difficulty}, pending_diff={pending_diff}", flush=True)
@@ -1412,9 +1445,8 @@ class StratumTCPServer:
                         current_diff_int = pending_diff
 
                         # ===== ОКРУГЛЯЕМ ДО СТЕПЕНИ ДВОЙКИ С ГАРАНТИЕЙ ИЗМЕНЕНИЯ =====
-                        # pending_diff уже прошёл округление в update_miner_difficulty,
-                        # но на всякий случай округляем ещё раз с текущей сложностью.
-                        old_diff = self.miner_difficulties.get(miner_address, 0)
+                        # КЛЮЧ — client_id
+                        old_diff = self.miner_difficulties.get(client_id, 0)
                         rounded_diff = self._round_to_power_of_two(
                             current_diff_int,
                             current=old_diff if old_diff > 0 else None
@@ -1423,13 +1455,14 @@ class StratumTCPServer:
                         current_diff_int = rounded_diff
                         # ==================================================================
 
-                        self.miner_difficulties[miner_address] = float(current_diff_int)
+                        self.miner_difficulties[client_id] = float(current_diff_int)
                         print(f"📊 [BROADCAST] PENDING difficulty: {current_diff_int}, clean_jobs=True (СМЕНА СЛОЖНОСТИ)", flush=True)
                     else:
                         # Сложность НЕ изменилась — clean_jobs=False
                         clean_jobs_for_this_send = False
+                        # КЛЮЧ — client_id
                         current_diff = self.miner_difficulties.get(
-                            miner_address,
+                            client_id,
                             settings.start_display_difficulty
                         )
                         current_diff_int = max(1, int(current_diff))
@@ -1582,7 +1615,7 @@ class StratumTCPServer:
                 difficulty=difficulty
             )
 
-    async def update_miner_difficulty(self, miner_address: str, difficulty: float) -> bool:
+    async def update_miner_difficulty(self, miner_address: str, difficulty: float, client_id: str = None) -> bool:
         """
         Обновление сложности для конкретного майнера.
 
@@ -1616,7 +1649,7 @@ class StratumTCPServer:
         # Передаём текущую сложность, чтобы _round_to_power_of_two
         # гарантировал, что новая сложность ОТЛИЧАЕТСЯ от текущей.
         # Иначе 42598 -> 32768, и set_difficulty не отправится.
-        current_difficulty = self.miner_difficulties.get(miner_address, 0)
+        current_difficulty = self.miner_difficulties.get(client_id, 0)
         original_difficulty = display_difficulty
         display_difficulty = self._round_to_power_of_two(
             display_difficulty,
@@ -1638,7 +1671,7 @@ class StratumTCPServer:
         #
         # ВАЖНО: это НЕ влияет на broadcast_new_job — там pending_diff
         # уже проверен здесь, и если он None, set_difficulty не отправится.
-        current = self.miner_difficulties.get(miner_address, 0)
+        current = self.miner_difficulties.get(client_id, 0)
         if current > 0 and display_difficulty == int(current):
             print(
                 f"📊 [UPDATE_DIFF] Difficulty NOT CHANGED ({display_difficulty} == {int(current)}), skipping",
@@ -1651,7 +1684,7 @@ class StratumTCPServer:
         print(f"📊 [UPDATE_DIFF] _pending_difficulty BEFORE: {self._pending_difficulty}", flush=True)
         # =============================================
 
-        self._pending_difficulty[miner_address] = display_difficulty
+        self._pending_difficulty[client_id] = display_difficulty
 
         # ===== ДИАГНОСТИКА: _pending_difficulty ПОСЛЕ =====
         print(f"📊 [UPDATE_DIFF] _pending_difficulty AFTER: {self._pending_difficulty}", flush=True)
