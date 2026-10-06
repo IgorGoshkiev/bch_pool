@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BCH Pool — Dashboard</title>
+    <script src="/static/lib/chart.umd.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -94,12 +95,15 @@
         <h2>Hashrate</h2>
         <div class="row">
             <div class="card">
-                <div class="label">Current (30m)</div>
-                <div class="value blue" id="hashrate-30m">—</div>
+                <div class="label">Current (10m)</div>
+                <div class="value blue" id="hashrate-current">—</div>
             </div>
-            <div class="card">
-                <div class="label">Average (1h)</div>
-                <div class="value blue" id="hashrate-1h">—</div>
+        </div>
+
+        <div class="card" style="margin-top: 16px; padding: 16px;">
+            <div class="label" style="margin-bottom: 8px;">Hashrate History (6h)</div>
+            <div style="position: relative; height: 220px;">
+                <canvas id="hashrate-chart"></canvas>
             </div>
         </div>
 
@@ -183,9 +187,9 @@
                 <div class="value" id="block-elapsed">—</div>
             </div>
             <div class="card">
-                <div class="label">Progress</div>
-                <div class="value yellow" id="block-progress">—</div>
-                <div class="sub" id="block-share-sum">—</div>
+                <div class="label">Probability</div>
+                <div class="value yellow" id="block-probability">—</div>
+                <div class="sub" id="block-expected">—</div>
             </div>
         </div>
 
@@ -263,8 +267,7 @@
                 setStatus(d.workers.online > 0);
 
                 // Hashrate
-                setText('hashrate-30m', d.hashrate.current_30m_formatted);
-                setText('hashrate-1h', d.hashrate.average_1h_formatted);
+                setText('hashrate-current', d.hashrate.current_formatted);
 
                 // Work
                 setText('share-sum', d.work.share_sum_formatted);
@@ -296,22 +299,24 @@
                 setText('block-height', d.block_in_progress.height_formatted);
                 setText('block-elapsed', d.block_in_progress.elapsed_formatted);
 
-                const progress = d.block_in_progress.progress_percent;
-                let progressText;
-                if (progress === 0) {
-                    progressText = '0%';
-                } else if (progress < 0.000001) {
-                    progressText = progress.toExponential(2) + '%';
-                } else if (progress < 0.01) {
-                    progressText = progress.toFixed(6) + '%';
-                } else if (progress < 1) {
-                    progressText = progress.toFixed(3) + '%';
+                const prob = d.block_in_progress.probability_percent;
+                let probText;
+                if (prob === 0) {
+                    probText = '0%';
+                } else if (prob < 0.000001) {
+                    probText = prob.toExponential(2) + '%';
+                } else if (prob < 0.01) {
+                    probText = prob.toFixed(6) + '%';
+                } else if (prob < 1) {
+                    probText = prob.toFixed(3) + '%';
                 } else {
-                    progressText = progress.toFixed(2) + '%';
+                    probText = prob.toFixed(2) + '%';
                 }
-                setText('block-progress', progressText);
+                setText('block-probability', probText);
 
-                setText('block-share-sum', 'Share Sum: ' + d.block_in_progress.round_share_sum_formatted);
+                const expectedRounds = d.block_in_progress.expected_rounds_formatted || '∞';
+                const expectedTime = d.block_in_progress.expected_time_formatted || '∞';
+                setText('block-expected', 'До блока: ' + expectedTime + ' (' + expectedRounds + ')');
 
                 // Timestamp
                 setText('last-update', new Date(d.timestamp).toLocaleTimeString());
@@ -324,11 +329,80 @@
             }
         }
 
+        // ===== ГРАФИК ХЭШРЕЙТА =====
+        let hashrateChart = null;
+
+        async function fetchHashrateHistory() {
+            try {
+                const url = `/api/v1/miners/${MINER_ADDRESS}/hashrate-history?hours=6`;
+                const response = await fetch(url);
+                if (!response.ok) return;
+                const json = await response.json();
+                if (json.status !== 'success') return;
+
+                const points = json.data.points || [];
+
+                // Подготовка данных для Chart.js
+                const labels = points.map(p => {
+                    const d = new Date(p.t);
+                    return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+                });
+                const data = points.map(p => p.hashrate / 1e12);  // в TH/s
+
+                if (!hashrateChart) {
+                    const ctx = document.getElementById('hashrate-chart').getContext('2d');
+                    hashrateChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: 'Hashrate (TH/s)',
+                                data: data,
+                                borderColor: '#58a6ff',
+                                backgroundColor: 'rgba(88, 166, 255, 0.1)',
+                                borderWidth: 2,
+                                fill: true,
+                                tension: 0.3,
+                                pointRadius: 0,
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            animation: false,
+                            plugins: {
+                                legend: { display: false },
+                            },
+                            scales: {
+                                x: {
+                                    ticks: { color: '#8b949e', maxTicksLimit: 12 },
+                                    grid: { color: '#30363d' },
+                                },
+                                y: {
+                                    beginAtZero: true,
+                                    ticks: { color: '#8b949e' },
+                                    grid: { color: '#30363d' },
+                                },
+                            },
+                        },
+                    });
+                } else {
+                    hashrateChart.data.labels = labels;
+                    hashrateChart.data.datasets[0].data = data;
+                    hashrateChart.update('none');
+                }
+            } catch (e) {
+                console.error('Hashrate chart error:', e);
+            }
+        }
+
         // Initial fetch
         fetchDashboard();
+        fetchHashrateHistory();
 
-        // Auto-refresh каждые 10 секунд
-        setInterval(fetchDashboard, 10000);
+        // Auto-refresh
+        setInterval(fetchDashboard, 10000);       // дашборд — 10 сек
+        setInterval(fetchHashrateHistory, 60000); // график — 1 минута
     </script>
 </body>
 </html>

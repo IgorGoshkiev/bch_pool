@@ -525,11 +525,8 @@ async def get_miner_dashboard(
                 workers_online += 1
 
     # ===== HASHRATE =====
-    #  используем ОКНО 10 МИНУТ для current, и 30 МИНУТ для average.
-
-    hashrate_30m = await miner_stats_service.get_hashrate(bch_address, period_seconds=600)  # 10 минут
-    hashrate_1h = await miner_stats_service.get_hashrate(bch_address, period_seconds=1800)  # 30 минут
-    # ==============================
+    # Показываем ОДИН хэшрейт — за последние 10 минут.
+    hashrate_current = await miner_stats_service.get_hashrate(bch_address, period_seconds=600)  # 10 минут
 
     # ===== STATS =====
     stats = await miner_stats_service.get_stats(bch_address)
@@ -582,6 +579,30 @@ async def get_miner_dashboard(
     if network_difficulty > 0 and round_share_sum > 0:
         progress_percent = (round_share_sum / network_difficulty) * 100.0
 
+    # ===== ВЕРОЯТНОСТЬ НАЙТИ БЛОК =====
+    # Среднее время до блока (в секундах):
+    #   expected_time = network_difficulty × 2^32 / hashrate
+    #
+    # Это стандартная формула соло-майнинга: сколько времени нужно,
+    # чтобы найти блок при текущем хэшрейте и текущей сложности сети.
+    #
+    # Вероятность найти блок в текущем раунде:
+    #   P = round_elapsed / expected_time   (0..1)
+    #
+    # Ожидаемое количество раундов до блока:
+    #   expected_rounds = expected_time / round_elapsed
+    expected_time_seconds = None
+    round_probability = 0.0
+    expected_rounds = None
+
+    if hashrate_current > 0 and network_difficulty > 0:
+        expected_time_seconds = (network_difficulty * (2 ** 32)) / hashrate_current
+
+        if expected_time_seconds > 0 and round_elapsed_seconds > 0:
+            round_probability = round_elapsed_seconds / expected_time_seconds
+            expected_rounds = expected_time_seconds / round_elapsed_seconds
+    # ==================================
+
     # ===== BLOCKS =====
     blocks = await database_service.get_blocks_by_miner(bch_address, limit=1000)
     confirmed_blocks = [b for b in blocks if b.confirmed]
@@ -605,10 +626,8 @@ async def get_miner_dashboard(
             },
 
             "hashrate": {
-                "current_30m": hashrate_30m,
-                "current_30m_formatted": format_hashrate(hashrate_30m),
-                "average_1h": hashrate_1h,
-                "average_1h_formatted": format_hashrate(hashrate_1h),
+                "current": hashrate_current,
+                "current_formatted": format_hashrate(hashrate_current),
             },
 
             "work": {
@@ -648,7 +667,7 @@ async def get_miner_dashboard(
                 "port_formatted": format_difficulty(port_difficulty),
             },
 
-            "block_in_progress": {
+                        "block_in_progress": {
                 "height": current_block_height,
                 "height_formatted": f"#{current_block_height}",
                 "elapsed_seconds": round_elapsed_seconds,
@@ -656,8 +675,76 @@ async def get_miner_dashboard(
                 "round_share_sum": round_share_sum,
                 "round_share_sum_formatted": format_difficulty(round_share_sum),
                 "progress_percent": round(progress_percent, 6),
+
+                # ===== Вероятность найти блок =====
+                # probability_percent — вероятность найти блок в текущем раунде (0..100)
+                # expected_time_seconds — среднее время до блока (в секундах)
+                # expected_time_formatted — то же, в читаемом виде ("268d 5h")
+                # expected_rounds — сколько раундов в среднем до блока
+                # expected_rounds_formatted — то же, в читаемом виде ("1 в 14 025")
+                "probability_percent": round(round_probability * 100, 9),
+                "expected_time_seconds": expected_time_seconds,
+                "expected_time_formatted": (
+                    format_elapsed_time(expected_time_seconds)
+                    if expected_time_seconds else "∞"
+                ),
+                "expected_rounds": expected_rounds,
+                "expected_rounds_formatted": (
+                    f"1 в {expected_rounds:,.0f}"
+                    if expected_rounds else "∞"
+                ),
             },
 
             "timestamp": datetime.now(UTC).isoformat()
+        }
+    )
+
+@router.get(
+    "/{bch_address}/hashrate-history",
+    summary="История хэшрейта для графика",
+    response_description="Временной ряд хэшрейта"
+)
+async def get_hashrate_history(
+        bch_address: str,
+        hours: int = Query(6, ge=1, le=24, description="Окно в часах"),
+        db: AsyncSession = Depends(get_db)
+):
+    """
+    История хэшрейта майнера для графика.
+
+    Возвращает список точек {t, hashrate}, которые раз в минуту
+    сохраняет фоновая задача _hashrate_snapshot_loop в MinerStatsService.
+    """
+    await get_miner_or_404(bch_address, db)
+
+    stats = await miner_stats_service.get_stats(bch_address)
+    if not stats:
+        return ApiResponse(
+            status="success",
+            message=f"Нет данных для {bch_address}",
+            data={"address": bch_address, "hours": hours, "points": [], "count": 0}
+        )
+
+    # Фильтруем точки по времени
+    from datetime import datetime, UTC, timedelta
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
+
+    points = []
+    for point in stats.hashrate_history:
+        try:
+            t = datetime.fromisoformat(point["t"])
+            if t >= cutoff:
+                points.append(point)
+        except (KeyError, ValueError, TypeError):
+            continue
+
+    return ApiResponse(
+        status="success",
+        message=f"История хэшрейта за {hours} часов",
+        data={
+            "address": bch_address,
+            "hours": hours,
+            "points": points,
+            "count": len(points),
         }
     )

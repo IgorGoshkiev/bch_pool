@@ -87,7 +87,8 @@ class MinerStatsData:
     # ======================
 
     last_shares: deque = field(default_factory=lambda: deque(maxlen=1000))
-    hashrate_history: deque = field(default_factory=lambda: deque(maxlen=360))
+    # maxlen=1440: раз в минуту × 24 часа = 1440 точек.
+    hashrate_history: deque = field(default_factory=lambda: deque(maxlen=1440))
     last_update: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def add_share(self, share: ShareInfo):
@@ -202,7 +203,11 @@ class MinerStatsService:
         self._stats: Dict[str, MinerStatsData] = {}
         self._lock = asyncio.Lock()
         self._max_age_seconds = 600  # 10 минут
+        # Фоновая задача очистки старых данных
         self._cleanup_task = None
+
+        # Фоновая задача сбора снимков хэшрейта для графика
+        self._hashrate_snapshot_task = None
         self._running = False
 
         logger.info(
@@ -215,11 +220,20 @@ class MinerStatsService:
         """Запуск фоновой очистки"""
         if not self._running:
             self._running = True
+            # 1. Очистка старых данных (раз в минуту)
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             logger.info(
                 "Фоновая очистка статистики запущена",
                 event="miner_stats_cleanup_started",
                 cleanup_interval_seconds=60
+            )
+
+            # 2. Сбор снимков хэшрейта для графика (раз в минуту)
+            self._hashrate_snapshot_task = asyncio.create_task(self._hashrate_snapshot_loop())
+            logger.info(
+                "Сбор снимков хэшрейта запущен",
+                event="miner_stats_hashrate_snapshot_started",
+                interval_seconds=60
             )
 
     async def get_round_info(self, address: str) -> Dict[str, Any]:
@@ -255,10 +269,11 @@ class MinerStatsService:
             return None
         return stats.max_share_difficulty_share
 
-
     async def stop(self):
-        """Остановка фоновой очистки"""
+        """Остановка всех фоновых задач"""
         self._running = False
+
+        # Останавливаем очистку
         if self._cleanup_task:
             self._cleanup_task.cancel()
             try:
@@ -268,6 +283,18 @@ class MinerStatsService:
             logger.info(
                 "Фоновая очистка статистики остановлена",
                 event="miner_stats_cleanup_stopped"
+            )
+
+        # Останавливаем сбор снимков
+        if self._hashrate_snapshot_task:
+            self._hashrate_snapshot_task.cancel()
+            try:
+                await self._hashrate_snapshot_task
+            except asyncio.CancelledError:
+                pass
+            logger.info(
+                "Сбор снимков хэшрейта остановлен",
+                event="miner_stats_hashrate_snapshot_stopped"
             )
 
     async def _cleanup_loop(self):
@@ -282,6 +309,54 @@ class MinerStatsService:
                 logger.error(
                     f"Ошибка в цикле очистки: {e}",
                     event="miner_stats_cleanup_loop_error",
+                    error=str(e)
+                )
+                await asyncio.sleep(60)
+
+    async def _hashrate_snapshot_loop(self):
+        """
+        Фоновый цикл сбора снимков хэшрейта для графика.
+
+        РАЗ В МИНУТУ:
+        - Для каждого активного майнера считаем текущий хэшрейт (окно 10 минут).
+        - Сохраняем снимок {t, hashrate} в stats.hashrate_history.
+        - hashrate_history — deque(maxlen=1440) = 24 часа по минутам.
+
+        ЗАЧЕМ:
+        - График на дашборде берёт точки из hashrate_history.
+        - Без этой задачи история никогда не заполнится.
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(60)  # раз в минуту
+
+                async with self._lock:
+                    now = datetime.now(UTC)
+
+                    for address, stats in self._stats.items():
+                        # Считаем хэшрейт за последние 10 минут
+                        hashrate = stats.get_hashrate(period_seconds=600)
+
+                        # Сохраняем снимок
+                        stats.hashrate_history.append({
+                            "t": now.isoformat(),
+                            "hashrate": hashrate,
+                        })
+
+                    miners_count = len(self._stats)
+
+                logger.debug(
+                    "Снимок хэшрейта сохранён",
+                    event="miner_stats_hashrate_snapshot_saved",
+                    miners_count=miners_count
+                )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(
+                    f"Ошибка в сборе снимков хэшрейта: {e}",
+                    event="miner_stats_hashrate_snapshot_error",
                     error=str(e)
                 )
                 await asyncio.sleep(60)
