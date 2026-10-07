@@ -524,16 +524,28 @@ async def get_miner_dashboard(
             if addr == bch_address:
                 workers_online += 1
 
+    # ===== STATS (СУММАРНО ПО ВСЕМ ВОРКЕРАМ) =====
+    # Собираем ВСЕ ключи: "qqxs...", "qqxs....Rig1", "qqxs....Rig2".
+    all_stats = await miner_stats_service.get_all_stats()
+
+    relevant_stats = []
+    for key, s in all_stats.items():
+        if key == bch_address or key.startswith(f"{bch_address}."):
+            relevant_stats.append(s)
+
+    share_sum = sum(s.total_difficulty for s in relevant_stats)
+    total_shares = sum(s.total_shares for s in relevant_stats)
+    accepted_shares = sum(s.accepted_shares for s in relevant_stats)
+    rejected_shares = sum(s.rejected_shares for s in relevant_stats)
+
     # ===== HASHRATE =====
     # Показываем ОДИН хэшрейт — за последние 10 минут.
-    hashrate_current = await miner_stats_service.get_hashrate(bch_address, period_seconds=600)  # 10 минут
+    # ===== HASHRATE (СУММАРНО) =====
+    hashrate_current = sum(
+        s.get_hashrate(period_seconds=600)
+        for s in relevant_stats
+    )  # 10 минут
 
-    # ===== STATS =====
-    stats = await miner_stats_service.get_stats(bch_address)
-    share_sum = stats.total_difficulty if stats else 0.0
-    total_shares = stats.total_shares if stats else 0
-    accepted_shares = stats.accepted_shares if stats else 0
-    rejected_shares = stats.rejected_shares if stats else 0
 
     # ===== BEST SHARE (SoloFury style) =====
     # ВАЖНО: используем max_share.best_share, а НЕ max_share.share_difficulty!
@@ -543,9 +555,14 @@ async def get_miner_dashboard(
     #   - best_share = share_difficulty × network_difficulty  (SoloFury, ~131)
     #
     # В дашборде показывается именно best_share (SoloFury-единицы).
-    max_share = await miner_stats_service.get_max_share_difficulty(bch_address)
-    best_share = max_share.best_share if max_share else 0.0
-    last_best_share_time = max_share.timestamp.isoformat() if max_share else None
+    # ===== BEST SHARE (МАКСИМУМ ПО ВСЕМ ВОРКЕРАМ) =====
+    best_share = 0.0
+    last_best_share_time = None
+    for s in relevant_stats:
+        max_share = s.max_share_difficulty_share
+        if max_share and max_share.best_share > best_share:
+            best_share = max_share.best_share
+            last_best_share_time = max_share.timestamp.isoformat()
 
     # ===== BLOCK IN PROGRESS =====
     current_block_height = 0
@@ -563,15 +580,93 @@ async def get_miner_dashboard(
     # ===== PERSONAL EFFORT =====
     personal_effort = (share_sum / network_difficulty * 100) if network_difficulty > 0 else 0.0
 
-    # ===== ROUND INFO =====
-    round_info = await miner_stats_service.get_round_info(bch_address)
-    round_elapsed_seconds = round_info.get("round_elapsed_seconds", 0)
-    round_share_sum = round_info.get("round_share_sum", 0.0)
+    # ===== ROUND INFO (СУММАРНО) =====
+    round_start_time = None
+    round_share_sum = 0.0
+    for s in relevant_stats:
+        if round_start_time is None or s.round_start_time < round_start_time:
+            round_start_time = s.round_start_time
+        round_share_sum += s.round_share_sum
+
+    round_elapsed_seconds = (
+        (datetime.now(UTC) - round_start_time).total_seconds()
+        if round_start_time else 0
+    )
 
     # ===== PORT DIFFICULTY =====
+    # ВАЖНО: miner_difficulties теперь ключуется по client_id ("IP:порт"),
+    # а не по bch_address. У одного bch_address может быть несколько ASIC
+    # (несколько client_id). Берём МАКСИМАЛЬНУЮ сложность среди них —
+    # это то, что показывает дашборд (как у Molehole/SoloFury).
     port_difficulty = 0
     if tcp_stratum_server:
-        port_difficulty = tcp_stratum_server.miner_difficulties.get(bch_address, 0)
+        client_ids_for_this_miner = [
+            cid for cid, addr in tcp_stratum_server.miners.items()
+            if addr == bch_address
+        ]
+        if client_ids_for_this_miner:
+            diffs = [
+                tcp_stratum_server.miner_difficulties.get(cid, 0)
+                for cid in client_ids_for_this_miner
+            ]
+            port_difficulty = max(diffs) if diffs else 0
+
+    # ===== СПИСОК ВОРКЕРОВ (5.3) =====
+    workers_list = []
+
+    worker_name_to_client_ids = {}
+    if tcp_stratum_server:
+        for cid, addr in tcp_stratum_server.miners.items():
+            if addr != bch_address:
+                continue
+            wn = tcp_stratum_server.worker_names.get(cid, "default")
+            worker_name_to_client_ids.setdefault(wn, []).append(cid)
+
+    for key, s in all_stats.items():
+        if key == bch_address:
+            worker_name = "default"
+        elif key.startswith(f"{bch_address}."):
+            worker_name = key[len(bch_address) + 1:]
+        else:
+            continue
+
+        w_hashrate = s.get_hashrate(period_seconds=600)
+        w_max_share = s.max_share_difficulty_share
+        w_best_share = w_max_share.best_share if w_max_share else 0.0
+        w_last_share_time = w_max_share.timestamp.isoformat() if w_max_share else None
+
+        w_display_diff = 0
+        w_online = False
+        if tcp_stratum_server and worker_name in worker_name_to_client_ids:
+            cids = worker_name_to_client_ids[worker_name]
+            if cids:
+                w_online = True
+                w_display_diff = max(
+                    tcp_stratum_server.miner_difficulties.get(cid, 0)
+                    for cid in cids
+                )
+
+        workers_list.append({
+            "worker_name": worker_name,
+            "stats_key": key,
+            "online": w_online,
+            "hashrate": w_hashrate,
+            "hashrate_formatted": format_hashrate(w_hashrate),
+            "difficulty": w_display_diff,
+            "difficulty_formatted": format_difficulty(w_display_diff),
+            "best_share": w_best_share,
+            "best_share_formatted": format_difficulty(w_best_share),
+            "last_share_time": w_last_share_time,
+            "shares": {
+                "total": s.total_shares,
+                "accepted": s.accepted_shares,
+                "rejected": s.rejected_shares,
+            },
+            "last_update": s.last_update.isoformat() if s.last_update else None,
+        })
+
+    workers_list.sort(key=lambda w: (not w["online"], w["worker_name"]))
+
 
     # ===== PROGRESS =====
     # progress = (round_share_sum / network_difficulty) × 100%
@@ -667,7 +762,9 @@ async def get_miner_dashboard(
                 "port_formatted": format_difficulty(port_difficulty),
             },
 
-                        "block_in_progress": {
+            "workers_list": workers_list,
+
+            "block_in_progress": {
                 "height": current_block_height,
                 "height_formatted": f"#{current_block_height}",
                 "elapsed_seconds": round_elapsed_seconds,
@@ -700,6 +797,76 @@ async def get_miner_dashboard(
     )
 
 @router.get(
+    "/{bch_address}/workers",
+    summary="Список воркеров майнера",
+    response_description="Статистика по каждому воркеру (Rig1, Rig2, default)"
+)
+async def get_miner_workers(
+        bch_address: str,
+        db: AsyncSession = Depends(get_db)
+):
+    """
+    Список всех воркеров для майнера.
+
+    ВАЖНО: в miner_stats_service статистика ключуется так:
+      - "qqxs..."           — ASIC без worker_name
+      - "qqxs....Rig1"      — ASIC с worker_name = "Rig1"
+      - "qqxs....Rig2"      — ASIC с worker_name = "Rig2"
+
+    Этот эндпоинт находит ВСЕ ключи, начинающиеся с bch_address,
+    и возвращает статистику по каждому воркеру.
+    """
+    await get_miner_or_404(bch_address, db)
+
+    # Получаем все ключи из miner_stats_service
+    all_stats = await miner_stats_service.get_all_stats()
+
+    # Фильтруем: ключи, которые равны bch_address ИЛИ начинаются с "bch_address."
+    workers = []
+    for key, stats in all_stats.items():
+        if key == bch_address:
+            worker_name = "default"
+        elif key.startswith(f"{bch_address}."):
+            worker_name = key[len(bch_address) + 1:]
+        else:
+            continue
+
+        # Считаем хэшрейт для каждого воркера
+        hashrate = stats.get_hashrate(period_seconds=600)
+
+        # Лучший Best Share
+        max_share = stats.max_share_difficulty_share
+        best_share = max_share.best_share if max_share else 0.0
+        last_best_time = max_share.timestamp.isoformat() if max_share else None
+
+        workers.append({
+            "worker_name": worker_name,
+            "stats_key": key,
+            "hashrate": hashrate,
+            "hashrate_formatted": format_hashrate(hashrate),
+            "shares": {
+                "total": stats.total_shares,
+                "accepted": stats.accepted_shares,
+                "rejected": stats.rejected_shares,
+            },
+            "best_share": best_share,
+            "best_share_formatted": format_difficulty(best_share),
+            "last_best_time": last_best_time,
+            "last_update": stats.last_update.isoformat() if stats.last_update else None,
+        })
+
+    return ApiResponse(
+        status="success",
+        message=f"Найдено {len(workers)} воркеров для {bch_address}",
+        data={
+            "miner": bch_address,
+            "workers_count": len(workers),
+            "workers": workers,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+    )
+
+@router.get(
     "/{bch_address}/hashrate-history",
     summary="История хэшрейта для графика",
     response_description="Временной ряд хэшрейта"
@@ -712,31 +879,57 @@ async def get_hashrate_history(
     """
     История хэшрейта майнера для графика.
 
-    Возвращает список точек {t, hashrate}, которые раз в минуту
-    сохраняет фоновая задача _hashrate_snapshot_loop в MinerStatsService.
+    ВАЖНО: статистика в miner_stats_service ключуется так:
+      - "qqxs..."           — ASIC без worker_name
+      - "qqxs....RigL1"     — ASIC с worker_name = "RigL1"
+
+    Поэтому мы собираем снимки из ВСЕХ ключей, начинающихся
+    с bch_address, и СУММИРУЕМ хэшрейт по одинаковым моментам времени.
     """
     await get_miner_or_404(bch_address, db)
 
-    stats = await miner_stats_service.get_stats(bch_address)
-    if not stats:
+    # ===== СОБИРАЕМ ВСЕ КЛЮЧИ ДЛЯ ЭТОГО АДРЕСА =====
+    all_stats = await miner_stats_service.get_all_stats()
+
+    relevant_stats = []
+    for key, s in all_stats.items():
+        if key == bch_address or key.startswith(f"{bch_address}."):
+            relevant_stats.append(s)
+
+    if not relevant_stats:
         return ApiResponse(
             status="success",
             message=f"Нет данных для {bch_address}",
             data={"address": bch_address, "hours": hours, "points": [], "count": 0}
         )
 
-    # Фильтруем точки по времени
+    # ===== СОБИРАЕМ СНИМКИ ПО ВРЕМЕНИ И СУММИРУЕМ =====
+    # Каждый снимок — {"t": ISO_timestamp, "hashrate": float}.
+    # У разных воркеров снимки могут быть в разное время,
+    # поэтому группируем по "t" (строке) и суммируем.
     from datetime import datetime, UTC, timedelta
     cutoff = datetime.now(UTC) - timedelta(hours=hours)
 
-    points = []
-    for point in stats.hashrate_history:
-        try:
-            t = datetime.fromisoformat(point["t"])
-            if t >= cutoff:
-                points.append(point)
-        except (KeyError, ValueError, TypeError):
-            continue
+    # Словарь: t_iso → суммарный hashrate
+    hashrate_by_time: dict = {}
+
+    for s in relevant_stats:
+        for point in s.hashrate_history:
+            try:
+                t_iso = point["t"]
+                t = datetime.fromisoformat(t_iso)
+                if t < cutoff:
+                    continue
+                # Суммируем (если несколько воркеров сделали снимок в одну минуту)
+                hashrate_by_time[t_iso] = hashrate_by_time.get(t_iso, 0.0) + point.get("hashrate", 0.0)
+            except (KeyError, ValueError, TypeError):
+                continue
+
+    # ===== СОРТИРУЕМ ПО ВРЕМЕНИ =====
+    points = [
+        {"t": t_iso, "hashrate": hr}
+        for t_iso, hr in sorted(hashrate_by_time.items())
+    ]
 
     return ApiResponse(
         status="success",

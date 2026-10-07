@@ -30,6 +30,12 @@ class StratumTCPServer:
         self.server: Optional[asyncio.Server] = None
         self.connections: Dict[str, asyncio.StreamWriter] = {}
         self.miners: Dict[str, str] = {}  # client_id -> bch_address
+        # client_id -> worker_name (например, "Rig1", "Rig2", "default").
+        # ВАЖНО: worker_name парсится из username при mining.authorize.
+        # Формат username: "qqxs..." (без worker) или "qqxs....Rig1" (с worker).
+        # Если worker не задан — "default".
+        self.worker_names: Dict[str, str] = {}
+
         self._connection_times: Dict[str, datetime] = {}
         self.auth_service = auth_service
         self.database_service = database_service
@@ -306,6 +312,7 @@ class StratumTCPServer:
                 self._connection_times.pop(client_id, None)
                 self._client_ips.pop(client_id, None)
                 self._pending_suggest.pop(client_id, None)
+                self.worker_names.pop(client_id, None)
 
             # Рассчитываем длительность подключения
             if connect_time:
@@ -374,14 +381,14 @@ class StratumTCPServer:
                 success, authorized_address, error_msg = await self.auth_service.authorize_miner(username, "")
 
                 if success:
-                    # ===== НАЧАЛЬНАЯ DISPLAY DIFFICULTY =====
-                    # ВАЖНО: suggest_difficulty от ASIC — это СТАРТОВАЯ точка.
-                    # Если ASIC его прислал — начинаем с него.
-                    # Если нет — используем start_display_difficulty.
-                    #
-                    # suggest_difficulty ТАКЖЕ используется как НИЖНЯЯ ГРАНИЦА.
-                    # Пул НЕ опускает сложность ниже suggest, потому что при suggest
-                    # шары уже идут часто. Опускать ещё ниже — бессмысленно.
+                    # ===== ПАРСИМ WORKER_NAME ИЗ USERNAME =====
+                    # username может быть:
+                    #   "qqxs..."              → worker_name = "default"
+                    #   "qqxs....Rig1"         → worker_name = "Rig1"
+                    from app.utils.protocol_helpers import parse_stratum_username
+                    _, worker_name = parse_stratum_username(username)
+                    print(f"✅ [AUTH] address={authorized_address[:20]}..., worker={worker_name}", flush=True)
+                    # ==========================================
                     suggested = self._pending_suggest.get(client_id)
                     if suggested:
                         initial_diff_float = suggested
@@ -395,6 +402,10 @@ class StratumTCPServer:
 
                     async with self._lock:
                         self.miners[client_id] = authorized_address
+                        # ===== СОХРАНЯЕМ WORKER_NAME =====
+                        self.worker_names[client_id] = worker_name
+                        print(f"✅ [AUTH] worker_names[{client_id}] = {worker_name}", flush=True)
+                        # ==================================
 
                         # ===== КЛЮЧ — client_id, А НЕ address =====
                         # Так каждый ASIC имеет свою сложность.
@@ -647,7 +658,30 @@ class StratumTCPServer:
         ВАЖНО: client_id — ключ для словарей сложности.
         Каждый ASIC (TCP-подключение) имеет свой client_id,
         поэтому у двух ASIC с одним кошельком РАЗНАЯ сложность.
+
+        ВАЖНО: stats_key — ключ для статистики в miner_stats_service.
+        Формируется как "address.worker" (если worker задан)
+        или просто "address" (если worker = "default").
+        Это позволяет видеть раздельную статистику по воркерам.
         """
+        # ===== ФОРМИРУЕМ STATS_KEY =====
+        # Если worker_name задан (не "default") — используем "address.worker",
+        # иначе — просто "address".
+        #
+        # ПРИМЕР:
+        #   username = "qqxs..."               → stats_key = "qqxs..."
+        #   username = "qqxs....Rig1"          → stats_key = "qqxs....Rig1"
+        #
+        # ВАЖНО: этот ключ используется ТОЛЬКО для miner_stats_service.
+        # Для difficulty_service и database_service — остаётся miner_address.
+        worker_name_for_stats = (
+            self.worker_names.get(client_id, "default") if client_id else "default"
+        )
+        if worker_name_for_stats and worker_name_for_stats != "default":
+            stats_key = f"{miner_address}.{worker_name_for_stats}"
+        else:
+            stats_key = miner_address
+        # ================================
 
         # ===== ПРОФАЙЛИНГ =====
         profiler = {}
@@ -862,10 +896,11 @@ class StratumTCPServer:
             try:
                 t0 = time.time()
                 # Добавляем в статистику (мгновенно, без БД)
-                await miner_stats_service.add_share(miner_address, share_info)
+                # КЛЮЧ — stats_key ("address" или "address.worker")
+                await miner_stats_service.add_share(stats_key, share_info)
                 profiler['stats'] = (time.time() - t0) * 1000
                 print(f"⏱️ stats: {profiler['stats']:.1f}ms", flush=True)
-                print(f"📊 STATS UPDATED IN MEMORY", flush=True)
+                print(f"📊 STATS UPDATED IN MEMORY для stats_key={stats_key}", flush=True)
             except Exception as e:
                 print(f"🔥 ERROR adding stats: {e}", flush=True)
 

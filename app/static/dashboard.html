@@ -205,6 +205,27 @@
             </div>
         </div>
 
+        <h2>ASIC List</h2>
+        <div class="card" style="padding: 0; overflow: hidden;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                <thead>
+                    <tr style="background: #0d1117; color: #8b949e; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px;">
+                        <th style="padding: 12px; text-align: left;">Worker</th>
+                        <th style="padding: 12px; text-align: left;">Status</th>
+                        <th style="padding: 12px; text-align: right;">Hashrate</th>
+                        <th style="padding: 12px; text-align: right;">Difficulty</th>
+                        <th style="padding: 12px; text-align: right;">Best Share</th>
+                        <th style="padding: 12px; text-align: right;">Accepted</th>
+                        <th style="padding: 12px; text-align: right;">Rejected</th>
+                        <th style="padding: 12px; text-align: right;">Last Share</th>
+                    </tr>
+                </thead>
+                <tbody id="workers-tbody">
+                    <tr><td colspan="8" style="padding: 12px; text-align: center; color: #8b949e;">Загрузка...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
         <div style="margin-top:24px; color:#8b949e; font-size:12px; text-align:center;">
             Last update: <span id="last-update">—</span> · Auto-refresh 10s
         </div>
@@ -320,6 +341,36 @@
 
                 // Timestamp
                 setText('last-update', new Date(d.timestamp).toLocaleTimeString());
+
+                // ===== WORKERS LIST =====
+                const workersList = d.workers_list || [];
+                const tbody = document.getElementById('workers-tbody');
+
+                if (workersList.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="8" style="padding: 12px; text-align: center; color: #8b949e;">Нет активных ASIC</td></tr>';
+                } else {
+                    tbody.innerHTML = workersList.map(w => {
+                        const statusColor = w.online ? '#3fb950' : '#8b949e';
+                        const statusText = w.online ? 'Online' : 'Offline';
+                        const lastShare = w.last_share_time
+                            ? new Date(w.last_share_time).toLocaleTimeString()
+                            : '—';
+
+                        return `
+                            <tr style="border-top: 1px solid #30363d;">
+                                <td style="padding: 12px; font-family: monospace;">${w.worker_name}</td>
+                                <td style="padding: 12px; color: ${statusColor};">${statusText}</td>
+                                <td style="padding: 12px; text-align: right; color: #58a6ff;">${w.hashrate_formatted || '—'}</td>
+                                <td style="padding: 12px; text-align: right;">${w.difficulty_formatted || '—'}</td>
+                                <td style="padding: 12px; text-align: right;">${w.best_share_formatted || '—'}</td>
+                                <td style="padding: 12px; text-align: right; color: #3fb950;">${w.shares?.accepted ?? 0}</td>
+                                <td style="padding: 12px; text-align: right; color: #f85149;">${w.shares?.rejected ?? 0}</td>
+                                <td style="padding: 12px; text-align: right; color: #8b949e;">${lastShare}</td>
+                            </tr>
+                        `;
+                    }).join('');
+                }
+                // ====================
 
                 hideError();
             } catch (e) {
