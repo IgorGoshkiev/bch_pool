@@ -95,18 +95,18 @@ class DifficultyService:
 
     # ===== УПРАВЛЕНИЕ ЦЕЛЕВОЙ СЛОЖНОСТЬЮ =====
 
-    def set_target_difficulty(self, miner_address: str, target: float) -> None:
+    def set_target_difficulty(self, client_id: str, target: float) -> None:
         """
-        Установить целевую сложность для майнера (от ASIC)
+        Установить целевую сложность для ASIC (от mining.suggest_difficulty).
 
-        ASIC отправляет mining.suggest_difficulty со своей желаемой сложностью.
-        Мы сохраняем это значение как цель, к которой будем стремиться.
+        ВАЖНО: ключ — client_id ("IP:порт"), а НЕ miner_address.
+        Так у каждого ASIC своя целевая сложность.
         """
-        self.miner_target_difficulties[miner_address] = target
-        print(f"🎯 [TARGET] Set for {miner_address[:20]}...: {target}", flush=True)
+        self.miner_target_difficulties[client_id] = target
+        print(f"🎯 [TARGET] Set for client_id={client_id}: {target}", flush=True)
 
 
-    def reset_share_timestamps(self, miner_address: str) -> None:
+    def reset_share_timestamps(self, client_id: str) -> None:
         """
         Сброс временных меток шаров при смене сложности.
 
@@ -118,31 +118,35 @@ class DifficultyService:
         Вызывается из tcp_server.handle_submit_tcp после успешной
         отправки set_difficulty.
         """
-        if miner_address in self.share_timestamps:
-            old_count = len(self.share_timestamps[miner_address])
-            self.share_timestamps[miner_address].clear()
-            print(f"🔄 [DIFF] Reset share_timestamps for {miner_address[:20]}... (was {old_count} entries)", flush=True)
+        if client_id in self.share_timestamps:
+            old_count = len(self.share_timestamps[client_id])
+            self.share_timestamps[client_id].clear()
+            print(f"🔄 [DIFF] Reset share_timestamps for client_id={client_id} (was {old_count} entries)", flush=True)
         else:
-            print(f"🔄 [DIFF] No share_timestamps to reset for {miner_address[:20]}...", flush=True)
+            print(f"🔄 [DIFF] No share_timestamps to reset for client_id={client_id}", flush=True)
 
     # ===== ДОБАВЛЕНИЕ ШАРОВ =====
+    async def add_share(self, client_id: str, difficulty: float = 1.0) -> None:
+        """
+        Добавление шара для расчета сложности.
 
-    async def add_share(self, miner_address: str, difficulty: float = 1.0) -> None:
-        """Добавление шара для расчета сложности"""
+        ВАЖНО: ключ — client_id. Так у каждого ASIC своя история шаров,
+        и median_interval считается ТОЛЬКО по этому ASIC, а не по сумме всех.
+        """
         try:
             timestamp = datetime.now(UTC)
 
-            if miner_address not in self.share_timestamps:
-                # Для мощного ASIC нужно больше истории (1000 временных меток)
-                self.share_timestamps[miner_address] = deque(maxlen=1000)
+            if client_id not in self.share_timestamps:
+                self.share_timestamps[client_id] = deque(maxlen=1000)
 
-            self.share_timestamps[miner_address].append(timestamp)
+            self.share_timestamps[client_id].append(timestamp)
 
             share_record = {
                 'timestamp': timestamp,
-                'miner_address': miner_address,
+                'client_id': client_id,
                 'difficulty': difficulty
             }
+
             self.share_history.append(share_record)
 
             if len(self.share_history) > self.max_history_size:
@@ -159,7 +163,7 @@ class DifficultyService:
             logger.debug(
                 "Шар добавлен для расчета сложности",
                 event="difficulty_share_added",
-                miner_address=miner_address[:20] + "...",
+                client_id=client_id,
                 total_shares=self.total_shares,
                 shares_last_hour=self.shares_last_hour
             )
@@ -168,13 +172,13 @@ class DifficultyService:
             logger.error(
                 "Ошибка добавления шара для сложности",
                 event="difficulty_share_add_error",
-                miner_address=miner_address[:20] + "..." if miner_address else "unknown",
+                client_id=client_id,
                 error=str(e)
             )
 
     # ===== РАСЧЕТ ПЕРСОНАЛЬНОЙ СЛОЖНОСТИ =====
 
-    async def calculate_difficulty_for_miner(self, miner_address: str) -> float:
+    async def calculate_difficulty_for_miner(self, client_id: str) -> float:
         """
         Расчет оптимальной сложности для конкретного майнера (как у Molehole).
 
@@ -197,20 +201,20 @@ class DifficultyService:
           Это делает handle_submit_tcp в tcp_server.py.
         """
         print(f"\n{'=' * 60}", flush=True)
-        print(f"🔍 [DIFF_CALC] ===== START for {miner_address[:20]}... =====", flush=True)
+        print(f"🔍 [DIFF_CALC] ===== START for client_id={client_id} =====", flush=True)
 
         # Проверяем наличие данных о шарах
-        if miner_address not in self.share_timestamps:
-            current = self.miner_difficulties.get(miner_address, self.start_display_difficulty)
+        if client_id not in self.share_timestamps:
+            current = self.miner_difficulties.get(client_id, self.start_display_difficulty)
             print(f"🔍 [DIFF_CALC] No timestamps, returning current: {current}", flush=True)
             return current
 
-        timestamps = list(self.share_timestamps[miner_address])
+        timestamps = list(self.share_timestamps[client_id])
         print(f"🔍 [DIFF_CALC] timestamps count: {len(timestamps)}", flush=True)
 
         # Минимум 3 шара для первого расчета
         if len(timestamps) < 3:
-            current = self.miner_difficulties.get(miner_address, self.start_display_difficulty)
+            current = self.miner_difficulties.get(client_id, self.start_display_difficulty)
             print(f"🔍 [DIFF_CALC] Too few timestamps ({len(timestamps)} < 3), keeping: {current:.10f}", flush=True)
             return current
 
@@ -218,13 +222,13 @@ class DifficultyService:
         current_diff = None
 
         if self.tcp_stratum_server:
-            current_diff = self.tcp_stratum_server.miner_difficulties.get(miner_address)
+            current_diff = self.tcp_stratum_server.miner_difficulties.get(client_id)
             if current_diff is not None:
                 print(f"🔍 [DIFF_CALC] ✅ Current difficulty from tcp_stratum_server: {current_diff}", flush=True)
 
         # Fallback — своя копия
         if current_diff is None:
-            current_diff = self.miner_difficulties.get(miner_address, self.start_display_difficulty)
+            current_diff = self.miner_difficulties.get(client_id, self.start_display_difficulty)
             print(f"🔍 [DIFF_CALC] ⚠️ Fallback to difficulty_service: {current_diff}", flush=True)
 
         # ===== ПРОВЕРКА ЧАСТОТЫ ОБНОВЛЕНИЯ — УБРАНА ОТСЮДА =====
@@ -345,7 +349,7 @@ class DifficultyService:
 
     # ===== РАСЧЕТ ХЭШРЕЙТА =====
 
-    async def get_miner_hashrate(self, miner_address: str, period_minutes: int = 5) -> float:
+    async def get_miner_hashrate(self, client_id: str, period_minutes: int = 5) -> float:
         """
         Расчет хэшрейта майнера за период.
         ВАЖНО: текущая сложность берётся ИЗ tcp_stratum_server (источник истины),
@@ -353,14 +357,14 @@ class DifficultyService:
         ВАЖНО: учитываем текущую сложность майнера!
         Каждый шар при сложности D соответствует D * 2^32 хэшей.
         """
-        print(f"🔍 [HASHRATE] ===== START for {miner_address[:20]}... =====", flush=True)
+        print(f"🔍 [HASHRATE] ===== START for {client_id[:20]}... =====", flush=True)
 
         try:
-            if miner_address not in self.share_timestamps:
-                print(f"🔍 [HASHRATE] No timestamps for {miner_address[:20]}..., returning 0", flush=True)
+            if client_id not in self.share_timestamps:
+                print(f"🔍 [HASHRATE] No timestamps for {client_id[:20]}..., returning 0", flush=True)
                 return 0.0
 
-            timestamps = list(self.share_timestamps[miner_address])
+            timestamps = list(self.share_timestamps[client_id])
             print(f"🔍 [HASHRATE] Total timestamps: {len(timestamps)}", flush=True)
 
             if not timestamps:
@@ -404,7 +408,7 @@ class DifficultyService:
             current_diff = None
 
             if self.tcp_stratum_server:
-                current_diff = self.tcp_stratum_server.miner_difficulties.get(miner_address)
+                current_diff = self.tcp_stratum_server.miner_difficulties.get(client_id)
                 if current_diff:
                     print(f"🔍 [HASHRATE] ✅ Using difficulty from tcp_stratum_server: {current_diff}", flush=True)
                 else:
@@ -412,7 +416,7 @@ class DifficultyService:
 
             # Fallback — своя копия
             if current_diff is None:
-                current_diff = self.miner_difficulties.get(miner_address, 1.0)
+                current_diff = self.miner_difficulties.get(client_id, 1.0)
                 print(f"🔍 [HASHRATE] ⚠️ Fallback to difficulty_service: {current_diff}", flush=True)
 
             # Каждый шар при сложности D = D * 2^32 хэшей
@@ -429,20 +433,21 @@ class DifficultyService:
             logger.error(
                 "Ошибка расчета хэшрейта майнера",
                 event="difficulty_miner_hashrate_error",
-                miner_address=miner_address[:20] + "..." if miner_address else "unknown",
+                miner_address=client_id[:20] + "..." if client_id else "unknown",
                 error=str(e)
             )
             print(f"🔥 [HASHRATE] EXCEPTION: {e}", flush=True)
             return 0.0
 
     async def get_pool_hashrate(self, period_minutes: int = 5) -> float:
-        """Расчет общего хэшрейта пула"""
+        """Расчет общего хэшрейта пула (сумма по всем client_id)"""
         try:
             total_hashrate = 0.0
-            for miner_address in self.share_timestamps.keys():
-                hashrate = await self.get_miner_hashrate(miner_address, period_minutes)
+            for client_id in self.share_timestamps.keys():
+                hashrate = await self.get_miner_hashrate(client_id, period_minutes)
                 total_hashrate += hashrate
             return total_hashrate
+
         except Exception as e:
             logger.error(
                 "Ошибка расчета хэшрейта пула",
@@ -617,14 +622,14 @@ class DifficultyService:
             ]
             removed_count = old_count - len(self.share_history)
 
-            for miner_address in list(self.share_timestamps.keys()):
-                timestamps = self.share_timestamps[miner_address]
+            for client_id in list(self.share_timestamps.keys()):
+                timestamps = self.share_timestamps[client_id]
                 while timestamps and timestamps[0] < cutoff_time:
                     timestamps.popleft()
                 if not timestamps:
-                    del self.share_timestamps[miner_address]
+                    del self.share_timestamps[client_id]
                     # Также удаляем сложность если нет данных
-                    self.miner_difficulties.pop(miner_address, None)
+                    self.miner_difficulties.pop(client_id, None)
 
             if removed_count > 0:
                 logger.info(

@@ -474,25 +474,20 @@ class StratumTCPServer:
                         settings.min_display_difficulty,
                         suggested
                     )
-                    print(f"🎯 [SUGGEST_DIFF] min_asic_difficulty set для client_id={client_id}: {self.min_asic_difficulties[client_id]}", flush=True)
+                    print(
+                        f"🎯 [SUGGEST_DIFF] min_asic_difficulty set для client_id={client_id}: {self.min_asic_difficulties[client_id]}",
+                        flush=True)
                     # ============================================
 
                     # ===== ПЕРЕДАЁМ В DIFFICULTY_SERVICE =====
-                    # ВАЖНО: difficulty_service пока работает по miner_address,
-                    # а не по client_id. Поэтому передаём miner_address.
-                    # TODO
-                    # Это ОТДЕЛЬНАЯ проблема — разберёмся после этапа 2.
-                    miner_address = self.miners[client_id]
+                    # Теперь difficulty_service тоже работает по client_id.
                     if self.difficulty_service:
-                        self.difficulty_service.set_target_difficulty(miner_address, suggested)
+                        self.difficulty_service.set_target_difficulty(client_id, suggested)
                         # Синхронизируем нижнюю границу с difficulty_service
-                        self.difficulty_service.min_asic_difficulties[miner_address] = self.min_asic_difficulties[client_id]
-                        print(f"📊 [SUGGEST_DIFF] Synced to difficulty_service", flush=True)
+                        self.difficulty_service.min_asic_difficulties[client_id] = self.min_asic_difficulties[client_id]
+                        print(f"📊 [SUGGEST_DIFF] Synced to difficulty_service (client_id={client_id})", flush=True)
                 else:
                     print(f"📊 [SUGGEST_DIFF] Saved to pending (waiting for authorize)", flush=True)
-
-
-
 
             else:
                 print(f"⚠️ [SUGGEST_DIFF] Invalid params: {params}", flush=True)
@@ -994,7 +989,7 @@ class StratumTCPServer:
                     t0 = time.time()
 
                     # ===== 1. Добавляем шар в статистику для расчета сложности =====
-                    await self.difficulty_service.add_share(miner_address, difficulty_to_save)
+                    await self.difficulty_service.add_share(client_id, difficulty_to_save)
                     print(f"📊 [DIFF] Share added to difficulty_service", flush=True)
 
                     # ===== 2. ПРОВЕРКА ЧАСТОТЫ ОБНОВЛЕНИЯ — ЗДЕСЬ =====
@@ -1018,7 +1013,7 @@ class StratumTCPServer:
                         print(f"⏱️ difficulty: {profiler['difficulty']:.1f}ms (skipped)", flush=True)
                     else:
                         # ===== 3. ТЕПЕРЬ вызываем DifficultyService =====
-                        new_difficulty = await self.difficulty_service.calculate_difficulty_for_miner(miner_address)
+                        new_difficulty = await self.difficulty_service.calculate_difficulty_for_miner(client_id)
                         print(f"📊 [DIFF] New difficulty calculated: {new_difficulty:.10f}", flush=True)
 
                         # ===== 4. Получаем текущую сложность майнера =====
@@ -1085,11 +1080,11 @@ class StratumTCPServer:
                                 # ===== СИНХРОНИЗИРУЕМ С DIFFICULTY_SERVICE =====
                                 # ВАЖНО: difficulty_service пока по miner_address.
                                 if self.difficulty_service:
-                                    self.difficulty_service.miner_difficulties[miner_address] = rounded_diff
-                                    self.difficulty_service.last_update_time[miner_address] = time.time()
+                                    self.difficulty_service.miner_difficulties[client_id] = rounded_diff
+                                    self.difficulty_service.last_update_time[client_id] = time.time()
 
                                     # ===== СБРАСЫВАЕМ ВРЕМЕННЫЕ МЕТКИ =====
-                                    self.difficulty_service.reset_share_timestamps(miner_address)
+                                    self.difficulty_service.reset_share_timestamps(client_id)
 
                                 print(
                                     f"📊 [DIFF_DEBUG] miner_difficulties updated для client_id={client_id}: {rounded_diff:.0f}",
@@ -1731,7 +1726,7 @@ class StratumTCPServer:
         # ===== СИНХРОНИЗИРУЕМ С DIFFICULTY_SERVICE =====
         # Чтобы DifficultyService знал реальную сложность ASIC.
         if self.difficulty_service:
-            self.difficulty_service.miner_difficulties[miner_address] = float(display_difficulty)
+            self.difficulty_service.miner_difficulties[client_id] = float(display_difficulty)
             print(f"📊 [UPDATE_DIFF] Synced to difficulty_service: {display_difficulty}", flush=True)
         else:
             print(f"⚠️ [UPDATE_DIFF] self.difficulty_service is None, no sync", flush=True)
