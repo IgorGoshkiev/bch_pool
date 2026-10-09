@@ -568,7 +568,14 @@ class ShareValidator:
                 print(f"🔍 USING VERSION FROM JOB: {version_hex}", flush=True)
 
             nbits = params[6]  # сложность (bits)
-            extra_nonce1 = self.extra_nonce1  # extra_nonce1 из пула
+
+            # ===== ИСПОЛЬЗУЕМ extra_nonce1 ИЗ JOB_DATA =====
+            # У каждого ASIC свой extra_nonce1 — он сохранён в job_data.
+            extra_nonce1 = job_data.get('extra_nonce1')
+            if not extra_nonce1:
+                # Fallback на глобальный (для совместимости)
+                extra_nonce1 = self.extra_nonce1
+            # =============================================
 
             # ===== ДИАГНОСТИКА: ВСЕ ВХОДНЫЕ ДАННЫЕ =====
             print(f"extra_nonce1 from self: {extra_nonce1}", flush=True)

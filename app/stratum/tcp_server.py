@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 import re
+import secrets
 from datetime import datetime, UTC
 from typing import Dict, Optional
 
@@ -82,6 +83,9 @@ class StratumTCPServer:
         self._ip_connections: Dict[str, int] = {}
         self.max_per_ip = 10
         self._client_ips: Dict[str, str] = {}
+        # client_id -> extra_nonce1 (уникальный для каждого ASIC).
+        # Нужен, чтобы избежать коллизий hash_result между ASIC.
+        self.extra_nonce1_by_client: Dict[str, str] = {}
 
         logger.info(
             "TCP Stratum сервер инициализирован",
@@ -313,6 +317,7 @@ class StratumTCPServer:
                 self._client_ips.pop(client_id, None)
                 self._pending_suggest.pop(client_id, None)
                 self.worker_names.pop(client_id, None)
+                self.extra_nonce1_by_client.pop(client_id, None)
 
             # Рассчитываем длительность подключения
             if connect_time:
@@ -364,7 +369,7 @@ class StratumTCPServer:
         print(f"✅ RECEIVED: method={method}, id={msg_id}", flush=True)
 
         if method == "mining.subscribe":
-            await self._handle_subscribe(msg_id, writer)
+            await self._handle_subscribe(msg_id, writer, client_id)
 
         elif method == "mining.configure":
             await self._handle_configure(msg_id, writer, params)
@@ -440,7 +445,7 @@ class StratumTCPServer:
                     # 3. ОТПРАВЛЯЕМ ЗАДАНИЕ
                     # ВАЖНО: set_difficulty НЕ отправляем здесь — он уйдёт
                     # в send_new_job_tcp ПЕРЕД mining.notify (как у Molehole).
-                    await self.send_new_job_tcp(authorized_address, writer)
+                    await self.send_new_job_tcp(authorized_address, writer, client_id)
                     print(f"📤 SENT INITIAL JOB TO: {authorized_address}", flush=True)
 
                 else:
@@ -538,25 +543,26 @@ class StratumTCPServer:
         else:
             await self._send_error(writer, msg_id, f"Unknown method: {method}")
 
-    async def _handle_subscribe(self, msg_id: int, writer: asyncio.StreamWriter):
+    async def _handle_subscribe(self, msg_id: int, writer: asyncio.StreamWriter, client_id: str = None):
         """Обработка подписки"""
         logger.info("=== START _handle_subscribe ===")
 
-        # Используем extra_nonce1 из пула (генерируется при старте)
-        extra_nonce1 = None
+        # ===== УНИКАЛЬНЫЙ extra_nonce1 ДЛЯ КАЖДОГО ASIC =====
+        # КАЖДЫЙ ASIC получает СВОЙ extra_nonce1 (4 байта = 8 hex).
+        # Это предотвращает коллизии hash_result между разными ASIC,
+        # когда extra_nonce2 и nonce случайно совпадают.
+        #
+        # ВАЖНО: если client_id уже получал extra_nonce1 (переподключение),
+        # используем сохранённый. Иначе генерируем новый.
 
-        if self.job_manager:
-            extra_nonce1 = self.job_manager.get_pool_extra_nonce1()
-            if extra_nonce1:
-                print(f"✅ extra_nonce1 из пула: {extra_nonce1}", flush=True)
-            else:
-                print(f"❌ extra_nonce1 не получен из пула", flush=True)
-
-        # Если по какой-то причине нет - генерируем временный
-        if not extra_nonce1:
-            import secrets
-            extra_nonce1 = secrets.token_hex(20)
-            print(f"⚠️ Генерируем временный extra_nonce1: {extra_nonce1}", flush=True)
+        if client_id and client_id in self.extra_nonce1_by_client:
+            extra_nonce1 = self.extra_nonce1_by_client[client_id]
+            print(f"♻️ [SUBSCRIBE] Переиспользуем extra_nonce1 для client_id={client_id}: {extra_nonce1}", flush=True)
+        else:
+            extra_nonce1 = secrets.token_hex(4)  # 8 hex = 4 байта
+            if client_id:
+                self.extra_nonce1_by_client[client_id] = extra_nonce1
+            print(f"🎲 [SUBSCRIBE] Уникальный extra_nonce1 для client_id={client_id}: {extra_nonce1}", flush=True)
 
         response = {
             "id": msg_id,
@@ -1158,7 +1164,7 @@ class StratumTCPServer:
             traceback.print_exc()
             await self._send_error(writer, msg_id, f"Error processing share: {e}")
 
-    async def send_new_job_tcp(self, miner_address: str, writer: asyncio.StreamWriter):
+    async def send_new_job_tcp(self, miner_address: str, writer: asyncio.StreamWriter, client_id: str = None):
         try:
             # ===== ПРОВЕРКА: writer еще жив? =====
             if writer is None:
@@ -1249,6 +1255,13 @@ class StratumTCPServer:
             print(f"🔑 [SEND_JOB] Generated short job_id (Molehole-style): {job_id}", flush=True)
             # =====================================================
 
+            # ===== УНИКАЛЬНЫЙ extra_nonce1 ДЛЯ ЭТОГО ASIC =====
+            client_extra_nonce1 = self.extra_nonce1_by_client.get(client_id)
+            if not client_extra_nonce1:
+                # fallback на пул (если client_id не известен)
+                client_extra_nonce1 = job_data.get('extra_nonce1')
+            # =================================================
+
             # === ДЛЯ ВАЛИДАТОРА (сохраняем big-endian) ===
             real_job = {
                 "method": "mining.notify",
@@ -1263,7 +1276,7 @@ class StratumTCPServer:
                     real_ntime,
                     True
                 ],
-                "extra_nonce1": job_data.get('extra_nonce1'),
+                "extra_nonce1": client_extra_nonce1,   # ← уникальный,
                 "merkle_root": job_data.get('merkle_root')
             }
 
@@ -1272,7 +1285,7 @@ class StratumTCPServer:
                 job_id,
                 real_job,
                 miner_address,
-                extra_nonce1=job_data.get('extra_nonce1')
+                extra_nonce1=client_extra_nonce1
             )
 
             # Для отправки ASIC
@@ -1302,7 +1315,7 @@ class StratumTCPServer:
             #
             # ВАЖНО: это НАЧАЛЬНАЯ сложность. Адаптация — в handle_submit_tcp.
             current_diff = self.miner_difficulties.get(
-                miner_address,
+                client_id,
                 settings.start_display_difficulty
             )
             current_diff_int = max(1, int(current_diff))
@@ -1459,9 +1472,16 @@ class StratumTCPServer:
                     print(f"📤 [BROADCAST] prevhash LE: {prevhash_le[:32]}...", flush=True)
                     # =====================================================
 
-                    # ===== ПОЛУЧАЕМ extra_nonce1 =====
-                    extra_nonce1 = job_data.get('extra_nonce1')
-                    print(f"📤 [BROADCAST] get extra_nonce1: {extra_nonce1}", flush=True)
+                    # ===== УНИКАЛЬНЫЙ extra_nonce1 ДЛЯ ЭТОГО ASIC =====
+                    client_extra_nonce1 = self.extra_nonce1_by_client.get(client_id)
+                    print(f"📤 [BROADCAST] client_extra_nonce1: {client_extra_nonce1}", flush=True)
+
+                    if not client_extra_nonce1:
+                        # fallback
+                        client_extra_nonce1 = job_data.get('extra_nonce1')
+                        print(f"📤 [BROADCAST] fallback !!!! client_extra_nonce1: {client_extra_nonce1}", flush=True)
+
+                    print(f"📤 [BROADCAST] extra_nonce1  для client_id={client_id}: {client_extra_nonce1}", flush=True)
 
                     # ===== ПОЛУЧАЕМ template =====
                     template = job_data.get('template')
@@ -1475,7 +1495,7 @@ class StratumTCPServer:
                         job_id,
                         job_data_copy,
                         miner_address,
-                        extra_nonce1=extra_nonce1,
+                        extra_nonce1=client_extra_nonce1,   # ← уникальный,
                         template=template
                     )
                     print(f"📤 [BROADCAST] Job added to job_service", flush=True)
