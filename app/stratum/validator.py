@@ -256,7 +256,8 @@ class ShareValidator:
                        nonce: str,
                        miner_address: str,
                        version: Optional[str] = None,
-                       pool_difficulty: Optional[float] = None) -> Tuple[bool, Optional[str], Optional[dict]]:
+                       pool_difficulty: Optional[float] = None,
+                       client_id: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[dict]]:
         """
         Проверка валидности шара
 
@@ -353,7 +354,7 @@ class ShareValidator:
                 return False, f"Некорректное время ntime: {ntime}", None
 
             # 3. Проверка уникальности nonce
-            if not self._check_nonce_uniqueness(job_id, nonce):
+            if not self._check_nonce_uniqueness(job_id, nonce, client_id=client_id):
                 self.invalid_shares += 1
                 logger.warning(
                     "Nonce уже использовался",
@@ -770,15 +771,24 @@ class ShareValidator:
             logger.debug(f"Ошибка парсинга ntime: {ntime_hex}, ошибка: {e}")
             return False
 
-    def _check_nonce_uniqueness(self, job_id: str, nonce: str) -> bool:
-        """Проверка уникальности nonce для задания"""
-        if job_id not in self._used_nonces:
-            self._used_nonces[job_id] = set()
+    def _check_nonce_uniqueness(self, job_id: str, nonce: str, client_id: str = None) -> bool:
+        """
+        Проверка уникальности nonce.
 
-        if nonce in self._used_nonces[job_id]:
+        ВАЖНО: ключ — (job_id, client_id), а НЕ только job_id.
+        Так у каждого ASIC свой набор использованных nonce.
+        Два ASIC с одним job_id могут прислать одинаковый nonce —
+        это НЕ дубликат, потому что это разные устройства.
+        """
+        key = f"{job_id}:{client_id}" if client_id else job_id
+
+        if key not in self._used_nonces:
+            self._used_nonces[key] = set()
+
+        if nonce in self._used_nonces[key]:
             return False
 
-        self._used_nonces[job_id].add(nonce)
+        self._used_nonces[key].add(nonce)
         self._cleanup_old_nonces()
         return True
 

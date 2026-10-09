@@ -452,7 +452,8 @@ class JobService:
                                    nonce: str,
                                    miner_address: str,
                                    version: Optional[str] = None,
-                                   pool_difficulty: Optional[float] = None) -> Tuple[
+                                   pool_difficulty: Optional[float] = None,
+                                   client_id: Optional[str] = None) -> Tuple[
         bool, Optional[str], Optional[dict]]:
         """
         Валидация и обработка шара
@@ -491,7 +492,8 @@ class JobService:
                 nonce=nonce,
                 miner_address=miner_address,
                 version=version,
-                pool_difficulty=pool_difficulty
+                pool_difficulty=pool_difficulty,
+                client_id=client_id
             )
 
             if not is_valid:

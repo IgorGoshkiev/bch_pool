@@ -1,10 +1,11 @@
 """
 Сервис для хранения статистики майнеров в памяти
 """
+import asyncio
+import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime, UTC, timedelta
 from collections import deque
-import asyncio
 from dataclasses import dataclass, field
 
 from app.utils.logging_config import StructuredLogger
@@ -90,6 +91,11 @@ class MinerStatsData:
     # maxlen=1440: раз в минуту × 24 часа = 1440 точек.
     hashrate_history: deque = field(default_factory=lambda: deque(maxlen=1440))
     last_update: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # ===== Last Share Time =====
+    # Время ПОСЛЕДНЕГО принятого шара (не лучшего).
+    # Отображается в таблице ASIC List как «Last Share».
+    # Обновляется при каждом принятом шаре (is_valid=True).
+    last_share_time: Optional[datetime] = None
 
     def add_share(self, share: ShareInfo):
         """Добавить шар в статистику"""
@@ -109,6 +115,10 @@ class MinerStatsData:
 
         if share.is_valid:
             self.accepted_shares += 1
+            # ===== ОБНОВЛЯЕМ LAST SHARE TIME =====
+            # Только для ПРИНЯТЫХ шаров.
+            self.last_share_time = share.timestamp
+            # =====================================
         else:
             self.rejected_shares += 1
 
@@ -209,6 +219,7 @@ class MinerStatsService:
         # Фоновая задача сбора снимков хэшрейта для графика
         self._hashrate_snapshot_task = None
         self._running = False
+        self._recent_hashes: Dict[str, float] = {}  # hash -> last_seen_timestamp
 
         logger.info(
             "MinerStatsService инициализирован",
@@ -404,6 +415,33 @@ class MinerStatsService:
     async def add_share(self, address: str, share: ShareInfo):
         """Добавить шар в статистику майнера"""
         async with self._lock:
+            # ===== ДЕДУПЛИКАЦИЯ ПО HASH =====
+            # Если тот же hash уже был за последние 60 секунд —
+            # это дубликат от другого ASIC (или того же).
+            # Не считаем его повторно.
+            now = time.time()
+            last_seen = self._recent_hashes.get(share.hash)
+
+            if last_seen and (now - last_seen) < 60:
+                print(f"*** Дубликат шара (тот же hash за 60 сек)", flush=True)
+                logger.debug(
+                    "Дубликат шара (тот же hash за 60 сек)",
+                    event="miner_stats_duplicate_share",
+                    hash=share.hash[:16],
+                    address=address
+                )
+                return
+
+            self._recent_hashes[share.hash] = now
+
+            # Чистим старые хэши (старше 60 сек)
+            if len(self._recent_hashes) > 10000:
+                cutoff = now - 60
+                self._recent_hashes = {
+                    h: t for h, t in self._recent_hashes.items() if t > cutoff
+                }
+            # ==================================
+
             if address not in self._stats:
                 self._stats[address] = MinerStatsData(address=address)
                 logger.debug(

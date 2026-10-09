@@ -734,7 +734,9 @@ class StratumTCPServer:
                     )
                     profiler['calculate_hash'] = (time.time() - t0) * 1000
                     print(f"⏱️ calculate_hash: {profiler['calculate_hash']:.1f}ms", flush=True)
-                    print(f"🔥 SHARE HASH: {hash_result}", flush=True)
+                    print(
+                        f"🔥 SHARE HASH: {hash_result} (client_id={client_id}, worker={self.worker_names.get(client_id, 'default')})",
+                        flush=True)
 
                     hash_int = int(hash_result, 16)
 
@@ -840,7 +842,8 @@ class StratumTCPServer:
                         nonce=nonce,
                         miner_address=miner_address,
                         version=version_from_asic,
-                        pool_difficulty=validation_difficulty
+                        pool_difficulty=validation_difficulty,
+                        client_id=client_id
                     )
 
                     profiler['validate'] = (time.time() - t0) * 1000
@@ -857,6 +860,30 @@ class StratumTCPServer:
             # 7. ЕСЛИ НЕВАЛИДЕН - ОТКЛОНЯЕМ
             if not is_valid:
                 print(f"🔴 SHARE REJECTED: {error_msg}", flush=True)
+
+                # ===== СОХРАНЯЕМ РЕДЖЕКТ В СТАТИСТИКУ (Приоритет 2) =====
+                # Это нужно, чтобы rejected_count в дашборде был правильным.
+                # Раньше мы просто возвращали ошибку ASIC и НЕ сохраняли,
+                # поэтому в API было rejected=0.
+                try:
+                    rejected_share_info = ShareInfo(
+                        hash=hash_result or ("0" * 64),
+                        difficulty=0.0,  # Best Share = 0 (не считается)
+                        is_valid=False,  # ← РЕДЖЕКТ
+                        timestamp=datetime.now(UTC),
+                        job_id=job_id,
+                        nonce=nonce,
+                        ntime=ntime,
+                        display_difficulty=display_difficulty,
+                        share_difficulty=0.0,
+                        best_share=0.0,
+                    )
+                    await miner_stats_service.add_share(stats_key, rejected_share_info)
+                    print(f"📊 REJECTED SAVED to stats (stats_key={stats_key})", flush=True)
+                except Exception as e:
+                    print(f"🔥 ERROR saving rejected: {e}", flush=True)
+                # ==========================================================
+
                 await self._send_error(writer, msg_id, f"Invalid share: {error_msg}")
                 return
 

@@ -633,7 +633,14 @@ async def get_miner_dashboard(
         w_hashrate = s.get_hashrate(period_seconds=600)
         w_max_share = s.max_share_difficulty_share
         w_best_share = w_max_share.best_share if w_max_share else 0.0
-        w_last_share_time = w_max_share.timestamp.isoformat() if w_max_share else None
+        # ===== LAST SHARE TIME =====
+        # Показываем время ПОСЛЕДНЕГО принятого шара,
+        # а НЕ лучшего (max_share).
+        w_last_share_time = (
+            s.last_share_time.isoformat()
+            if s.last_share_time else None
+        )
+        # =========================
 
         w_display_diff = 0
         w_online = False
