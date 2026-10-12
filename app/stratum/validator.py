@@ -208,26 +208,38 @@ class ShareValidator:
         )
 
     def add_job(self, job_id: str, job_data: dict):
-        """Добавить задание в кэш для валидации"""
-        # Если кэш слишком большой — удаляем старые
-        if len(self.jobs_cache) > 100:
-            # Удаляем половину
-            keys = list(self.jobs_cache.keys())[:50]
-            for key in keys:
+        """
+        Добавить задание в кэш для валидации.
+
+        ВАЖНО: НЕ УДАЛЯЕМ короткие job_id (8 hex).
+        Они активно используются ASIC прямо сейчас.
+        Удаляем ТОЛЬКО длинные (job_*), если кеш переполнен.
+
+        РАНЬШЕ: лимит 100 — переполнялся за 10 минут,
+        удалял короткие job_id → ASIC шлёт шары с устаревшим
+        job_id → "JOB NOT FOUND" → REJECTED.
+
+        ТЕПЕРЬ: лимит 10000, удаляем только длинные job_*.
+        """
+        MAX_CACHE = 10000
+
+        if len(self.jobs_cache) > MAX_CACHE:
+            # Удаляем ТОЛЬКО длинные job_* (старые).
+            # Короткие (8 hex) — НЕ трогаем, они активные.
+            keys_to_remove = [
+                k for k in self.jobs_cache.keys()
+                if k.startswith("job_")
+            ]
+            # Удаляем первые 2000 (самые старые)
+            for key in keys_to_remove[:2000]:
                 self.jobs_cache.pop(key, None)
+                self._used_nonces.pop(key, None)
+
+            print(f"🧹 [VALIDATOR.add_job] Очищен кеш: удалено {min(2000, len(keys_to_remove))} длинных job_id, осталось {len(self.jobs_cache)}", flush=True)
 
         self.jobs_cache[job_id] = job_data
 
-        # print(f"✅ VALIDATOR.add_job: cache after size={len(self.jobs_cache)}", flush=True)
-        print(f"✅ VALIDATOR.add_job: ", flush=True)
-
-        logger.debug(
-            "Добавлено задание в кэш",
-            event="job_added_to_cache",
-            job_id=job_id,
-            jobs_cache_size=len(self.jobs_cache),
-            has_extra_nonce1='extra_nonce1' in job_data
-        )
+        print(f"✅ VALIDATOR.add_job: cache size={len(self.jobs_cache)}", flush=True)
 
     def remove_job(self, job_id: str):
         """Удалить задание из кэша"""

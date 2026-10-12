@@ -178,6 +178,15 @@ class JobService:
         import traceback
         job = self.active_jobs.get(job_id)
 
+        if job is None:
+            # ===== ОТЛАДКА: JOB НЕ НАЙДЕН =====
+            # Логируем ВСЕ активные job_id, чтобы понять,
+            # что ASIC шлёт устаревший job_id.
+            print(f"🔴 [JOB_SERVICE] JOB NOT FOUND: {job_id}", flush=True)
+            print(f"   available (last 20): {list(self.active_jobs.keys())[-20:]}", flush=True)
+            print(f"   total: {len(self.active_jobs)}", flush=True)
+        # ===================================
+
         print(f"\n{'=' * 60}", flush=True)
         print(f"🔍 JOB_SERVICE.get_job({job_id})", flush=True)
         print(f"   job = {job}", flush=True)

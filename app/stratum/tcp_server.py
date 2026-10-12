@@ -798,6 +798,31 @@ class StratumTCPServer:
             # 4. ПРОВЕРЯЕМ, ЧТО ХЭШ РАССЧИТАН
             if hash_result is None:
                 print(f"🔴 SHARE REJECTED: hash calculation failed", flush=True)
+
+                # ===== СОХРАНЯЕМ РЕДЖЕКТ В СТАТИСТИКУ =====
+                # ВАЖНО: это нужно, чтобы rejected_count в дашборде
+                # был правильным. Раньше 232 реджекта (все "hash calculation
+                # failed") НЕ сохранялись, потому что return происходит
+                # ДО блока `if not is_valid:`.
+                try:
+                    rejected_share_info = ShareInfo(
+                        hash="0" * 64,
+                        difficulty=0.0,
+                        is_valid=False,
+                        timestamp=datetime.now(UTC),
+                        job_id=job_id,
+                        nonce=nonce,
+                        ntime=ntime,
+                        display_difficulty=display_difficulty,
+                        share_difficulty=0.0,
+                        best_share=0.0,
+                    )
+                    await miner_stats_service.add_share(stats_key, rejected_share_info)
+                    print(f"📊 REJECTED SAVED to stats (stats_key={stats_key})", flush=True)
+                except Exception as e:
+                    print(f"🔥 ERROR saving rejected: {e}", flush=True)
+                # ==========================================
+
                 await self._send_error(writer, msg_id, "Failed to calculate hash")
                 return
 
